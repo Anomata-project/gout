@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Put `gout` on your PATH. The symlink points back at this checkout, so edits
-# to gout.py take effect immediately — no reinstall.
+# to the gout/ package take effect immediately — no reinstall.
 #
 #   ./install.sh              -> ~/.local/bin/gout
 #   ./install.sh /usr/local/bin  (or BINDIR=... ./install.sh)
 set -euo pipefail
 
-src="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gout.py"
+src="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bin/gout"
 bindir="${1:-${BINDIR:-$HOME/.local/bin}}"
 
 command -v ffmpeg  >/dev/null || echo "warning: ffmpeg not found on PATH"  >&2

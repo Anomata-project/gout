@@ -4,18 +4,19 @@ A command-line DAW. Stack `wav` and `mp3` tracks on a timeline, trim and move th
 them to a stereo `master.wav`. The original cutter is still in there as `gout cut`.
 
 Wraps `ffmpeg`. Everything else is the Python standard library: no dependencies, no virtualenv.
-One file, `gout.py`.
+The code is the `gout/` package; `bin/gout` runs it straight from the checkout.
 
 ## Install
 
 Needs `ffmpeg` and `ffprobe` on `PATH`.
 
 ```sh
-./install.sh              # symlinks ~/.local/bin/gout -> ./gout.py
+./install.sh              # symlinks ~/.local/bin/gout -> ./bin/gout
 ```
 
-The symlink points back at this checkout, so editing `gout.py` takes effect immediately.
-`pipx install .` and `pip install --user -e .` work too, or run `./gout.py` in place.
+The symlink points back at this checkout, so editing the package takes effect immediately.
+`pipx install .` and `pip install --user -e .` work too, or run `./bin/gout` or `python3 -m gout`
+in place.
 
 ## A project
 

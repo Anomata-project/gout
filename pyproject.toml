@@ -15,7 +15,7 @@ classifiers = [
 ]
 
 [project.scripts]
-gout = "gout:main"
+gout = "gout.cli:main"
 
 [tool.setuptools]
-py-modules = ["gout"]
+packages = ["gout", "gout.effects"]
