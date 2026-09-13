@@ -17,7 +17,7 @@ from .core import __version__, fmt_ms, fmt_pan, GoutError, is_master, MASTER_N, 
 from .model import audible, timeline
 from .fx import effect, effects, GUTTER, resolve
 from .settings import MASTER_DEFAULTS, master_track, setting
-from .render import LABEL_W, render_cheat, render_panel, render_timeline
+from .render import CHEAT_HEADINGS, cheat_layout, LABEL_W, render_cheat, render_panel, render_timeline
 from .helptext import help_text
 from .commands import save_as, slot_of
 from .cli import aliases, command_table, run
@@ -248,7 +248,7 @@ class Tui:
                 top += len(rows)
 
         if right_x is not None and self.show_cheat:
-            sheet = render_cheat(right_w - 1)
+            sheet, second = cheat_layout(right_w - 1)
             self.sheet_h = max(1, h - top - 1)
             self.sheet_len = len(sheet)
             self.cheat_scroll = max(0, min(self.cheat_scroll, max(0, len(sheet) - self.sheet_h)))
@@ -256,13 +256,14 @@ class Tui:
             page = min(pages, math.ceil((self.cheat_scroll + self.sheet_h) / self.sheet_h))
             self.put(top, right_x, f" cheat sheet  {page}/{pages}  tab".ljust(right_w), self.palette.attr("header"))
             for i, line in enumerate(sheet[self.cheat_scroll:self.cheat_scroll + self.sheet_h]):
-                if line[:1].isupper() and not line.startswith(" "):
-                    heading = line.split(" ", 1)[0]
-                    self.put(top + 1 + i, right_x + 1, heading, self.palette.attr("cheat_heading"), right_w - 1)
-                    self.put(top + 1 + i, right_x + 1 + len(heading), line[len(heading):], 0,
-                             max(0, right_w - 1 - len(heading)))
-                else:
-                    self.put(top + 1 + i, right_x + 1, line, 0, right_w - 1)
+                self.put(top + 1 + i, right_x + 1, line, 0, right_w - 1)
+                for at in (0, second):  # section names start a column
+                    if at is None or at >= len(line) or (at and line[at - 1] != " "):
+                        continue
+                    heading = line[at:].split(" ", 1)[0]
+                    if heading in CHEAT_HEADINGS and at < right_w - 1:
+                        self.put(top + 1 + i, right_x + 1 + at, heading, self.palette.attr("cheat_heading"),
+                                 right_w - 1 - at)
         try:
             scr.move(prompt_y, min(cursor_x, w - 1))
         except curses.error:

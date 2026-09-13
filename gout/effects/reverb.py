@@ -206,8 +206,7 @@ class ReverbEffect(Effect):
     picture_width = (40, 80)
     picture_height = 6
     cheat = (
-        " reverb rv TRACK 2.5s p20 d50 w25     decay pre damp wet",
-        " reverb rv TRACK room|plate|hall..    presets (rv presets)",
+        ("", "", "p20 d50 w25", "pre-delay ms, damping %, wet %"),
     )
     help = (f"settings: {REVERB_SYNTAX}",
             "the reverb of a mono sum, wide whatever comes before it; its tail counts toward the length")

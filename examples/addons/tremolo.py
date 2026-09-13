@@ -28,7 +28,6 @@ class Tremolo(Effect):
     order = 35                 # after eq, comp and delay, before reverb, when added by name
     picture_width = (30, 70)
     picture_height = 6
-    cheat = (" tremolo trem TRACK 5hz d50         rate, depth (addon)",)
 
     def parse(self, text):
         params = {"rate": 5.0, "depth": 50.0}

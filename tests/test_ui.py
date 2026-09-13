@@ -153,6 +153,38 @@ class UiTest(GoutTest):
         self.keys(ui, "\t")  # on an empty line tab still flips the cheat sheet
         self.assertNotEqual(ui.cheat_scroll, page)
 
+    def test_cheat_sheet_lays_itself_out_for_the_width(self):
+        counts = {}
+        for width in (40, 60, 90, 150):
+            text = self.gout("cheat", "-w", str(width)).stdout
+            lines = text.rstrip("\n").splitlines()
+            counts[width] = len(lines)
+            self.assertTrue(all(len(line) <= width for line in lines), width)
+            self.assertNotIn("..", text.replace("[-st ..]", "").replace("FILE...", ""), width)  # wrapped, never cut
+            words = " ".join(text.split())
+            for preset in ("voice", "mud", "flat", "cathedral", "limit"):  # every preset of every effect
+                self.assertIn(preset, words, width)
+        self.assertLess(counts[150], counts[90])
+        self.assertLess(counts[90], counts[60])
+        self.assertLess(counts[60], counts[40])
+        self.assertIn("presets: voice podcast warm air bright mud clean phone bass kick guitar flat",
+                      self.gout("cheat", "-w", "130").stdout)
+        wide = self.gout("cheat", "-w", "150").stdout
+        self.assertTrue(any(line.startswith("TRACKS") and line.rstrip().endswith("PROJECT")
+                            for line in wide.splitlines()), "two columns side by side")
+
+        root = self.project("song", "bass.wav")
+        project, screen, ui = self.open_ui(root)
+        screen.w = 200
+        ui.input = "split 70"
+        ui.submit()
+        ui.draw()
+        narrow = ui.sheet_len
+        ui.input = "split 25"  # the panel gets wider: the sheet takes fewer lines
+        ui.submit()
+        ui.draw()
+        self.assertLess(ui.sheet_len, narrow)
+
     def test_grey_suggestion_is_taken_with_the_right_arrow(self):
         root = self.project("song", "bass.wav")
         project, screen, ui = self.open_ui(root)

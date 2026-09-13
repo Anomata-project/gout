@@ -178,8 +178,11 @@ the log scrolls (`pgup` / `pgdn` look back, typing snaps back down). The right s
 is louder than -6 dBFS and the flat bottom line is silence. Soft-trimmed material is dimmed,
 a muted or un-soloed track is dimmed all over, and `master.wav` gets a row of its own so you
 see the sum. Below the tracks sits the cheat
-sheet; `tab` and `shift-tab` flip its pages, `ctrl-n` / `ctrl-p` move it a line. It is a
-picture, not a mouse target: the keyboard drives everything.
+sheet; `tab` and `shift-tab` flip its pages, `ctrl-n` / `ctrl-p` move it a line. It lays itself
+out for the panel's width: narrow, descriptions wrap under their commands; wider, arguments and
+descriptions share a line and every effect's full preset list shows; from about 130 columns it
+flows into two columns. Move the split with `ctrl-←` / `ctrl-→` and it reflows. `gout cheat -w 150`
+prints it at a given width. It is a picture, not a mouse target: the keyboard drives everything.
 
 ```
  gout song  48000 Hz  4 tracks  autorender on │ timeline
@@ -192,8 +195,10 @@ picture, not a mouse target: the keyboard drives everything.
  > _                                       │    master.wav  ▇█▇█▇█▇█▇█▇█▇█▇█▇█▇█▇█▇█▇█▇█
                                            │ cheat sheet  1/3  tab
                                            │ TRACKS
-                                           │  add   a  FILE.. [-a TIME] [-n NAME]  copy into master/
-                                           │  move  m  TRACK +1s | -500ms | 1:30   later|earlier|place
+                                           │  add   a  FILE... [-a TIME] [-n NAME]
+                                           │              copy files into master/
+                                           │  move  m  TRACK +1s | -500ms | 1:30
+                                           │              later, earlier, or place at a time
 ```
 
 The two right-hand sections are independent: The prompt edits like a shell. Left and right arrows, Home and End (or ctrl-a) move the cursor

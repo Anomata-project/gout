@@ -62,7 +62,6 @@ class Chorus(Effect):
     picture_width = (40, 80)
     picture_height = 6
     legend = "█ left voices   · right voices: how far each voice's delay swings, in ms, over two seconds"
-    cheat = (" chorus ch TRACK classic|v2 r0.4 m50  stereo chorus, addon",)
 
     def parse(self, text):
         params = dict(DEFAULTS)

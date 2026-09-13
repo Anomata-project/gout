@@ -154,8 +154,7 @@ class DelayEffect(Effect):
     picture_width = (40, 80)
     picture_height = 6
     cheat = (
-        " delay dl TRACK 375ms|1/8 w30 f40 n4  time wet feedback n",
-        " delay dl TRACK slap|dotted|long      presets; set bpm 120",
+        ("", "", "1/8 1/8d 1/8t", "note values, plain, dotted, triplet; needs set bpm 120"),
     )
     help = (f"settings: {DELAY_SYNTAX}",
             "with  set bpm 120  the time can be a note value: 1/4 1/8 1/16 3/16, 1/8d dotted, 1/8t triplet")

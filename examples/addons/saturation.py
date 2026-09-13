@@ -82,7 +82,6 @@ class Saturation(Effect):
     order = 15              # after eq, before compression, when added by name
     picture_width = (30, 60)
     legend = "· output = input   █ the saturation, input across and output up, both -1 to 1"
-    cheat = (" sat      TRACK tape|tanh d12 m100 t8k saturation, addon",)
 
     def parse(self, text):
         params = dict(DEFAULTS)

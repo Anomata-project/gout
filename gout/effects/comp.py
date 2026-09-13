@@ -184,8 +184,7 @@ class CompEffect(Effect):
     picture_width = (30, 64)
     legend = "· output = input   █ the compressor   ░ how often this track's peaks sit at that level"
     cheat = (
-        " comp  cp TRACK -18 4:1 a10 r120 k6 m3  thr ratio a r k m",
-        " comp  cp TRACK vocal|drums|glue..    presets (comp presets)",
+        ("", "", "a10 r120 k6 m3", "attack ms, release ms, knee dB, makeup dB or mauto"),
     )
     help = (f"settings: {COMP_SYNTAX}",)
 

@@ -32,7 +32,7 @@ class Effect:
     picture_width = (40, 80)                    # smallest and largest useful picture width
     picture_height = 8
     legend = ""                                 # printed under the picture by `gout NAME TRACK`
-    cheat: tuple[str, ...] = ()                 # cheat-sheet lines, 60 columns at most
+    cheat: tuple = ()                           # extra cheat-sheet rows: (name, short, args, what)
     help: tuple[str, ...] = ()                  # extra lines for gout help
     # extra commands that edit this effect's line: name -> (usage, summary, fn(line, words) -> line)
     shortcuts: dict = {}
@@ -89,11 +89,21 @@ class Effect:
     def canonical(self, text: str) -> str:
         return self.format(self.read(text))
 
-    def cheat_lines(self) -> tuple[str, ...]:
-        if self.cheat:
-            return self.cheat
+    def cheat_entries(self) -> list[tuple[str, str, str, str]]:
+        """Cheat-sheet rows (name, short name, arguments, what it does); the sheet lays them out
+        for its width. Made from the attributes; `cheat` adds rows. Plain strings in `cheat` (the
+        old fixed-width lines) are skipped, the generated rows say the same."""
         short = self.aliases[0] if self.aliases else ""
-        return (f" {self.name:<5} {short:<2} TRACK {self.syntax}"[:60],)
+        what = self.summary or self.name
+        if self.source != "built-in":
+            what += " (addon)"
+        rows = [(self.name, short, f"TRACK {self.syntax}".rstrip(), what)]
+        rows += [tuple(row) for row in self.cheat if not isinstance(row, str) and len(row) == 4]
+        if self.presets:
+            rows.append(("", "", "TRACK PRESET", "presets: " + " ".join(self.presets)))
+        for name, (usage, summary, _fn) in self.shortcuts.items():
+            rows.append((name, "", f"TRACK {usage}", summary))
+        return rows
 
 
 class FxContext:

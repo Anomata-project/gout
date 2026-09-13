@@ -182,7 +182,6 @@ class Distortion(Effect):
     order = 16                 # early in a chain: after eq, before dynamics and space
     picture_width = (30, 60)
     legend = "· output = input   █ the distortion, input across and output up, both -1 to 1"
-    cheat = (" dist     TRACK overdrive|hard d36 h300  distortion, addon",)
     help = ("modes soft hard crush; d drive dB, a asymmetry %, h tight Hz, t tone Hz, m mix %,",
             "o output dB or oauto (level matched), b bits and s sample reduction for crush")
 

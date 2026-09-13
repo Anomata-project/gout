@@ -283,9 +283,9 @@ class EqEffect(Effect):
         "lp": ("HZ [SLOPE] | off", "low-pass cut on the first eq, e.g. lp 3 12k", cut_shortcut("lp")),
     }
     cheat = (
-        " hp/lp    TRACK 80 [24] | off         cuts, slope dB/oct",
-        " eq    e  TRACK hp80 +3@200 hs8k:-2   peaks gain@hz/q",
-        " eq    e  TRACK voice|warm|air|mud..  shelves ls100:+2",
+        ("", "", "hp80 lp12k/24", "cuts: Hz, then the slope in dB per octave"),
+        ("", "", "+3@200 -4@2.5k/3", "peaks: dB at Hz, /Q"),
+        ("", "", "ls100:+2 hs8k:-3", "low and high shelves: Hz, then dB"),
     )
     help = (
         f"bands: {EQ_SYNTAX}",

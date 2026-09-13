@@ -285,94 +285,248 @@ def render_timeline(project: "Project", width: int, styled: bool = False, playhe
     return rows
 
 
-CHEAT_TEMPLATE = """\
-CHEAT SHEET          long short  tab (empty line): next page
-TRACKS
- add   a  FILE.. [-a TIME] [-n NAME]  copy into master/
- scan  sc                             new files in master/
- ls    l                              list the tracks
- move  m  TRACK +1s | -500ms | 1:30   later|earlier|place
- trim  t  TRACK -st 2s -et 1:40       soft: file untouched
- trim  t  TRACK -H [-st ..] [-r]      hard: rewrite the file
- trim  t  TRACK -c                    soft trim off
- rm    r  TRACK [-D]                  drop; -D deletes file
-MIXER
- mute  mu TRACK [on|off]              mute all off
- solo  s  TRACK [on|off]              solo all off
- gain  g  TRACK -6                    dB, -60 .. +24
- pan   p  TRACK L30 | R30 | C         all start at C
-{EFFECTS} mix   x  [-3] [-v]                   -3 also master.mp3
- play  pl [FROM] [-r]                 hear it, live if stale
-PROJECT
- undo  u                              not hard trim / rm -D
- view  v  [-w COLS]                   print the timeline
- saveas sa NAME|PATH                  copy the project
- stems sm [DIR] [-A]                  one wav per track
- dump  dp                             the state as json
- import im FILE.json [-s|-t]          apply such a json
- rebuild rb [-f]                      db from master/ + json
- set   se KEY VALUE                   alone: list settings
- stats st                             LUFS / dBTP per track
- new   n  NAME [-R HZ]                48000 Hz by default
- cheat c  sheet on/off  help h        help all: whole page
- quit  q  leave the ui  clear cl      empty the log
- split sp 50 | +5 | -5                left pane width (ui)
- sheet sh (or ctrl-e)                 parameters as a table
- colors [--init]                      color.json settings
- addons   the addon folder and what loaded
-MASTER set KEY VALUE
- lufs -14|off  ceiling -1  gain -3    loudness, dBTP, gain
- eq master hp30  reverb master room   any effect, on master
- fadein 1s  fadeout 3s  head 1s  tail 2s
- bits 32f|24|16  mp3 320k|v0  title artist album year
-FLAGS  -N --no-mix skip the re-mix    -p DIR the project
-       -a --at  -n --name  -H --hard  -c --clear
-       -r --reencode  -D --delete  -3 --mp3  -R --rate
-       -w --width  -v --verbose
-TIMES  2s  500ms  1:30  00:01:30.250  bare number = MINUTES
-       trim times count from the track file's start
-TRACK  number from ls, or the name (unique prefix ok)
-LINE   ← → home end  edit it          ↑ ↓  earlier commands
-       tab  complete a command, track, preset or file name
-       → at the end of the line  take the grey suggestion
-       ctrl-w  delete a word   esc  clear the line
-PLAY   space (empty line)  play / stop, playhead stays
-       ← → (empty line)  move the playhead 5 s   stop  to 0
-KEYS   ctrl-u  timeline on/off   ctrl-k  sheet on/off
-       tab shift-tab (empty line)  flip the cheat sheet
-       ctrl-n ctrl-p  sheet line  pgup pgdn      scroll log
-       ctrl-l  clear the log
-       ctrl-← ctrl-→  move the split  (shift/alt too)
-       ctrl-g  effect panel on/off  (eq N, comp N.. pick)
-       ctrl-d  ctrl-c  quit
-SHEET  ↑↓ rows, type the new value, ctrl-s apply and stay
-       ctrl-x apply and close  esc close  ctrl-w clear cell
-       ctrl-shift-s save as (or: saveas NAME at the prompt)
-"""
+# ---------------------------------------------------------------------------- cheat sheet
+#
+# The sheet is data: sections of rows, laid out for whatever width it gets. Command rows are
+# (long name, short name, arguments, what it does); key rows are (keys, what they do). Narrow, it
+# wraps; wide, nothing is cut; wide enough for two, it flows into two columns.
+
+CHEAT_TITLE = "CHEAT SHEET   long short   tab on an empty line: next page"
+CHEAT_COLUMN = 64  # the narrowest a column may be before the sheet goes back to one column
+CHEAT_GAP = 3
+
+COMMAND_SECTIONS = [
+    ("TRACKS", "", [
+        ("add", "a", "FILE... [-a TIME] [-n NAME]", "copy files into master/ (other formats become wav)"),
+        ("scan", "sc", "", "register files you put in master/ yourself"),
+        ("ls", "l", "", "list the tracks"),
+        ("move", "m", "TRACK +1s | -500ms | 1:30", "later, earlier, or place at a time"),
+        ("trim", "t", "TRACK -st 2s -et 1:40", "soft trim: the file is untouched"),
+        ("trim", "t", "TRACK -H [-st ..] [-r]", "hard trim: rewrite the file"),
+        ("trim", "t", "TRACK -c", "soft trim off"),
+        ("rm", "r", "TRACK [-D]", "drop the track; -D deletes its file"),
+    ]),
+    ("MIXER", "", [
+        ("mute", "mu", "TRACK [on|off]", "mute; mute all off"),
+        ("solo", "s", "TRACK [on|off]", "solo; solo all off"),
+        ("gain", "g", "TRACK -6", "dB, -60 to +24"),
+        ("pan", "p", "TRACK L30 | R30 | C", "every track starts at C"),
+        ("mix", "x", "[-3] [-v]", "render master.wav; -3 also master.mp3"),
+        ("play", "pl", "[FROM] [-r]", "hear it; live when master.wav is out of date"),
+    ]),
+    ("EFFECTS", "in order per track; TRACK can be master", [
+        ("fx", "f", "TRACK", "the chain, numbered"),
+        ("fx", "f", "TRACK add KIND [SETTINGS]", "add an effect at the end"),
+        ("fx", "f", "TRACK N SETTINGS | on | off | rm", "change, bypass or remove slot N"),
+        ("fx", "f", "TRACK N move M", "reorder"),
+        ("fx", "f", "kinds", "every effect there is"),
+        ("KIND", "", "TRACK SETTINGS | PRESET", "the first effect of that kind, added if missing"),
+        ("KIND", "", "TRACK on | off | clear", "bypass, bring back, remove"),
+        ("KIND", "", "presets", "every preset with its settings"),
+    ]),
+    ("PROJECT", "", [
+        ("undo", "u", "", "undo the last change (not a hard trim or rm -D)"),
+        ("view", "v", "[-w COLS]", "print the timeline"),
+        ("saveas", "sa", "NAME | PATH", "copy the whole project"),
+        ("stems", "sm", "[DIR] [-A]", "one wav per track"),
+        ("dump", "dp", "", "the state as json"),
+        ("import", "im", "FILE.json [-s | -t]", "apply such a json: settings, tracks or both"),
+        ("rebuild", "rb", "[-f]", "gout.db again from master/ and gout.json"),
+        ("set", "se", "KEY VALUE", "a setting; set alone lists them"),
+        ("stats", "st", "", "LUFS, LRA and true peak per track"),
+        ("new", "n", "NAME [-R HZ]", "a new project, 48000 Hz by default"),
+        ("cheat", "c", "", "this sheet on and off"),
+        ("help", "h", "[all]", "this sheet in the log; all: the whole instruction page"),
+        ("quit", "q", "", "leave the ui"),
+        ("clear", "cl", "", "empty the log"),
+        ("split", "sp", "50 | +5 | -5", "left pane width in the ui"),
+        ("sheet", "sh", "", "every parameter as a table (ctrl-e)"),
+        ("colors", "", "[--init [--project]]", "color.json: colours and timeline layout"),
+        ("addons", "", "", "the addon folder and what loaded"),
+    ]),
+    ("MASTER", "set KEY VALUE", [
+        ("lufs", "", "-14 | -23 | off", "loudness target: -14 streaming, -16 Apple, -23 broadcast"),
+        ("ceiling", "", "-1", "true-peak ceiling, dBTP"),
+        ("gain", "", "-3", "master gain, dB"),
+        ("fadein", "", "1s", "fade in; fadeout 3s fades out"),
+        ("head", "", "1s", "silence before; tail 2s after"),
+        ("bits", "", "32f | 24 | 16", "master.wav format"),
+        ("mp3", "", "320k | v0", "mp3 bounce quality"),
+        ("title", "", "TEXT", "tags: title, artist, album, year, comment"),
+        ("bpm", "", "120", "tempo, for delays in note values"),
+        ("autorender", "", "idle | on | off", "when master.wav is rendered"),
+        ("eq", "", "hp30", "any effect on the master, as gout eq master hp30"),
+    ]),
+]
+
+KEY_SECTIONS = [
+    ("FLAGS", "", [
+        ("-N --no-mix", "no render after this change, when autorender is on"),
+        ("-p DIR", "use the project in DIR"),
+        ("-a --at  -n --name", "add: where, and under what name"),
+        ("-H --hard  -c --clear", "trim: rewrite the file, or soft trim off"),
+        ("-r --reencode", "cut exactly; play -r renders first"),
+        ("-D --delete", "rm: delete the file too"),
+        ("-3 --mp3", "mix: also master.mp3"),
+        ("-R --rate", "new: the sample rate"),
+        ("-w --width", "view and cheat: columns"),
+        ("-v --verbose", "show the ffmpeg commands"),
+    ]),
+    ("TIMES", "", [
+        ("2s 500ms 1:30", "seconds, milliseconds, minutes:seconds"),
+        ("00:01:30.250", "hours, minutes, seconds and milliseconds"),
+        ("34", "a bare number is MINUTES"),
+        ("trim", "times count from the start of the track's own file"),
+    ]),
+    ("TRACK", "", [
+        ("TRACK", "the number from ls, or the name (a unique start will do); master or 0 for effects"),
+    ]),
+    ("LINE", "", [
+        ("← → home end", "move in the line; typing goes in at the cursor"),
+        ("↑ ↓", "earlier commands, to change and run again"),
+        ("tab", "complete a command, track, preset or file name"),
+        ("→ at the end", "take the grey suggestion"),
+        ("ctrl-w", "delete a word"),
+        ("esc", "clear the line"),
+    ]),
+    ("PLAY", "", [
+        ("space", "on an empty line: play and stop; the playhead stays"),
+        ("← →", "on an empty line: move the playhead 5 s"),
+        ("stop", "at the prompt: the playhead back to the start"),
+    ]),
+    ("KEYS", "", [
+        ("ctrl-u", "timeline on and off"),
+        ("ctrl-k", "cheat sheet on and off"),
+        ("ctrl-g", "effect panel on and off (eq N, comp N pick the track)"),
+        ("ctrl-e", "the parameter sheet"),
+        ("tab shift-tab", "on an empty line: flip the cheat sheet"),
+        ("ctrl-n ctrl-p", "the cheat sheet a line at a time"),
+        ("pgup pgdn", "scroll the log"),
+        ("ctrl-l", "clear the log"),
+        ("ctrl-← ctrl-→", "move the split between the panes (shift or alt too)"),
+        ("ctrl-d ctrl-c", "quit"),
+    ]),
+    ("SHEET", "", [
+        ("↑ ↓", "rows; type the new value"),
+        ("ctrl-s", "apply and stay"),
+        ("ctrl-x", "apply and close"),
+        ("esc", "close, keeping the edits for next time"),
+        ("ctrl-w", "clear the cell"),
+        ("ctrl-shift-s", "save as (or saveas NAME at the prompt)"),
+    ]),
+]
+
+CHEAT_HEADINGS = {name for name, _, _ in COMMAND_SECTIONS + KEY_SECTIONS} | {"CHEAT"}
 
 
+def cheat_sections() -> list[tuple[str, str, str, list[tuple]]]:
+    """(heading, note, "commands" or "keys", rows), effects from the registry included."""
+    out = []
+    for heading, note, rows in COMMAND_SECTIONS:
+        rows = list(rows)
+        if heading == "EFFECTS":
+            for eff in effects().values():
+                rows += eff.cheat_entries()
+        out.append((heading, note, "commands", rows))
+    out += [(heading, note, "keys", rows) for heading, note, rows in KEY_SECTIONS]
+    return out
 
 
-def cheat_text() -> str:
-    lines: list[str] = []
-    for eff in effects().values():
-        lines += eff.cheat_lines()
-    block = """EFFECTS  in order per track; TRACK can be master
- fx    f  TRACK                       the chain, numbered
- fx    f  TRACK add KIND [SETTINGS]   add at the end
- fx    f  TRACK N SETTINGS|on|off|rm  change slot N
- fx    f  TRACK N move M              reorder
- KIND     TRACK SETTINGS|PRESET|off  its first one there
-""" + "\n".join(lines) + "\n"
-    return CHEAT_TEMPLATE.replace("{EFFECTS}", "", 1).replace("MASTER set KEY VALUE", block + "MASTER set KEY VALUE", 1)
+def wrap(text: str, width: int) -> list[str]:
+    return textwrap.wrap(text, max(8, width), break_on_hyphens=False) or [""]
+
+
+def cheat_row(long: str, short: str, args: str, what: str, width: int, name_w: int, short_w: int,
+              args_w: int) -> list[str]:
+    """One command row. Arguments sit in a column of args_w, the description beside them; when
+    that does not fit, the description goes under the arguments."""
+    prefix_w = 1 + name_w + 1 + short_w
+    prefix = f" {long:<{name_w}} {short:<{short_w}}"
+    if len(prefix) > prefix_w:
+        prefix = f" {long} {short}".rstrip()
+    lead = max(len(prefix), prefix_w) + 1            # where the arguments start
+    room = width - lead
+    desc_at = prefix_w + 1 + args_w + 2              # the description column
+    beside = width - desc_at
+    if not args:
+        if len(prefix) <= prefix_w and (beside >= 26 or len(what) <= beside):
+            parts = wrap(what, beside)
+            return [prefix.ljust(desc_at) + parts[0]] + [" " * desc_at + part for part in parts[1:]]
+        parts = wrap(what, room)
+        return [prefix.ljust(lead) + parts[0]] + [" " * lead + part for part in parts[1:]]
+    if len(prefix) <= prefix_w and len(args) <= args_w and beside >= 12:
+        column = wrap(what, beside)
+        if len(column) > 1 and beside < 26:  # no slivers: a narrow column only for one line
+            column = column * 99
+        stacked = len(wrap(args, room)) + len(wrap(what, room - 2))
+        if len(column) <= stacked:
+            return ([prefix.ljust(lead) + args.ljust(args_w + 2) + column[0]]
+                    + [" " * desc_at + part for part in column[1:]])
+    arg_parts = wrap(args, room)
+    lines = [prefix.ljust(lead) + arg_parts[0]] + [" " * lead + part for part in arg_parts[1:]]
+    return lines + [" " * (lead + 2) + part for part in wrap(what, room - 2)]
+
+
+def cheat_section_lines(heading: str, note: str, kind: str, rows: list[tuple], width: int,
+                        name_w: int, short_w: int) -> list[str]:
+    lines = wrap(f"{heading}  {note}".rstrip(), width)
+    lines[1:] = [" " * (len(heading) + 2) + part.strip() for part in lines[1:]]
+    if kind == "keys":
+        key_w = min(max(len(r[0]) for r in rows), max(6, width // 3))
+        for keys, what in rows:
+            if len(keys) > key_w:
+                lines.append(" " + keys)
+                lines += [" " * (key_w + 3) + part for part in wrap(what, width - key_w - 3)]
+            else:
+                parts = wrap(what, width - key_w - 3)
+                lines.append(f" {keys:<{key_w}}  {parts[0]}")
+                lines += [" " * (key_w + 3) + part for part in parts[1:]]
+        return [line[:width] for line in lines]
+    room = width - (1 + name_w + 1 + short_w + 1)
+    best = None
+    for args_w in sorted({len(r[2]) for r in rows if len(r[2]) <= room - 18} | {0}):
+        body = [line for r in rows for line in cheat_row(*r, width, name_w, short_w, args_w)]
+        if best is None or len(body) < len(best):  # fewest lines; on a tie the narrower column
+            best = body
+    return [line[:width] for line in lines + best]
+
+
+def cheat_layout(width: int) -> tuple[list[str], int | None]:
+    """The sheet's lines for this width, and where the second column starts (None for one)."""
+    width = max(30, width)
+    two = width >= 2 * CHEAT_COLUMN + CHEAT_GAP
+    col_w = (width - CHEAT_GAP) // 2 if two else width
+    sections = cheat_sections()
+    commands = [r for _, _, kind, rows in sections if kind == "commands" for r in rows]
+    name_w = min(10, max(len(r[0]) for r in commands), max(4, col_w // 8))
+    short_w = min(4, max(len(r[1]) for r in commands))
+    blocks = [cheat_section_lines(h, n, k, rows, col_w, name_w, short_w) for h, n, k, rows in sections]
+    title = [" ".join(wrap(CHEAT_TITLE, width)[0].split(" ")).rstrip()] if width >= len(CHEAT_TITLE) else ["CHEAT SHEET"]
+    if not two:
+        return title + [line for block in blocks for line in block], None
+    total = sum(len(b) for b in blocks)
+    best, split = None, 1
+    running = 0
+    for i, block in enumerate(blocks[:-1], 1):  # keep sections in order; balance the heights
+        running += len(block)
+        height = max(running, total - running)
+        if best is None or height < best:
+            best, split = height, i
+    left = [line for block in blocks[:split] for line in block]
+    right = [line for block in blocks[split:] for line in block]
+    rows = []
+    for i in range(max(len(left), len(right))):
+        l = left[i] if i < len(left) else ""
+        r = right[i] if i < len(right) else ""
+        rows.append((l.ljust(col_w) + " " * CHEAT_GAP + r).rstrip())
+    return title + rows, col_w + CHEAT_GAP
 
 
 def render_cheat(width: int) -> list[str]:
-    lines: list[str] = []
-    for line in cheat_text().rstrip("\n").splitlines():
-        if len(line) <= width:
-            lines.append(line)
-        else:
-            lines.extend(part.rstrip() for part in textwrap.wrap(
-                line, max(20, width), subsequent_indent="           ", replace_whitespace=False))
-    return lines
+    return cheat_layout(width)[0]
+
+
+def cheat_text() -> str:
+    return "\n".join(render_cheat(100)) + "\n"
+
+
