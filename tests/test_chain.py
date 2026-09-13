@@ -60,6 +60,9 @@ class ChainTest(GoutTest):
         self.assertEqual(kinds({"fx": self.dump()["master"]["fx"]}), ["eq hp30", "reverb 0.8s p5 d40 w20"])
         self.assertIn("eq hp30 | reverb", self.gout("set").stdout)
         self.assertIn("eq", self.gout("fx", "kinds").stdout)
+        outside = self.gout("fx", "kinds", cwd=self.tmp).stdout  # no project there
+        self.assertIn("reverb/rv/verb", outside)
+        self.gout("fx", "1", cwd=self.tmp, ok=False)  # a chain still needs one
 
     def test_missing_effect_kind_is_kept_and_left_out_with_a_warning(self):
         root = self.project("song", "tone.wav")

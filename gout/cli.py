@@ -36,6 +36,7 @@ from .commands import (
     cmd_undo,
     cmd_view,
     effect_commands,
+    print_kinds,
     run_tui,
 )
 from .cut import cmd_cut
@@ -110,6 +111,9 @@ def run(argv: list[str], project: Project | None = None) -> int:
         die(f"{head} only means something inside the ui (gout, in a project)")
 
     need_tools()
+    if head == "fx" and [w.lower() for w in rest] in (["kinds"], ["effects"]):
+        print_kinds()  # listing the effects needs no project
+        return 0
     if head in FREE_COMMANDS:
         FREE_COMMANDS[head](root_hint, Args(rest))
         return 0

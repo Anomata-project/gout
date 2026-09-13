@@ -594,13 +594,19 @@ def slot_of(t: dict, spec: str) -> dict:
     die(f"{owner_label(t)} has {len(items)} effect{'' if len(items) == 1 else 's'}; no slot {spec!r}\n{FX_USAGE}")
 
 
+def print_kinds() -> None:
+    """Every effect there is, built in or from an addon. Needs no project."""
+    rows = [("/".join((eff.name, *eff.aliases)), eff) for eff in effects().values()]
+    width = max(len(names) for names, _ in rows)
+    for names, eff in rows:
+        origin = "" if eff.source == "built-in" else f"  [addon {eff.source}]"
+        print(f"  {names:<{width}}  {eff.summary}{origin}")
+
+
 def cmd_fx(project: Project, args: Args) -> None:
     pos = args.positionals(FX_USAGE, 1)
     if pos[0].lower() in ("kinds", "effects"):
-        for eff in effects().values():
-            names = "/".join((eff.name, *eff.aliases))
-            origin = "" if eff.source == "built-in" else f"  [addon {eff.source}]"
-            print(f"  {names:<14} {eff.summary}{origin}")
+        print_kinds()
         return
     t = chain_owner(project, pos[0])
     words = pos[1:]
