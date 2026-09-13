@@ -71,6 +71,7 @@ name (a unique prefix will do). `-N` / `--no-mix` on any change skips the automa
 | `pan` | `p` | `TRACK L30 \| R30 \| C` | every track starts centred |
 | `mix` | `x` | `[-3] [-v]` | render `master.wav`; `-3` / `--mp3` also writes `master.mp3` |
 | `undo` | `u` | | undo the last change (not a hard trim or `rm -D`) |
+| `stems` | `sm` | `[DIR] [-A]` | one wav per track, processed as in the mix and all the same length, into `stems/`; `-A` only what the mix hears |
 | `dump` | `dp` | | the state as JSON |
 | `rebuild` | `rb` | `[-f]` | recreate `gout.db` from `master/` |
 | `set` | `se` | `KEY VALUE` | settings; `set` alone lists them all (see the master bus below) |
@@ -161,6 +162,15 @@ the file. Under three seconds of material the loudness step is a plain gain, sin
 cannot measure that reliably. `gout stats` shows integrated LUFS, loudness range and true peak
 for every track file (and what it comes to after the track's gain), so you can balance tracks
 by numbers before touching the master.
+
+## Stems
+
+`gout stems` writes one stereo wav per track into `stems/`, each trimmed, placed on the
+timeline, gained and panned exactly as the mix hears it, and padded so every file has the same
+length from 0:00. Drop them into any DAW at zero and you have the mix. Mute and solo are ignored
+so every track comes out; `-A` exports only what the mix currently hears. Master gain, fades,
+padding and the loudness target are not applied to stems; without those, the stems summed at
+unity are `master.wav` exactly.
 
 ## How the mix works
 

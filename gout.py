@@ -818,6 +818,28 @@ def pan_filter(channels: int, pan: float) -> str:
     return f"aformat=channel_layouts=stereo,pan=stereo|c0={left:.4f}*c0|c1={right:.4f}*c1"
 
 
+def track_steps(project: Project, t: dict) -> list[str] | None:
+    """The filters that put one track on the timeline as the mix hears it: format, soft
+    trim, position, gain, pan. None when nothing of it is audible."""
+    a, b = audible(t)
+    start = t["offset_ms"] + a
+    trim_start, delay = a, start
+    if start < 0:  # the head hangs before the timeline: cut it, no delay
+        trim_start, delay = a - start, 0
+    if b <= trim_start:
+        return None
+    steps = [f"aformat=sample_rates={project.rate}:sample_fmts=fltp"]
+    if trim_start > 0 or b < t["length_ms"]:
+        steps.append(f"atrim=start={trim_start / 1000:.3f}:end={b / 1000:.3f}")
+        steps.append("asetpts=PTS-STARTPTS")
+    if delay > 0:
+        steps.append(f"adelay={delay}:all=1")
+    if t["gain_db"]:
+        steps.append(f"volume={t['gain_db']:.2f}dB")
+    steps.append(pan_filter(t["channels"], t["pan"]))
+    return steps
+
+
 def build_graph(project: Project, tracks: list[dict]) -> tuple[list[Path], str, list[dict]]:
     any_solo = any(t["solo"] for t in tracks)
     inputs: list[Path] = []
@@ -826,25 +848,12 @@ def build_graph(project: Project, tracks: list[dict]) -> tuple[list[Path], str, 
     for t in tracks:
         if not is_heard(t, any_solo):
             continue
-        a, b = audible(t)
-        start = t["offset_ms"] + a
-        trim_start, delay = a, start
-        if start < 0:  # the head hangs before the timeline: cut it, no delay
-            trim_start, delay = a - start, 0
-        if b <= trim_start:
+        steps = track_steps(project, t)
+        if steps is None:
             continue
         i = len(inputs)
         inputs.append(project.tracks_dir / t["file"])
         used.append(t)
-        steps = [f"aformat=sample_rates={project.rate}:sample_fmts=fltp"]
-        if trim_start > 0 or b < t["length_ms"]:
-            steps.append(f"atrim=start={trim_start / 1000:.3f}:end={b / 1000:.3f}")
-            steps.append("asetpts=PTS-STARTPTS")
-        if delay > 0:
-            steps.append(f"adelay={delay}:all=1")
-        if t["gain_db"]:
-            steps.append(f"volume={t['gain_db']:.2f}dB")
-        steps.append(pan_filter(t["channels"], t["pan"]))
         chains.append(f"[{i}:a]" + ",".join(steps) + f"[t{i}]")
     if not inputs:
         return [], "", []
@@ -1420,6 +1429,51 @@ def cmd_mix(project: Project, args: Args) -> None:
     mix(project, args.verbose, mp3)
 
 
+STEMS_DIR = "stems"
+
+
+def cmd_stems(project: Project, args: Args) -> None:
+    """One file per track, processed as in the mix, all the same length from 0:00."""
+    audible_only = args.flag("--audible", "-A")
+    pos = args.positionals(f"gout stems [DIR] [-A]   (default {STEMS_DIR}/ in the project; -A: only what the mix hears)", 0, 1)
+    tracks = project.tracks()
+    if not tracks:
+        die("the project has no tracks yet — gout add FILE")
+    any_solo = any(t["solo"] for t in tracks)
+    plans = []
+    for t in tracks:
+        if audible_only and not is_heard(t, any_solo):
+            continue
+        steps = track_steps(project, t)
+        if steps:
+            plans.append((t, steps))
+    if not plans:
+        die("nothing to export: no track has audible material" + (" the mix hears" if audible_only else ""))
+    out_dir = Path(pos[0]).expanduser() if pos else project.root / STEMS_DIR
+    out_dir.mkdir(parents=True, exist_ok=True)
+    end_ms = max(1, max(timeline(t)[1] for t, _ in plans))
+    bits = setting(project, "bits")
+    print(f"stems {out_dir}  {len(plans)} track{'' if len(plans) == 1 else 's'}, {fmt_ms(end_ms)} each"
+          f"  ({bits}, {project.rate} Hz, stereo)")
+    for t, steps in plans:
+        name = f"{t['n']:02d}-{t['name']}.wav"
+        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(project.tracks_dir / t["file"]),
+               "-af", ",".join(steps + [f"apad=whole_dur={end_ms / 1000:.3f}"]), "-ar", str(project.rate)]
+        if bits == "16":
+            cmd += ["-dither_method", "triangular"]
+        cmd += ["-c:a", BITS_CODEC[bits], str(out_dir / name)]
+        run_quiet(cmd, args.verbose)
+        state = "" if is_heard(t, any_solo) else "  (muted or not soloed in the mix)"
+        print(f"      {name:<26} {fmt_size((out_dir / name).stat().st_size):>10}{state}")
+    master_bits = [k for k in ("gain", "fadein", "fadeout", "head", "tail") if setting(project, k) not in ("0", "")]
+    lufs = setting(project, "lufs")
+    if master_bits or lufs != "off":
+        what = ", ".join(master_bits + (["the loudness target"] if lufs != "off" else []))
+        print(f"      not in the stems: master {what}. Summed at unity they give the mix before the master step.")
+    else:
+        print(f"      summed at unity they give {MASTER_WAV} exactly")
+
+
 def cmd_undo(project: Project, args: Args) -> None:
     args.positionals("gout undo")
     command = project.undo()
@@ -1616,6 +1670,7 @@ PROJECT
  undo  u                              not hard trim / rm -D
  view  v  [-w COLS]                   print the timeline
  saveas sa NAME|PATH                  copy the project
+ stems sm [DIR] [-A]                  one wav per track
  dump  dp                             the state as json
  rebuild rb [-f]                      gout.db from master/
  set   se KEY VALUE                   alone: list settings
@@ -1671,7 +1726,7 @@ COMMANDS = {
     "add": ("a",), "scan": ("sc",), "ls": ("l", "list"), "view": ("v",), "move": ("m", "mv"), "trim": ("t",),
     "rm": ("r", "remove", "del"), "mute": ("mu",), "solo": ("s",), "gain": ("g",), "pan": ("p",),
     "mix": ("x", "render", "bounce"), "undo": ("u",), "dump": ("dp",), "rebuild": ("rb",),
-    "set": ("se",), "stats": ("st",), "saveas": ("sa", "copy"), "new": ("n",), "cheat": ("c",), "help": ("h", "?"), "ui": ("tui",), "cut": (),
+    "set": ("se",), "stats": ("st",), "saveas": ("sa", "copy"), "stems": ("sm",), "new": ("n",), "cheat": ("c",), "help": ("h", "?"), "ui": ("tui",), "cut": (),
     "quit": ("q", "exit"), "clear": ("cl",), "split": ("sp",), "sheet": ("sh",),
 }
 ALIASES = {alias: name for name, aliases in COMMANDS.items() for alias in aliases}
@@ -2289,6 +2344,8 @@ PROJECT
   gout mix   x  [-3] [-v]         render {MASTER_WAV} (32-bit float stereo); -3 also writes {MASTER_MP3}
   gout undo  u                    undo the last change (not a hard trim or rm -D)
   gout saveas sa NAME | PATH      copy the whole project (files included) next to this one, or to PATH
+  gout stems sm [DIR] [-A]        one wav per track, trimmed, placed, gained and panned as in the mix,
+                                  all the same length from 0:00, into {STEMS_DIR}/ (-A: only what the mix hears)
   gout dump  dp                   print the project state as JSON
   gout rebuild rb [-f]            recreate {DB_NAME} from the files in {TRACK_DIR}/, every track at 0
   gout set   se KEY VALUE         settings; gout set alone lists them:  autorender on|off,  rate HZ
@@ -2486,7 +2543,7 @@ PROJECT_COMMANDS = {
     "add": cmd_add, "scan": cmd_scan, "ls": cmd_ls, "move": cmd_move, "trim": cmd_trim, "rm": cmd_rm,
     "mute": cmd_mute, "solo": cmd_solo, "gain": cmd_gain, "pan": cmd_pan,
     "set": cmd_set, "stats": cmd_stats, "mix": cmd_mix, "undo": cmd_undo, "dump": cmd_dump,
-    "saveas": cmd_saveas,
+    "saveas": cmd_saveas, "stems": cmd_stems,
     "view": cmd_view, "ui": cmd_ui,
 }
 FREE_COMMANDS = {"new": cmd_new, "rebuild": cmd_rebuild, "cheat": cmd_cheat}
