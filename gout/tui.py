@@ -43,6 +43,14 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 HISTORY_KEEP = 500
 
 
+def header_line(text: str, hint: str, width: int) -> str:
+    """A title bar: text on the left, the key hint against the right edge; the text gives way."""
+    if len(hint) + 2 > width:
+        return text[:width].ljust(width)
+    room = width - len(hint)
+    return text[:room - 2].ljust(room) + hint
+
+
 class Tui:
     """Left: a prompt with a log, like the terminal. Right: the tracks, like a DAW."""
 
@@ -171,11 +179,11 @@ class Tui:
         p = self.project
         tracks = p.tracks()
         title = (f" gout {p.get('name')}  {p.rate} Hz  {len(tracks)} track{'' if len(tracks) == 1 else 's'}"
-                 f"  autorender {p.render_mode}").ljust(left_w)
-        if self.scroll:
-            tag = " ↑ scrolled, pgdn "
-            title = title[:max(0, left_w - len(tag))] + tag
-        self.put(0, 0, title, self.palette.attr("header"))
+                 f"  autorender {p.render_mode}")
+        hidden = [f"{key} {what}" for key, what, shown in (("ctrl-t", "timeline", self.show_timeline),
+                                                           ("ctrl-k", "cheat sheet", self.show_cheat)) if not shown]
+        hint = " ↑ scrolled, pgdn " if self.scroll else ("  ".join(hidden) + " " if hidden else "")
+        self.put(0, 0, header_line(title, hint, left_w), self.palette.attr("header"))
 
         wrapped: list[str] = []
         for line in self.log:
@@ -216,7 +224,7 @@ class Tui:
                          else (f"  ■ {fmt_ms(where)}  space plays" if where else "  space plays"))
                 if self.render_proc is not None:
                     state += "   rendering master.wav…"
-                self.put(0, right_x, (" timeline" + state).ljust(right_w), self.palette.attr("header"))
+                self.put(0, right_x, header_line(" timeline" + state, "ctrl-t hides ", right_w), self.palette.attr("header"))
                 room = max(3, h - 2 - 6) if self.show_cheat else max(3, h - 1)  # the cheat sheet keeps six lines
                 if self.panel_track is not None:
                     room = max(3, room - ((10 if h >= 32 else 8) if self.show_panel else 1))
@@ -239,9 +247,8 @@ class Tui:
                 rows = (render_panel(p, track, right_w - 1, height, self.panel_kind) if self.show_panel
                         else [(panel_head(track, self.panel_kind), "", "head")])
                 who = "master" if self.panel_track == MASTER_N else f"{track['n']} {track['name']}"
-                hint = "  ctrl-g hides" if self.show_panel else "  ctrl-g shows"
-                self.put(top, right_x, (f" {who}  " + rows[0][0])[:right_w - len(hint)].ljust(right_w - len(hint))
-                         + hint, self.palette.attr("header"))
+                hint = "ctrl-g hides " if self.show_panel else "ctrl-g shows "
+                self.put(top, right_x, header_line(f" {who}  " + rows[0][0], hint, right_w), self.palette.attr("header"))
                 for i, (text, classes, kind) in enumerate(rows[1:], 1):
                     if top + i >= h:
                         break
@@ -256,7 +263,8 @@ class Tui:
             self.cheat_scroll = max(0, min(self.cheat_scroll, max(0, len(sheet) - self.sheet_h)))
             pages = max(1, math.ceil(len(sheet) / self.sheet_h))
             page = min(pages, math.ceil((self.cheat_scroll + self.sheet_h) / self.sheet_h))
-            self.put(top, right_x, f" cheat sheet  {page}/{pages}  tab".ljust(right_w), self.palette.attr("header"))
+            self.put(top, right_x, header_line(f" cheat sheet  {page}/{pages}  tab pages", "ctrl-k hides ", right_w),
+                     self.palette.attr("header"))
             for i, line in enumerate(sheet[self.cheat_scroll:self.cheat_scroll + self.sheet_h]):
                 self.put(top + 1 + i, right_x + 1, line, 0, right_w - 1)
                 for at in (0, second):  # section names start a column

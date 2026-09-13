@@ -278,6 +278,20 @@ class UiTest(GoutTest):
         ui.handle("\x14")
         self.assertEqual(ui.show_timeline, shown)
 
+    def test_title_bars_say_which_key_hides_them(self):
+        root = self.project("song", "bass.wav")
+        project, screen, ui = self.open_ui(root)
+        screen.w = 160
+        ui.draw()
+        rows = [screen.row(y) for y in range(screen.h)]
+        self.assertTrue(rows[0].endswith("ctrl-t hides"), rows[0])
+        cheat = next(row for row in rows if "│ cheat sheet  " in row)
+        self.assertTrue(cheat.endswith("ctrl-k hides"), cheat)
+        ui.handle("\x14")
+        ui.handle("\x0b")  # both hidden: the prompt's own title bar says how to get them back
+        ui.draw()
+        self.assertIn("ctrl-t timeline  ctrl-k cheat sheet", screen.row(0))
+
     def test_grey_suggestion_is_taken_with_the_right_arrow(self):
         root = self.project("song", "bass.wav")
         project, screen, ui = self.open_ui(root)
