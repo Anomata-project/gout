@@ -324,6 +324,17 @@ gout INPUT ...     the 1.x form, same thing
 between 97 % and 100 % of the limit, never over it. An mp3 stream copy starts up to about
 0.1 s late (that is ffmpeg's seek); `-r` is exact. wav cuts are exact.
 
+## Tests
+
+```sh
+python3 -m unittest discover -s tests       # about a minute and a half
+```
+
+The suite runs the real command in temporary directories and measures the audio it writes with
+ffmpeg: where a click lands after moves and trims, whether stems sum to the master, loudness
+targets, effect behaviour, the sidecar round trip, and the ui's prompt and sheet. It never loads
+your own addons. `GOUT_KEEP_TEST_DIRS=1` keeps the temporary projects for a look afterwards.
+
 ## Times and sizes
 
 ```
