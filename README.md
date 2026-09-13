@@ -48,7 +48,7 @@ from whatever is in `master/`, every track at 0.
 Every command has a long and a short name; `gout add` and `gout a` are the same. Run them
 inside the project, or pass `-p DIR` first. `TRACK` is the number shown by `ls` or the track
 name (a unique prefix will do). `-N` / `--no-mix` on any change skips the automatic re-mix;
-`gout set automix off` turns it off for good. `gout cheat` prints the whole sheet.
+`gout set autorender off` turns it off for good. `gout cheat` prints the whole sheet.
 
 | long | short | arguments | meaning |
 | --- | --- | --- | --- |
@@ -69,7 +69,7 @@ name (a unique prefix will do). `-N` / `--no-mix` on any change skips the automa
 | `undo` | `u` | | undo the last change (not a hard trim or `rm -D`) |
 | `dump` | `dp` | | the state as JSON |
 | `rebuild` | `rb` | `[-f]` | recreate `gout.db` from `master/` |
-| `set` | `se` | `automix on\|off`, `rate HZ` | project settings |
+| `set` | `se` | `autorender on\|off`, `rate HZ` | project settings |
 | `cheat` | `c` | | the cheat sheet |
 | `cut` | | `INPUT ...` | the 1.x cutter, see below |
 
@@ -87,7 +87,7 @@ sheet; `tab` and `shift-tab` flip its pages, `ctrl-n` / `ctrl-p` move it a line.
 picture, not a mouse target: the keyboard drives everything.
 
 ```
- gout song  48000 Hz  4 tracks  automix on │ timeline
+ gout song  48000 Hz  4 tracks  autorender on │ timeline
  > add vocals.mp3                          │                0:00        0:30        1:00
  add    4  vocals  mp3  2ch ...            │                ┼───────────┼───────────┼──────
  mix   master.wav  00:02:01.000  peak -3.1 │  1 drums       ████████████████████████████

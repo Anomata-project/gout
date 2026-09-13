@@ -461,6 +461,11 @@ class Project:
         self.conn = sqlite3.connect(self.db_path)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+        old = self.get("automix")  # the setting was called automix before 2.0.0 final
+        if old is not None:
+            if self.get("autorender") is None:
+                self.set("autorender", old)
+            self.unset("automix")
 
     # ---- locating
 
@@ -479,7 +484,7 @@ class Project:
         project = cls(root)
         project.set("name", root.resolve().name)
         project.set("rate", str(rate))
-        project.set("automix", "on")
+        project.set("autorender", "on")
         project.set("created", dt.datetime.now().isoformat(timespec="seconds"))
         return project
 
@@ -502,8 +507,8 @@ class Project:
         return int(self.get("rate") or DEFAULT_RATE)
 
     @property
-    def automix(self) -> bool:
-        return (self.get("automix") or "on") != "off"
+    def autorender(self) -> bool:
+        return (self.get("autorender") or "on") != "off"
 
     # ---- tracks
 
@@ -736,10 +741,11 @@ def mix(project: Project, verbose: bool = False, mp3: bool = False) -> None:
         print(f"      {MASTER_MP3}  {fmt_size(out.stat().st_size)}")
 
 
-def automix(project: Project, args: "Args") -> None:
+def autorender(project: Project, args: "Args") -> None:
+    """Re-render master.wav after a change, unless -N was given or the setting is off."""
     if args.no_mix:
         return
-    if project.automix:
+    if project.autorender:
         mix(project)
 
 
@@ -856,14 +862,14 @@ def cmd_add(project: Project, args: Args) -> None:
     project.record("add " + " ".join(files))
     for f in files:
         ingest(project, Path(f), name, at_ms, args.verbose)
-    automix(project, args)
+    autorender(project, args)
 
 
 def cmd_ls(project: Project, args: Args) -> None:
     args.positionals("gout ls")
     tracks = project.tracks()
     print(f"proj  {project.get('name')}  {project.rate} Hz  {len(tracks)} track"
-          f"{'' if len(tracks) == 1 else 's'}  {TRACK_DIR}/  automix {'on' if project.automix else 'off'}")
+          f"{'' if len(tracks) == 1 else 's'}  {TRACK_DIR}/  autorender {'on' if project.autorender else 'off'}")
     if not tracks:
         print("      no tracks yet — gout add FILE")
         return
@@ -905,7 +911,7 @@ def cmd_move(project: Project, args: Args) -> None:
     project.update(t["n"], offset_ms=offset)
     start, end = timeline({**t, "offset_ms": offset})
     print(f"move  {t['n']:>2}  {t['name']:<16} at {fmt_ms(start)} -> {fmt_ms(end)}")
-    automix(project, args)
+    autorender(project, args)
 
 
 TRIM_USAGE = ("gout trim TRACK [-st TIME] [-et TIME | -el TIME] [-c]          soft: file untouched\n"
@@ -950,7 +956,7 @@ def cmd_trim(project: Project, args: Args) -> None:
         start, end = timeline({**t, "in_ms": a, "out_ms": b})
         print(f"trim  {t['n']:>2}  {t['name']:<16} {fmt_ms(a)} > {fmt_ms(b)}  soft, {fmt_ms(b - a)} audible"
               f"  at {fmt_ms(start)} -> {fmt_ms(end)}")
-        automix(project, args)
+        autorender(project, args)
         return
 
     if a == 0 and b >= length:
@@ -978,7 +984,7 @@ def cmd_trim(project: Project, args: Args) -> None:
     print(f"trim  {t['n']:>2}  {t['name']:<16} {fmt_ms(a)} > {fmt_ms(b)}  hard ({how})")
     print(f"      {TRACK_DIR}/{t['file']}  {fmt_ms(length)} -> {fmt_ms(new_len)}"
           f"  at {fmt_ms(start)} -> {fmt_ms(end)}  (position kept; not undoable)")
-    automix(project, args)
+    autorender(project, args)
 
 
 def cmd_rm(project: Project, args: Args) -> None:
@@ -993,7 +999,7 @@ def cmd_rm(project: Project, args: Args) -> None:
         print(f"rm    {t['name']}  (deleted {TRACK_DIR}/{t['file']})")
     else:
         print(f"rm    {t['name']}  ({TRACK_DIR}/{t['file']} kept; gout add {TRACK_DIR}/{t['file']} brings it back)")
-    automix(project, args)
+    autorender(project, args)
 
 
 def _toggle(project: Project, args: Args, column: str) -> None:
@@ -1010,7 +1016,7 @@ def _toggle(project: Project, args: Args, column: str) -> None:
         new = on_off(state, t[column])
         project.update(t["n"], **{column: new})
         print(f"{column:<5} {t['n']:>2}  {t['name']:<16} {'on' if new else 'off'}")
-    automix(project, args)
+    autorender(project, args)
 
 
 def cmd_mute(project: Project, args: Args) -> None:
@@ -1033,7 +1039,7 @@ def cmd_gain(project: Project, args: Args) -> None:
     project.record(f"gain {t['name']} {value}")
     project.update(t["n"], gain_db=gain)
     print(f"gain  {t['n']:>2}  {t['name']:<16} {fmt_db(gain)}")
-    automix(project, args)
+    autorender(project, args)
 
 
 def cmd_pan(project: Project, args: Args) -> None:
@@ -1055,30 +1061,30 @@ def cmd_pan(project: Project, args: Args) -> None:
     project.record(f"pan {t['name']} {value}")
     project.update(t["n"], pan=pan)
     print(f"pan   {t['n']:>2}  {t['name']:<16} {fmt_pan(pan)}")
-    automix(project, args)
+    autorender(project, args)
 
 
 def cmd_set(project: Project, args: Args) -> None:
-    pos = args.positionals("gout set automix on|off  |  gout set rate HZ", 0, 2)
+    pos = args.positionals("gout set autorender on|off  |  gout set rate HZ", 0, 2)
     if not pos:
-        for key in ("name", "rate", "automix", "created"):
+        for key in ("name", "rate", "autorender", "created"):
             print(f"{key:<8} {project.get(key)}")
         return
     if len(pos) != 2:
         die("usage: gout set KEY VALUE")
     key, value = pos
-    if key == "automix":
-        value = "on" if on_off(value, 0) else "off"
+    if key in ("autorender", "automix"):
+        key, value = "autorender", "on" if on_off(value, 0) else "off"
     elif key == "rate":
         if not value.isdigit() or not 8000 <= int(value) <= 384000:
             die(f"bad sample rate {value!r}")
     else:
-        die(f"unknown setting {key!r} (automix, rate)")
+        die(f"unknown setting {key!r} (autorender, rate)")
     project.record(f"set {key} {value}")
     project.set(key, value)
     print(f"set   {key} {value}")
     if key == "rate":
-        automix(project, args)
+        autorender(project, args)
 
 
 def cmd_mix(project: Project, args: Args) -> None:
@@ -1091,7 +1097,7 @@ def cmd_undo(project: Project, args: Args) -> None:
     args.positionals("gout undo")
     command = project.undo()
     print(f"undo  {command}")
-    automix(project, args)
+    autorender(project, args)
 
 
 def cmd_dump(project: Project, args: Args) -> None:
@@ -1232,7 +1238,7 @@ PROJECT
  view  v  [-w COLS]                   print the timeline
  dump  dp                             the state as json
  rebuild rb [-f]                      gout.db from master/
- set   se automix on|off | rate HZ
+ set   se autorender on|off | rate HZ
  new   n  NAME [-R HZ]                48000 Hz by default
  cheat c  this sheet   help h         help all: whole page
  quit  q  leave the ui  clear cl      empty the log
@@ -1334,7 +1340,7 @@ class Tui:
         p = self.project
         tracks = p.tracks()
         title = (f" gout {p.get('name')}  {p.rate} Hz  {len(tracks)} track{'' if len(tracks) == 1 else 's'}"
-                 f"  automix {'on' if p.automix else 'off'}").ljust(left_w)
+                 f"  autorender {'on' if p.autorender else 'off'}").ljust(left_w)
         if self.scroll:
             tag = " ↑ scrolled, pgdn "
             title = title[:max(0, left_w - len(tag))] + tag
@@ -1602,7 +1608,7 @@ PROJECT
   gout undo  u                    undo the last change (not a hard trim or rm -D)
   gout dump  dp                   print the project state as JSON
   gout rebuild rb [-f]            recreate {DB_NAME} from the files in {TRACK_DIR}/, every track at 0
-  gout set   se automix on|off    re-mix after every change (default on);  set rate HZ
+  gout set   se autorender on|off render {MASTER_WAV} after every change (default on); set rate HZ
 
 TRACKS   (TRACK is the number shown by ls, or the track name)
   gout add   a  FILE... [-n NAME] [-a TIME]  copy wav/mp3 into {TRACK_DIR}/ (other formats become wav)
