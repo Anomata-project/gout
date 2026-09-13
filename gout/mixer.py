@@ -8,7 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .core import die, fmt_ms, fmt_size, GoutError, MASTER_MP3, MASTER_WAV, run_quiet
+from .core import die, fmt_ms, fmt_size, GoutError, MASTER_MP3, MASTER_WAV, pan_filter, run_quiet
 from .media import fmt_lufs, measure_loudness, probe
 from .model import audible, is_heard, timeline
 from .fx import Effect, FxContext, effect
@@ -74,17 +74,6 @@ def chain_graph(project: "Project", t: dict, pre: list[str], post: list[str], sr
             filters += eff.filters(ctx, params)
     parts.append(f"{cur}{','.join(filters + post) or 'anull'}[{out}]")
     return ";".join(parts)
-
-
-def pan_filter(channels: int, pan: float) -> str:
-    """Stereo output, centre by default: mono goes equally to L and R."""
-    left = min(1.0, 1.0 - pan)
-    right = min(1.0, 1.0 + pan)
-    if channels == 1:
-        return f"pan=stereo|c0={left:.4f}*c0|c1={right:.4f}*c0"
-    if channels == 2:
-        return f"pan=stereo|c0={left:.4f}*c0|c1={right:.4f}*c1"
-    return f"aformat=channel_layouts=stereo,pan=stereo|c0={left:.4f}*c0|c1={right:.4f}*c1"
 
 
 def track_head(project: "Project", t: dict) -> list[str] | None:

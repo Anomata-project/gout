@@ -1,6 +1,7 @@
 import shutil
 
-from helpers import REPO, GoutTest, duration, ffmpeg, loudness, stereo_correlation, thd_db
+from helpers import (REPO, GoutTest, dc_offset, duration, ffmpeg, harmonic_db, loudness, samples,
+                     stereo_correlation, thd_db, peak_db)
 
 EXAMPLES = REPO / "examples" / "addons"
 TREMOLO = EXAMPLES / "tremolo.py"
@@ -125,9 +126,62 @@ class ExampleAddonTest(GoutTest):
         self.gout("mix")
         self.assertAlmostEqual(loudness(root / "master.wav"), dry, delta=0.3)
 
-    def test_all_three_examples_load_together(self):
-        self.install("chorus.py", "saturation.py", "tremolo.py")
+    def test_distortion_harmonics_asymmetry_and_silence(self):
+        self.install("distortion.py")
+        root = self.project("song", "tone.wav")
+        self.gout("mix")
+        dry = loudness(root / "master.wav")
+        self.gout("dist", "1", "hard", "d36")
+        self.gout("mix")
+        self.assertGreater(thd_db(root / "master.wav", 330), -15)
+        self.assertLess(harmonic_db(root / "master.wav", 330, 2), -60)  # symmetric clipping: odd harmonics only
+        self.assertAlmostEqual(loudness(root / "master.wav"), dry, delta=1)  # oauto
+        self.gout("dist", "1", "hard", "d36", "a30")
+        self.gout("mix")
+        self.assertGreater(harmonic_db(root / "master.wav", 330, 2), -45)  # asymmetry: even harmonics
+        self.assertLess(abs(dc_offset(root / "master.wav")), 0.001)
+        self.assertIn("measured on this track", self.gout("dist", "1").stdout)
+
+        self.cwd = self.tmp
+        root = self.project("click", "click.wav")
+        self.gout("dist", "1", "fuzz")
+        self.gout("mix")
+        (mono,) = samples(root / "master.wav", 1)
+        self.assertEqual(peak_db(mono[:int(1.9 * 48000)]), float("-inf"))  # silence stays silent
+
+    def test_distortion_matches_the_level_of_noisy_material(self):
+        self.install("distortion.py")
+        root = self.project("song", "noise.wav")
+        self.gout("mix")
+        dry = loudness(root / "master.wav")
+        for preset in ("overdrive", "highgain", "broken"):
+            self.gout("dist", "1", preset)
+            self.gout("mix")
+            self.assertAlmostEqual(loudness(root / "master.wav"), dry, delta=1, msg=preset)
+
+    def test_distortion_crush_manual_output_master_and_errors(self):
+        self.install("distortion.py")
+        root = self.project("song", "tone.wav")
+        self.gout("dist", "1", "crush", "d0", "b4")
+        self.gout("mix")
+        self.assertGreater(thd_db(root / "master.wav", 330), -20)
+        self.gout("dist", "1", "hard", "d36")
+        self.gout("mix")
+        matched = loudness(root / "master.wav")
+        self.gout("dist", "1", "hard", "d36", "o-12")
+        self.gout("mix")
+        self.assertGreater(loudness(root / "master.wav"), matched + 3)
+        self.gout("fx", "1", "clear")
+        self.gout("dist", "master", "hard", "d30")
+        self.gout("mix")
+        self.assertIn("a -12 dBFS source", self.gout("dist", "master").stdout)
+        for bad in (["crush", "a20"], ["soft", "b4"], ["d80"], ["h10"]):
+            self.gout("dist", "1", *bad, ok=False)
+        self.assertIn("overdrive", self.gout("dist", "presets").stdout)
+
+    def test_all_examples_load_together(self):
+        self.install("chorus.py", "distortion.py", "saturation.py", "tremolo.py")
         report = self.gout("addons").stdout
-        for name in ("chorus", "saturation", "tremolo"):
+        for name in ("chorus", "distortion", "saturation", "tremolo"):
             self.assertIn(name, report)
         self.assertNotIn("not loaded", report)

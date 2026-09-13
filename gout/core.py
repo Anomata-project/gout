@@ -230,3 +230,14 @@ STEMS_DIR = "stems"
 
 
 CELL_AUDIBLE, CELL_SILENT, CELL_TRIMMED, CELL_ZERO, CELL_MASTER = "█", "▒", "░", "│", "━"
+
+
+def pan_filter(channels: int, pan: float) -> str:
+    """Stereo output, centre by default: mono goes equally to L and R."""
+    left = min(1.0, 1.0 - pan)
+    right = min(1.0, 1.0 + pan)
+    if channels == 1:
+        return f"pan=stereo|c0={left:.4f}*c0|c1={right:.4f}*c0"
+    if channels == 2:
+        return f"pan=stereo|c0={left:.4f}*c0|c1={right:.4f}*c1"
+    return f"aformat=channel_layouts=stereo,pan=stereo|c0={left:.4f}*c0|c1={right:.4f}*c1"

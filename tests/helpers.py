@@ -139,6 +139,26 @@ def thd_db(path: Path, f0: float, skip: float = 1.0, seconds: float = 2.0) -> fl
     return 10 * math.log10(max(residual, 1e-30) / ((s * s + c * c) / 2))
 
 
+def harmonic_db(path: Path, f0: float, n: int, skip: float = 1.0, seconds: float = 2.0) -> float:
+    """Level of the n-th harmonic of f0 relative to the fundamental, in dB."""
+    (mono,) = samples(path, 1)
+    x = mono[int(skip * RATE):int((skip + seconds) * RATE)]
+
+    def amplitude(f):
+        w = 2 * math.pi * f / RATE
+        s = sum(v * math.sin(w * i) for i, v in enumerate(x))
+        c = sum(v * math.cos(w * i) for i, v in enumerate(x))
+        return math.hypot(s, c)
+
+    return 20 * math.log10(max(amplitude(n * f0), 1e-12) / amplitude(f0))
+
+
+def dc_offset(path: Path, skip: float = 1.0) -> float:
+    (mono,) = samples(path, 1)
+    x = mono[int(skip * RATE):]
+    return sum(x) / max(1, len(x))
+
+
 def write_click(path: Path, seconds: float = 4.0, at: float = 2.0, rate: int = 44100) -> None:
     with wave.open(str(path), "wb") as w:
         w.setnchannels(1)

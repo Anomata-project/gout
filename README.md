@@ -227,12 +227,13 @@ cp examples/addons/*.py ~/.config/gout/addons/
 gout addons                      # the folder, what loaded, and effects this project lacks
 ```
 
-Three examples ship in `examples/addons/`:
+Four examples ship in `examples/addons/`:
 
 | addon | command | what it does |
 | --- | --- | --- |
 | `chorus.py` | `chorus` / `ch` | stereo chorus: `v3 r0.5 d2 t25 m50 w100` is voices per side, rate Hz, depth ms, delay ms, mix %, width %. Left and right get different voices, so a mono track comes out wide. Presets `subtle classic wide vibe`. Its picture shows how each voice's delay swings. |
 | `saturation.py` | `saturation` / `sat` | a soft curve for warmth, grit or fuzz: `tanh d12 m70 t8k` is curve, drive dB, mix % (parallel blend), tone low-pass. Curves `tanh atan cubic exp alg quintic sin erf hard`. Output follows the drive by default so quiet passages keep their level; `o-6` sets it by hand. It runs at four times the project rate to keep aliasing down. Presets `warm tape tube crunch fuzz`. Its picture is the curve itself and says how many of the track's peaks it bends. |
+| `distortion.py` | `distortion` / `dist` | a pedal in a line: `hard d36 a10 h300 t4k` is clipper (`soft`, `hard` or `crush`), drive dB, asymmetry % (even harmonics), tight high-pass before the clipper, tone low-pass after. `crush` takes `b6` bits and `s8` sample-rate reduction. The output is matched to the track's loudness by running part of the track through the same stage once (cached); `o-6` sets it by hand. Presets `overdrive crunch highgain fuzz bitcrush lofi broken`. |
 | `tremolo.py` | `tremolo` / `trem` | the volume rises and falls: `5hz d50`. Presets `slow fast chop`. |
 
 `examples/addons/tremolo.py` is the simplest template: a subclass of `gout.fx.Effect` that says how to read

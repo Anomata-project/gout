@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from .core import BASE_COMMANDS, MASTER_OWNER, MASTER_WAV
+from .core import BASE_COMMANDS, MASTER_OWNER, MASTER_WAV, pan_filter
 
 GUTTER = 4  # label columns on the left of every effect picture
 
@@ -110,6 +110,16 @@ class FxContext:
 
     def source(self) -> Path:
         return self.project.master if self.is_master else self.project.tracks_dir / self.track["file"]
+
+    def chain_input(self) -> list[str]:
+        """Filters that turn the source file into what the chain receives (rate, float, stereo at
+        the mixer's levels; mono goes to both sides at full level). Position and soft trim are
+        not included. For effects that measure their track, so they measure what they will get."""
+        steps = [f"aformat=sample_rates={self.rate}:sample_fmts=fltp"]
+        channels = self.track.get("channels", 2)
+        if channels != 2:
+            steps.append(pan_filter(channels, 0.0))
+        return steps
 
     def peaks(self) -> bytes | None:
         """Peak per 20 ms of the source audio, 0..128 (master.wav for the master)."""
