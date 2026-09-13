@@ -71,7 +71,8 @@ TICK_STEPS = (100, 250, 500, 1000, 2000, 5000, 10000, 15000, 30000, 60000, 12000
               600000, 900000, 1800000, 3600000, 7200000, 18000000)
 
 
-def render_timeline(project: Project, width: int, styled: bool = False) -> list[tuple[str, str, str, str]]:
+def render_timeline(project: Project, width: int, styled: bool = False,
+                    playhead_ms: int | None = None) -> list[tuple[str, str, str, str]]:
     """Rows of (label, cells, kind, classes) for a timeline `width` columns wide.
 
     kind is axis, ruler, track, master or note. Every column of a track shows the
@@ -152,6 +153,15 @@ def render_timeline(project: Project, width: int, styled: bool = False) -> list[
         rows.append((label, "".join(cells), "master", "".join(classes)))
     else:
         rows.append((label, "not rendered — mix", "note", ""))
+    if playhead_ms is not None and t0 <= playhead_ms <= t1:
+        c = max(0, min(tw - 1, col(playhead_ms)))
+        marked = []
+        for label_, cells, kind, classes in rows:
+            if kind in ("ruler", "track", "master") and len(cells) == tw:
+                cells = cells[:c] + (cells[c] if cells[c].strip() else "│") + cells[c + 1:]
+                classes = classes.ljust(tw)[:c] + "p" + classes.ljust(tw)[c + 1:]
+            marked.append((label_, cells, kind, classes))
+        rows = marked
     return rows
 
 
@@ -172,6 +182,7 @@ MIXER
  gain  g  TRACK -6                    dB, -60 .. +24
  pan   p  TRACK L30 | R30 | C         all start at C
 {EFFECTS} mix   x  [-3] [-v]                   -3 also master.mp3
+ play  pl [FROM]                      hear master.wav
 PROJECT
  undo  u                              not hard trim / rm -D
  view  v  [-w COLS]                   print the timeline
@@ -204,6 +215,8 @@ LINE   ← → home end  edit it          ↑ ↓  earlier commands
        tab  complete a command, track, preset or file name
        → at the end of the line  take the grey suggestion
        ctrl-w  delete a word   esc  clear the line
+PLAY   space (empty line)  play / stop, playhead stays
+       ← → (empty line)  move the playhead 5 s   stop  to 0
 KEYS   ctrl-u  timeline on/off   ctrl-k  sheet on/off
        tab shift-tab (empty line)  flip the cheat sheet
        ctrl-n ctrl-p  sheet line  pgup pgdn      scroll log

@@ -6,6 +6,7 @@ import json
 import re
 import shutil
 import sys
+import time
 from pathlib import Path
 
 from .core import (
@@ -35,6 +36,7 @@ from .settings import BITS_CODEC, MASTER_DEFAULTS, master_track, parse_setting, 
 from .project import legacy_chain, Project
 from .mixer import autorender, mix, sounding_end, track_chain, track_head
 from .render import effect_picture, LABEL_W, render_cheat, render_timeline
+from .player import Player
 
 
 class Args:
@@ -758,6 +760,52 @@ def cmd_mix(project: Project, args: Args) -> None:
     mp3 = args.flag("--mp3", "-3")
     args.positionals("gout mix [-3] [-v]")
     mix(project, args.verbose, mp3)
+
+
+def master_for_playing(project: Project) -> float:
+    """Render master.wav when it does not match the project; returns its length in seconds."""
+    if not project.master_is_current():
+        print(f"play  {MASTER_WAV} is out of date or missing: rendering it first")
+        mix(project)
+        if not project.master.exists():
+            die("nothing to play: no track is audible")
+    return probe(project.master)["duration"]
+
+
+def head_seconds(project: Project) -> float:
+    """master.wav starts with the head padding, so project time 0 is this far into the file."""
+    return int(setting(project, "head")) / 1000
+
+
+def progress_bar(position: float, length: float, width: int = 30) -> str:
+    done = round(width * position / length) if length else 0
+    return "━" * done + "─" * (width - done)
+
+
+def cmd_play(project: Project, args: Args) -> None:
+    pos = args.positionals("gout play [FROM]   e.g. gout play 1:30, gout play 45s  (ctrl-c stops)", 0, 1)
+    start = parse_ms(pos[0]) / 1000 if pos else 0.0
+    length = master_for_playing(project)
+    head = head_seconds(project)
+    if start + head >= length:
+        die(f"{fmt_ms(start * 1000)} is past the end of {MASTER_WAV} ({fmt_ms((length - head) * 1000)})")
+    player = Player(project.master, start + head, length).start()
+    print(f"play  {MASTER_WAV} from {fmt_ms(start * 1000)}  ({player.backend}; ctrl-c stops)")
+    live = sys.stdout.isatty()
+    try:
+        while player.running():
+            if live:
+                now = player.position()
+                print(f"\r      ▶ {fmt_ms((now - head) * 1000)} / {fmt_ms((length - head) * 1000)}  "
+                      f"{progress_bar(now, length)}", end="", flush=True)
+            time.sleep(0.1)
+    except KeyboardInterrupt:
+        where = player.position() - head
+        player.stop()
+        print(("\n" if live else "") + f"play  stopped at {fmt_ms(where * 1000)}"
+              f"  (gout play {fmt_ms(max(0, where) * 1000)} carries on from there)")
+        return
+    print(("\n" if live else "") + "play  finished")
 
 
 def cmd_stems(project: Project, args: Args) -> None:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import re
 import sqlite3
@@ -365,6 +366,25 @@ class Project:
         settings = {r["key"]: r["value"] for r in self.conn.execute("SELECT key, value FROM project")
                     if not r["key"].startswith("ui_")}  # ui_ keys are preferences, not state
         return {"project": settings, "master": {"fx": self.chain(MASTER_OWNER)}, "tracks": self.tracks()}
+
+    def state_fingerprint(self) -> str:
+        """A hash of everything that decides how master.wav sounds: settings, tracks, effect
+        chains and the track files themselves. mix stores it, play compares it."""
+        snap = self.snapshot()
+        snap["project"] = {k: v for k, v in snap["project"].items() if not k.startswith("master_")}
+        for t in snap["tracks"]:
+            try:
+                st = (self.tracks_dir / t["file"]).stat()
+                t["file_stat"] = [st.st_size, st.st_mtime]
+            except OSError:
+                t["file_stat"] = None
+        for items in [t["fx"] for t in snap["tracks"]] + [snap["master"]["fx"]]:
+            for item in items:
+                item.pop("id", None)
+        return hashlib.sha1(json.dumps(snap, sort_keys=True).encode()).hexdigest()
+
+    def master_is_current(self) -> bool:
+        return self.master.exists() and self.get("master_state") == self.state_fingerprint()
 
     def record(self, command: str, undoable: bool = True) -> None:
         with self.conn:

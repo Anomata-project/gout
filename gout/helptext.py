@@ -20,6 +20,11 @@ PROJECT
                                   (kept per project), tab completes commands, tracks, presets and file
                                   names from where gout was started, right arrow takes the grey
                                   suggestion after the cursor
+  gout play  pl [FROM]            play master.wav from FROM (1:30, 45s), rendering it first when it does
+                                  not match the project; ctrl-c stops. In the ui: space on an empty
+                                  line plays and stops, left/right there move the playhead 5 s, and
+                                  play FROM / stop work at the prompt. Player: ffplay, else pw-cat,
+                                  paplay or aplay; GOUT_PLAYER picks one (null plays in silence)
   gout view  v                    print the timeline once: one row per track, each column a
                                   block ▁▂▃▄▅▆▇█ as tall as the peak there (6 dB per step)
   gout cheat c                    print the cheat sheet

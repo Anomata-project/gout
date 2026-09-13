@@ -40,6 +40,9 @@ class FakeScreen:
     def nodelay(self, flag):
         pass
 
+    def timeout(self, ms):
+        pass
+
     def get_wch(self):
         if not self.queue:
             raise curses.error("no input")

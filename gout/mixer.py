@@ -128,12 +128,13 @@ def build_graph(project: "Project", tracks: list[dict], warnings: set[str] | Non
 
 def mix(project: Project, verbose: bool = False, mp3: bool = False) -> None:
     tracks = project.tracks()
+    state = project.state_fingerprint()  # what this render will sound like, for play to compare
     warnings: set[str] = set()
     inputs, graph, used = build_graph(project, tracks, warnings)
     if not inputs:
         if project.master.exists():
             project.master.unlink()
-        for key in ("master_ms", "master_lufs", "master_tp", "master_lra"):
+        for key in ("master_ms", "master_lufs", "master_tp", "master_lra", "master_state"):
             project.unset(key)
         print("mix   nothing audible" + (" — master.wav removed" if tracks else "")
               + ("" if tracks else " (no tracks yet)"))
@@ -225,6 +226,7 @@ def mix(project: Project, verbose: bool = False, mp3: bool = False) -> None:
     for key, field in (("master_lufs", "i"), ("master_tp", "tp"), ("master_lra", "lra")):
         project.set(key, "" if got is None else f"{got[field]:.2f}")
     project.envelope(MASTER_WAV, project.master)
+    project.set("master_state", state)
     skipped = len(tracks) - len(used)
     note = f"  ({len(used)} of {len(tracks)} tracks)" if skipped else ""
     print(f"mix   {MASTER_WAV}  {fmt_ms(length_ms)}  {fmt_lufs(got)}{note}")

@@ -211,6 +211,7 @@ class GoutTest(unittest.TestCase):
     def env(self) -> dict:
         env = dict(os.environ)
         env["GOUT_ADDONS"] = str(self.addons)  # never the user's own addons
+        env["GOUT_PLAYER"] = "null"  # play in real time, in silence
         env.pop("COLUMNS", None)
         return env
 

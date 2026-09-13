@@ -11,7 +11,7 @@ import sys
 import textwrap
 from pathlib import Path
 
-from .core import __version__, fmt_ms, fmt_pan, GoutError, is_master, MASTER_N
+from .core import __version__, fmt_ms, fmt_pan, GoutError, is_master, MASTER_N, MASTER_WAV, parse_time
 from .model import audible, timeline
 from .fx import effect, effects, GUTTER, resolve
 from .settings import MASTER_DEFAULTS, master_track, setting
@@ -20,6 +20,8 @@ from .helptext import help_text
 from .commands import save_as, slot_of
 from .cli import aliases, command_table, run
 from .lineedit import LineEditor, path_candidates
+from .player import Player
+from .commands import head_seconds
 
 
 # arrow, paging and editing sequences as curses key names, for terminals that send the plain form
@@ -44,6 +46,8 @@ class Tui:
         self.log: list[str] = [f"gout {__version__}  {project.root}",
                                "ctrl-u shows/hides the timeline, ctrl-k the cheat sheet, tab flips its pages,"
                                " ctrl-e opens the parameter sheet"]
+        self.player: Player | None = None
+        self.playhead_ms = 0  # project time; stays where playback stopped
         self.start_dir = Path.cwd()  # file names complete from where gout was started
         self.line = LineEditor(self.complete_words)
         self.line.history = self.load_history()
@@ -192,8 +196,12 @@ class Tui:
                 self.put(y, right_x - 1, "│", curses.A_DIM)
             top = 0
             if self.show_timeline:
-                self.put(0, right_x, " timeline".ljust(right_w), curses.A_REVERSE)
-                rows = render_timeline(p, right_w, styled=True)
+                where = self.play_position_ms()
+                state = (f"  ▶ {fmt_ms(where)}  space stops" if self.player
+                         else (f"  ■ {fmt_ms(where)}  space plays" if where else "  space plays"))
+                self.put(0, right_x, (" timeline" + state).ljust(right_w), curses.A_REVERSE)
+                rows = render_timeline(p, right_w, styled=True,
+                                       playhead_ms=where if (self.player or where) else None)
                 room = max(3, h - 2 - 6) if self.show_cheat else max(3, h - 1)  # sheet keeps six lines
                 if self.show_panel and self.panel_track is not None:
                     room = max(3, room - (10 if h >= 32 else 8))
@@ -251,7 +259,7 @@ class Tui:
             self.put(y, x, cells, curses.A_DIM)
             return
         attrs = {"a": curses.A_BOLD, "s": curses.A_DIM, "t": curses.A_DIM, "z": curses.A_DIM, "m": curses.A_BOLD,
-                 "x": curses.A_DIM}
+                 "x": curses.A_DIM, "p": curses.A_REVERSE}
         classes = classes.ljust(len(cells))
         i = 0
         while i < len(cells):
@@ -269,15 +277,84 @@ class Tui:
             curses.curs_set(1)
         except curses.error:
             pass
-        while self.running:
-            self.draw()
-            try:
-                key = self.scr.get_wch()
-            except KeyboardInterrupt:
-                break
-            except curses.error:
-                continue
-            self.handle(key)
+        try:
+            while self.running:
+                self.check_player()
+                self.draw()
+                self.scr.timeout(100 if self.player else -1)  # redraw the playhead while playing
+                try:
+                    key = self.scr.get_wch()
+                except KeyboardInterrupt:
+                    break
+                except curses.error:
+                    continue
+                self.handle(key)
+        finally:
+            self.stop_playing(keep=False)
+
+    # ---- playback
+
+    def play_position_ms(self) -> int:
+        if self.player is None:
+            return self.playhead_ms
+        return round((self.player.position() - head_seconds(self.project)) * 1000)
+
+    def check_player(self) -> None:
+        if self.player is not None and not self.player.running():
+            self.player = None
+            self.playhead_ms = 0  # played to the end: back to the start
+
+    def start_playing(self, from_ms: int | None = None) -> None:
+        """Play master.wav from the playhead (or from_ms), rendering it first if it is stale."""
+        self.stop_playing(keep=False)
+        if from_ms is not None:
+            self.playhead_ms = max(0, from_ms)
+        p = self.project
+        if not p.master_is_current():
+            self.log.append(f"play  {MASTER_WAV} is out of date or missing: rendering it first")
+            self.run_logged(["mix"])
+            if not p.master_is_current():
+                return
+        length = int(p.get("master_ms") or 0) / 1000
+        head = head_seconds(p)
+        if self.playhead_ms / 1000 + head >= length:
+            self.playhead_ms = 0
+        try:
+            self.player = Player(p.master, self.playhead_ms / 1000 + head, length).start()
+        except GoutError as exc:
+            self.log.append(f"error: {exc}")
+            return
+        self.log.append(f"play  from {fmt_ms(self.playhead_ms)}  ({self.player.backend}; space stops)")
+
+    def stop_playing(self, keep: bool = True) -> None:
+        if self.player is None:
+            return
+        where = self.play_position_ms()
+        self.player.stop()
+        self.player = None
+        if keep:
+            self.playhead_ms = max(0, where)
+            self.log.append(f"stop  at {fmt_ms(self.playhead_ms)}")
+
+    def seek(self, delta_ms: int) -> None:
+        position = max(0, self.play_position_ms() + delta_ms)
+        if self.player is not None:
+            self.start_playing(position)
+        else:
+            self.playhead_ms = position
+
+    def run_logged(self, argv: list[str]) -> None:
+        self.busy = True
+        self.draw()
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+                run(argv, self.project)
+        except GoutError as exc:
+            buf.write(f"error: {exc}\n")
+        finally:
+            self.busy = False
+        self.log.extend(buf.getvalue().rstrip("\n").splitlines())
 
     def handle(self, key) -> None:
         import curses
@@ -300,6 +377,13 @@ class Tui:
             self.line.backspace()
         elif key == curses.KEY_DC:
             self.line.delete()
+        elif key == " " and not self.input:  # space on an empty line: play / stop, as in a DAW
+            if self.player:
+                self.stop_playing()
+            else:
+                self.start_playing()
+        elif key in (curses.KEY_LEFT, curses.KEY_RIGHT) and not self.input and (self.player or self.playhead_ms):
+            self.seek(-5000 if key == curses.KEY_LEFT else 5000)  # empty line: move the playhead 5 s
         elif key == curses.KEY_LEFT:
             self.line.left()
         elif key in (curses.KEY_RIGHT, "\x06"):  # right, ctrl-f: move, or take the suggestion at the end
@@ -706,6 +790,7 @@ class Tui:
         head = aliases().get(argv[0], argv[0])
         is_effect = head == "fx" or resolve(head) is not None
         if head in ("q", "quit", "exit"):
+            self.stop_playing(keep=False)
             self.running = False
         elif head in ("view", "timeline"):
             self.toggle("timeline")
@@ -713,6 +798,22 @@ class Tui:
             self.toggle("cheat")
         elif head == "sheet":
             self.sheet_open()
+        elif head == "play":
+            if len(argv) > 1:
+                try:
+                    from_ms = round(parse_time(argv[1]) * 1000)
+                except ValueError as exc:
+                    self.log.append(f"error: {exc}")
+                    return
+                self.start_playing(from_ms)
+            else:
+                self.start_playing()
+        elif head == "stop":
+            if self.player:
+                self.stop_playing()
+            else:
+                self.playhead_ms = 0
+                self.log.append("stop  playhead back to the start")
         elif is_effect and head != "fx" and len(argv) == 1:
             kind = resolve(head).name
             if self.panel_track is not None and self.show_panel and self.panel_kind != kind:

@@ -85,6 +85,7 @@ name (a unique prefix will do). `-N` / `--no-mix` on any change skips the automa
 | `reverb` | `rv` | `TRACK DECAY [pN dN wN] \| PRESET \| on \| off \| clear` | reverb after the fader; `reverb TRACK` draws its decay |
 | `comp` | `cp` | `TRACK SETTINGS... \| PRESET \| on \| off \| clear` | compressor after the eq; `comp TRACK` shows its curve |
 | `fx` | `f` | `TRACK [add KIND ... \| N SETTINGS \| N on\|off\|rm \| N move M \| clear]` | the track's (or master's) effect chain, in order; `fx kinds` lists every effect |
+| `play` | `pl` | `[FROM]` | play `master.wav`, rendering it first when stale; in the ui, space plays and stops |
 | `mix` | `x` | `[-3] [-v]` | render `master.wav`; `-3` / `--mp3` also writes `master.mp3` |
 | `undo` | `u` | | undo the last change (not a hard trim or `rm -D`) |
 | `stems` | `sm` | `[DIR] [-A]` | one wav per track, processed as in the mix and all the same length, into `stems/`; `-A` only what the mix hears |
@@ -98,6 +99,24 @@ name (a unique prefix will do). `-N` / `--no-mix` on any change skips the automa
 
 Long flags exist for every short one: `--at --name --hard --clear --reencode --delete --mp3
 --rate --width --verbose --no-mix`.
+
+## Playing
+
+```sh
+gout play            # master.wav from the start; ctrl-c stops and says where
+gout play 1:30       # from a minute and a half in
+```
+
+`play` compares `master.wav` with the project first (settings, tracks, effects and the track files)
+and renders it when it is out of date, so what you hear is what the project says. It plays through
+`ffplay` when ffmpeg came with it, and otherwise pipes decoded audio into `pw-cat` (PipeWire),
+`paplay` (PulseAudio) or `aplay` (ALSA). `GOUT_PLAYER=paplay` picks one; `GOUT_PLAYER=null` plays in
+real time without sound.
+
+In the ui, space on an empty prompt plays and stops, like the space bar in a DAW. Stopping leaves
+the playhead where it was and the next play carries on from there; `stop` again, or playing to the
+end, puts it back at the start. While the prompt is empty, left and right move the playhead five
+seconds. The timeline header shows the position and a marker runs across the tracks.
 
 ## The terminal ui
 

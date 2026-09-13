@@ -23,6 +23,7 @@ from .commands import (
     cmd_mute,
     cmd_new,
     cmd_pan,
+    cmd_play,
     cmd_rebuild,
     cmd_rm,
     cmd_saveas,
@@ -47,7 +48,7 @@ BASE_PROJECT_COMMANDS = {
     "mute": cmd_mute, "solo": cmd_solo, "gain": cmd_gain, "pan": cmd_pan, "fx": cmd_fx,
     "set": cmd_set, "stats": cmd_stats, "mix": cmd_mix, "undo": cmd_undo, "dump": cmd_dump,
     "saveas": cmd_saveas, "stems": cmd_stems, "import": cmd_import,
-    "view": cmd_view, "ui": cmd_ui,
+    "view": cmd_view, "ui": cmd_ui, "play": cmd_play,
 }
 
 
@@ -107,7 +108,7 @@ def run(argv: list[str], project: Project | None = None) -> int:
     if head in ("-V", "--version", "version"):
         print(f"gout {__version__}")
         return 0
-    if head in ("quit", "clear", "split", "sheet") and project is None:
+    if head in ("quit", "clear", "split", "sheet", "stop") and project is None:
         die(f"{head} only means something inside the ui (gout, in a project)")
 
     need_tools()
