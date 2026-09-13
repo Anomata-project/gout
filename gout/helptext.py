@@ -65,6 +65,13 @@ TRACKS   (TRACK is the number shown by ls, or the track name)
 {{EFFECTS}}  -N (--no-mix) on any of these skips the automatic re-mix; -p DIR before a command picks
   the project. Long flags: --at --name --hard --clear --reencode --delete --mp3 --rate --width
 
+ADDONS
+  gout addons           where addons are read from, what loaded, and effects this project lacks
+                        The folder is ~/.config/gout/addons ($XDG_CONFIG_HOME, or $GOUT_ADDONS). An addon
+                        is a .py file with an Effect class and register(gout); it becomes a command, a
+                        row in the sheet and an entry in gout fx kinds. examples/addons/tremolo.py is one.
+                        Addons are plain Python with your permissions; gout never loads them from projects.
+
 CUT   (any file, no project needed; `gout INPUT ...` still works as in 1.x)
   gout cut INPUT [-o OUT] [-st TIME] [-et TIME | -el TIME | -fs SIZE] [-r] [-f] [-n] [-v]
   -st start   -et absolute end   -el length   -fs largest piece that fits the size
@@ -135,7 +142,8 @@ def effects_help() -> str:
     for eff in effects().values():
         short = eff.aliases[0] if eff.aliases else ""
         origin = "" if eff.source == "built-in" else f"   [addon: {eff.source}]"
-        lines.append(f"  gout {eff.name:<6} {short:<3}TRACK SETTINGS            {eff.summary}{origin}")
+        entry = f"gout {eff.name} {short}".rstrip()
+        lines.append(f"  {entry:<18} TRACK SETTINGS        {eff.summary}{origin}")
         lines.append(f"                                           e.g.  gout {eff.name} 3 {eff.syntax}")
         for extra in eff.help:
             lines.append(f"                                           {extra}")

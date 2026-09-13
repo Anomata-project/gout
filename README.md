@@ -214,6 +214,30 @@ Projects from before chains, and their `gout.json` files, are converted when ope
 An effect a project uses but this machine does not have (an addon not installed) stays in the
 chain, is marked `(not installed)`, and is left out of the mix with a warning on every render.
 
+## Addons
+
+An addon is a Python file that adds effects. Put it in `~/.config/gout/addons/` (or
+`$XDG_CONFIG_HOME/gout/addons/`, or the folder `$GOUT_ADDONS` names) and its effects behave like
+the built-in ones: a command with presets and a picture, a place in `gout fx` chains, rows in the
+parameter sheet, entries in `gout.json`, help and the cheat sheet.
+
+```sh
+mkdir -p ~/.config/gout/addons
+cp examples/addons/tremolo.py ~/.config/gout/addons/
+gout addons                      # the folder, what loaded, and effects this project lacks
+gout tremolo 3 5hz d50
+```
+
+`examples/addons/tremolo.py` is the template: a subclass of `gout.fx.Effect` that says how to read
+and write its settings line and which ffmpeg filters it becomes, and a `register(gout)` function
+that calls `gout.add_effect(...)`. Effects that need more than a filter list (the built-in reverb
+convolves with a generated file) override `graph` instead of `filters`. The base class in
+`gout/fx.py` documents every hook.
+
+An addon that fails to load, or wants a name that is taken, is reported on every command and
+skipped; gout keeps working. Addons are ordinary Python running with your permissions, so gout
+reads them only from your own folder, never from a project folder.
+
 ## EQ
 
 Every track has an eq, applied before its fader, written as one line of bands:
@@ -305,8 +329,10 @@ wide whatever the pan. The response has unit energy, so `w100` on a sustained so
 loud as the dry signal. Responses are cached in `.gout/ir/` inside the project and rebuilt when
 missing; they take a fraction of a second.
 
-The reverb sums what reaches it to mono and returns it wide, so it stays wide whatever comes
-after it. Its tail counts: stems and the master run on until it has died away.
+The reverb sums what reaches it to mono and returns it wide, so it is wide whatever comes before
+it. The track's pan comes after the chain, as on a mixer strip, so a hard-panned track pans its
+reverb too; put the reverb on the master chain for a shared, centred room. Its tail counts: stems
+and the master run on until it has died away.
 
 ## Stems
 

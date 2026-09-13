@@ -11,6 +11,7 @@ from .fx import effects
 from .commands import (
     Args,
     cmd_add,
+    cmd_addons,
     cmd_cheat,
     cmd_dump,
     cmd_fx,
@@ -49,7 +50,7 @@ BASE_PROJECT_COMMANDS = {
 }
 
 
-FREE_COMMANDS = {"new": cmd_new, "rebuild": cmd_rebuild, "cheat": cmd_cheat}
+FREE_COMMANDS = {"new": cmd_new, "rebuild": cmd_rebuild, "cheat": cmd_cheat, "addons": cmd_addons}
 
 
 def command_table() -> dict[str, tuple[str, ...]]:

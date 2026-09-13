@@ -187,6 +187,7 @@ PROJECT
  quit  q  leave the ui  clear cl      empty the log
  split sp 50 | +5 | -5                left pane width (ui)
  sheet sh (or ctrl-e)                 parameters as a table
+ addons   the addon folder and what loaded
 MASTER set KEY VALUE
  lufs -14|off  ceiling -1  gain -3    loudness, dBTP, gain
  eq master hp30  reverb master room   any effect, on master

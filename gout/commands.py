@@ -998,3 +998,26 @@ def run_tui(project) -> None:
     """The ui sits above the commands; import it only when it is wanted."""
     from .tui import run_tui as start
     start(project)
+
+
+def cmd_addons(root_hint: Path | None, args: Args) -> None:
+    """Where addons are read from, what loaded, and what the project here uses but lacks."""
+    from .addons import addon_dir, REPORT
+    args.positionals("gout addons")
+    effects()
+    folder = addon_dir()
+    state = "" if folder.is_dir() else "  (does not exist yet: mkdir -p it and copy addons in)"
+    print(f"addons {folder}{state}")
+    if not REPORT and folder.is_dir():
+        print("       no addon files there; examples/addons/tremolo.py in the gout checkout is one to copy")
+    for entry in REPORT:
+        if entry["error"]:
+            print(f"  {entry['file'].name:<24} not loaded: {entry['error']}")
+        else:
+            print(f"  {entry['file'].name:<24} {', '.join(entry['effects']) or 'registered nothing'}")
+    project = Project.find(root_hint)
+    if project is not None:
+        used = {item["kind"] for t in project.tracks() + [master_track(project)] for item in t["fx"]}
+        missing = sorted(kind for kind in used if effect(kind) is None)
+        if missing:
+            print(f"       this project uses effects that are not installed: {', '.join(missing)}")

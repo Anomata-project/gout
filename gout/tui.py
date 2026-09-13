@@ -675,6 +675,7 @@ class Tui:
 def run_tui(project: Project) -> None:
     import curses
     import locale
+    effects()  # addons load (and report problems) before curses takes the screen
     locale.setlocale(locale.LC_ALL, "")
     os.environ.setdefault("ESCDELAY", "25")  # a bare Esc should not wait a second
 
