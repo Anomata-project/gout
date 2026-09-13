@@ -9,6 +9,7 @@ import re
 import shlex
 import sys
 import textwrap
+from pathlib import Path
 
 from .core import __version__, fmt_ms, fmt_pan, GoutError, is_master, MASTER_N
 from .model import audible, timeline
@@ -17,13 +18,22 @@ from .settings import MASTER_DEFAULTS, master_track, setting
 from .render import LABEL_W, render_cheat, render_panel, render_timeline
 from .helptext import help_text
 from .commands import save_as, slot_of
-from .cli import aliases, run
+from .cli import aliases, command_table, run
+from .lineedit import LineEditor, path_candidates
 
 
-# arrow and paging sequences as curses key names, for terminals that send the plain form
+# arrow, paging and editing sequences as curses key names, for terminals that send the plain form
 ESCAPE_KEYS = {"[A": "KEY_UP", "OA": "KEY_UP", "[B": "KEY_DOWN", "OB": "KEY_DOWN",
                "[C": "KEY_RIGHT", "OC": "KEY_RIGHT", "[D": "KEY_LEFT", "OD": "KEY_LEFT",
-               "[5~": "KEY_PPAGE", "[6~": "KEY_NPAGE", "[Z": "KEY_BTAB"}
+               "[5~": "KEY_PPAGE", "[6~": "KEY_NPAGE", "[Z": "KEY_BTAB",
+               "[H": "KEY_HOME", "OH": "KEY_HOME", "[1~": "KEY_HOME", "[7~": "KEY_HOME",
+               "[F": "KEY_END", "OF": "KEY_END", "[4~": "KEY_END", "[8~": "KEY_END", "[3~": "KEY_DC"}
+
+# commands whose first word is a track (or master); the rest take files where they take anything
+TRACK_FIRST = {"move", "trim", "rm", "mute", "solo", "gain", "pan", "fx"}
+UI_WORDS = ("quit", "clear", "split", "sheet", "view", "help")
+HISTORY_FILE = ".gout/ui-history"
+HISTORY_KEEP = 500
 
 
 class Tui:
@@ -34,9 +44,9 @@ class Tui:
         self.log: list[str] = [f"gout {__version__}  {project.root}",
                                "ctrl-u shows/hides the timeline, ctrl-k the cheat sheet, tab flips its pages,"
                                " ctrl-e opens the parameter sheet"]
-        self.input = ""
-        self.history: list[str] = []
-        self.hist_i: int | None = None
+        self.start_dir = Path.cwd()  # file names complete from where gout was started
+        self.line = LineEditor(self.complete_words)
+        self.line.history = self.load_history()
         self.mode = "prompt"  # or "sheet": the parameter table
         self.sheet_rows: list[dict] = []
         self.sheet_cur = 0
@@ -58,6 +68,58 @@ class Tui:
         self.sheet_len = 0
         self.busy = False
         self.running = True
+
+    # ---- the command line
+
+    @property
+    def input(self) -> str:
+        return self.line.text
+
+    @input.setter
+    def input(self, text: str) -> None:
+        self.line.set(text)
+
+    @property
+    def history(self) -> list[str]:
+        return self.line.history
+
+    def load_history(self) -> list[str]:
+        try:
+            lines = (self.project.root / HISTORY_FILE).read_text().splitlines()
+        except OSError:
+            return []
+        return [line for line in lines if line.strip()][-HISTORY_KEEP:]
+
+    def save_history(self) -> None:
+        path = self.project.root / HISTORY_FILE
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("\n".join(self.line.history[-HISTORY_KEEP:]) + "\n")
+        except OSError:
+            pass
+
+    def complete_words(self, before: list[str], value: str) -> list[str]:
+        """What the word under the cursor can become: a command, a track, a preset, or a file."""
+        if not before:
+            names = sorted(set(command_table()) | set(UI_WORDS))
+            return [n for n in names if n.startswith(value)]
+        head = aliases().get(before[0], before[0])
+        eff = resolve(head)
+        if len(before) == 1 and (head in TRACK_FIRST or eff is not None):
+            names = [t["name"] for t in self.project.tracks()] + ["master"] * (eff is not None or head == "fx")
+            names += ["all"] * (head in ("mute", "solo"))
+            names += ["presets"] * (eff is not None) + ["kinds"] * (head == "fx")
+            matches = [n for n in names if n.startswith(value)]
+            if matches or value[:1] not in ("/", ".", "~"):
+                return matches
+        if len(before) == 2 and eff is not None and head == eff.name:
+            words = list(eff.presets) + ["on", "off", "clear"]
+            return [w for w in words if w.startswith(value)]
+        if len(before) >= 2 and head == "fx" and before[-1].lower() == "add":
+            return [name for name in effects() if name.startswith(value)]
+        if head in TRACK_FIRST or eff is not None:
+            return []
+        return path_candidates(self.start_dir, value)
 
     # ---- drawing
 
@@ -115,8 +177,15 @@ class Tui:
 
         prompt = "… " if self.busy else "> "
         room = max(1, left_w - len(prompt) - 1)
-        shown = self.input[-room:]
+        text, cursor = self.line.text, self.line.cursor
+        first = max(0, cursor - room + 1)  # scroll sideways to keep the cursor in view
+        shown = text[first:first + room]
         self.put(prompt_y, 0, prompt + shown, curses.A_DIM if self.busy else curses.A_BOLD)
+        if not self.busy and cursor == len(text):
+            ghost = self.line.suggestion()[:max(0, room - len(shown))]
+            if ghost:
+                self.put(prompt_y, len(prompt) + len(shown), ghost, curses.A_DIM)
+        cursor_x = len(prompt) + cursor - first
 
         if right_x is not None:
             for y in range(h):
@@ -171,7 +240,7 @@ class Tui:
                 header = line[:1].isupper() and not line.startswith(" ")
                 self.put(top + 1 + i, right_x + 1, line, curses.A_BOLD if header else 0, right_w - 1)
         try:
-            scr.move(prompt_y, min(len(prompt) + len(shown), w - 1))
+            scr.move(prompt_y, min(cursor_x, w - 1))
         except curses.error:
             pass
         scr.refresh()
@@ -228,15 +297,26 @@ class Tui:
         elif key in ("\n", "\r", curses.KEY_ENTER):
             self.submit()
         elif key in (curses.KEY_BACKSPACE, "\x7f", "\x08"):
-            self.input = self.input[:-1]
-        elif key == "\x04":  # ctrl-d on an empty line leaves
+            self.line.backspace()
+        elif key == curses.KEY_DC:
+            self.line.delete()
+        elif key == curses.KEY_LEFT:
+            self.line.left()
+        elif key in (curses.KEY_RIGHT, "\x06"):  # right, ctrl-f: move, or take the suggestion at the end
+            self.line.right()
+        elif key in (curses.KEY_HOME, "\x01"):  # home, ctrl-a
+            self.line.home()
+        elif key == curses.KEY_END:
+            self.line.end()
+        elif key == "\x04":  # ctrl-d: delete under the cursor; on an empty line, leave
             if not self.input:
                 self.running = False
+            else:
+                self.line.delete()
         elif key == "\x0c":  # ctrl-l
             self.log.clear()
         elif key == "\x17":  # ctrl-w
-            self.input = self.input.rstrip()
-            self.input = self.input[:self.input.rfind(" ") + 1] if " " in self.input else ""
+            self.line.delete_word()
         elif key == "\x1b":
             seq = self.read_escape()
             arrow = re.fullmatch(r"\[1;([235])([CD])", seq)  # shift/alt/ctrl + right/left
@@ -245,27 +325,27 @@ class Tui:
             elif seq in ESCAPE_KEYS:  # a terminal that did not follow curses into application mode
                 self.handle(getattr(curses, ESCAPE_KEYS[seq]))
             elif not seq:
-                self.input = ""
+                self.line.clear()
         elif key in (curses.KEY_SLEFT, curses.KEY_SRIGHT):
             self.resize(5 if key == curses.KEY_SRIGHT else -5)
         elif isinstance(key, int) and self.keyname(key)[:4] in (b"kLFT", b"kRIT"):  # ctrl/alt + arrows
             self.resize(5 if self.keyname(key)[:4] == b"kRIT" else -5)
         elif key == curses.KEY_UP:
-            if self.history:
-                self.hist_i = len(self.history) - 1 if self.hist_i is None else max(0, self.hist_i - 1)
-                self.input = self.history[self.hist_i]
+            self.line.up()
         elif key == curses.KEY_DOWN:
-            if self.hist_i is not None:
-                self.hist_i += 1
-                if self.hist_i >= len(self.history):
-                    self.hist_i, self.input = None, ""
-                else:
-                    self.input = self.history[self.hist_i]
+            self.line.down()
         elif key == curses.KEY_PPAGE:
             self.scroll += 10
         elif key == curses.KEY_NPAGE:
             self.scroll = max(0, self.scroll - 10)
-        elif key in ("\t", curses.KEY_BTAB, "\x0e", "\x10"):  # tab, shift-tab, ctrl-n, ctrl-p
+        elif key == "\t" and self.input.strip():  # tab on a line: complete the word under the cursor
+            choices = self.line.complete()
+            if choices:
+                shown = choices[:40]
+                self.log.append("  ".join(c.rstrip("/").rsplit("/", 1)[-1] + ("/" if c.endswith("/") else "")
+                                          for c in shown) + (f"  … {len(choices) - 40} more" if len(choices) > 40 else ""))
+                self.scroll = 0
+        elif key in ("\t", curses.KEY_BTAB, "\x0e", "\x10"):  # tab on an empty line, shift-tab, ctrl-n, ctrl-p
             if not self.show_cheat:
                 self.toggle("cheat")
                 return
@@ -278,7 +358,7 @@ class Tui:
                 at_top = self.cheat_scroll <= 0
                 self.cheat_scroll = last if at_top and key == curses.KEY_BTAB else max(0, self.cheat_scroll - step)
         elif isinstance(key, str) and key.isprintable():
-            self.input += key
+            self.line.insert(key)
             self.scroll = 0
 
     # ---- parameter sheet: name | value | new value, ctrl-s applies
@@ -603,17 +683,26 @@ class Tui:
 
     def submit(self) -> None:
         line = self.input.strip()
-        self.input, self.scroll, self.hist_i = "", 0, None
+        self.line.clear()
+        self.scroll = 0
         if not line:
             return
-        if not self.history or self.history[-1] != line:
-            self.history.append(line)
+        self.line.remember(line)
+        self.save_history()
         self.log.append("> " + line)
         try:
             argv = shlex.split(line)
         except ValueError as exc:
-            self.log.append(f"error: {exc}")
-            return
+            argv = None
+            for closing in ('"', "'"):  # a quote left open at the end of the line
+                try:
+                    argv = shlex.split(line + closing)
+                    break
+                except ValueError:
+                    continue
+            if argv is None:
+                self.log.append(f"error: {exc}")
+                return
         head = aliases().get(argv[0], argv[0])
         is_effect = head == "fx" or resolve(head) is not None
         if head in ("q", "quit", "exit"):

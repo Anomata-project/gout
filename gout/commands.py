@@ -95,7 +95,8 @@ def ingest(project: Project, src: Path, name: str | None, at_ms: int, verbose: b
     Returns (track, created) where created says whether a new file was written.
     """
     if not src.is_file():
-        die(f"no such file: {src}")
+        die(f"no such file: {src}" + ("  (a name with spaces needs quotes, or a \\ before each space;"
+                                      " in the ui, tab completes it)" if " " not in str(src) else ""))
     info = probe(src)
     suffix = src.suffix.lower()
     if info["codec"] == "mp3" and suffix == ".mp3":
@@ -135,10 +136,31 @@ def ingest(project: Project, src: Path, name: str | None, at_ms: int, verbose: b
     return track, dst != src
 
 
+def rejoin_paths(words: list[str]) -> list[str]:
+    """Put back file names that were split at their spaces: `add Sandi piano .m4a` finds
+    "Sandi piano .m4a" when no file is called "Sandi". Words that already name a file stay."""
+    out, i = [], 0
+    while i < len(words):
+        if Path(words[i]).expanduser().exists():
+            out.append(words[i])
+            i += 1
+            continue
+        for j in range(len(words), i + 1, -1):
+            joined = " ".join(words[i:j])
+            if Path(joined).expanduser().exists():
+                out.append(joined)
+                i = j
+                break
+        else:
+            out.append(words[i])
+            i += 1
+    return out
+
+
 def cmd_add(project: Project, args: Args) -> None:
     name = args.value("--name", "-n")
     at = args.value("--at", "-a")
-    files = args.positionals("gout add FILE... [-n NAME] [-a TIME] [-N]", 1)
+    files = rejoin_paths(args.positionals("gout add FILE... [-n NAME] [-a TIME] [-N]", 1))
     if name and len(files) > 1:
         die("--name works with a single file")
     at_ms = parse_ms(at) if at else 0

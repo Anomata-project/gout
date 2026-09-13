@@ -95,6 +95,74 @@ class UiTest(GoutTest):
         self.assertEqual(ui.mode, "prompt")
         self.assertAlmostEqual(project.tracks()[0]["pan"], -0.3)
 
+    def keys(self, ui, *keys):
+        for key in keys:
+            if isinstance(key, str) and len(key) > 1:
+                for ch in key:
+                    ui.handle(ch)
+            else:
+                ui.handle(key)
+
+    def test_editing_the_command_line_and_history(self):
+        root = self.project("song", "bass.wav", "click.wav")
+        project, screen, ui = self.open_ui(root)
+        self.keys(ui, "gan 1 -3", curses.KEY_HOME, curses.KEY_RIGHT, curses.KEY_RIGHT, "i", "\n")
+        self.assertEqual(project.tracks()[0]["gain_db"], -3.0)
+        # recall it, change the track number in the middle of the line, run it again
+        self.keys(ui, curses.KEY_UP)
+        self.assertEqual(ui.input, "gain 1 -3")
+        self.keys(ui, curses.KEY_LEFT, curses.KEY_LEFT, curses.KEY_LEFT, curses.KEY_BACKSPACE, "2", "\n")
+        self.assertEqual(project.tracks()[1]["gain_db"], -3.0)
+        self.keys(ui, "abc", curses.KEY_LEFT, curses.KEY_DC)
+        self.assertEqual(ui.input, "ab")
+        self.keys(ui, "\x01", "x")  # ctrl-a, then type at the start
+        self.assertEqual(ui.input, "xab")
+        self.keys(ui, "\x17")  # ctrl-w deletes the word before the cursor
+        self.assertEqual(ui.input, "ab")
+        _, _, again = self.open_ui(root)  # the history is kept per project
+        self.assertEqual(again.history[-2:], ["gain 1 -3", "gain 2 -3"])
+
+    def test_tab_completes_commands_tracks_presets_and_file_names_with_spaces(self):
+        root = self.project("song", "bass.wav")
+        takes = self.tmp / "takes"
+        takes.mkdir()
+        import shutil
+        shutil.copy(self.fx / "tone.wav", takes / "Sandi piano .wav")
+        project, screen, ui = self.open_ui(root)
+        self.keys(ui, f"add {self.tmp}/ta", "\t")
+        self.assertEqual(ui.input, f"add {self.tmp}/takes/")
+        self.keys(ui, "\t")
+        self.assertEqual(ui.input, f"add {self.tmp}/takes/Sandi\\ piano\\ .wav ")
+        self.keys(ui, "\n")
+        self.assertEqual([t["name"] for t in project.tracks()], ["bass", "Sandi-piano"])
+        for typed, completed in (("reve", "reverb "), ("mute ba", "mute bass "), ("reverb 1 ha", "reverb 1 hall "),
+                                 ("fx 1 add co", "fx 1 add comp ")):
+            ui.input = typed
+            self.keys(ui, "\t")
+            self.assertEqual(ui.input, completed, typed)
+        ui.input = "m"
+        self.keys(ui, "\t")  # several commands: they are listed, the line stays
+        self.assertIn("mix", ui.log[-1])
+        self.assertIn("move", ui.log[-1])
+        ui.input = ""
+        page = ui.cheat_scroll
+        ui.sheet_h, ui.sheet_len = 5, 40
+        self.keys(ui, "\t")  # on an empty line tab still flips the cheat sheet
+        self.assertNotEqual(ui.cheat_scroll, page)
+
+    def test_grey_suggestion_is_taken_with_the_right_arrow(self):
+        root = self.project("song", "bass.wav")
+        project, screen, ui = self.open_ui(root)
+        ui.input = "gain 1 -3"
+        ui.submit()
+        self.keys(ui, "ga")
+        ui.draw()
+        prompt_row = screen.cursor[0]
+        self.assertIn("gain 1 -3", screen.row(prompt_row))  # typed part plus the dim rest
+        self.assertEqual(ui.input, "ga")
+        self.keys(ui, curses.KEY_RIGHT)
+        self.assertEqual(ui.input, "gain 1 -3")
+
     def test_real_terminal_session(self):
         root = self.project("song", "bass.wav")
         pid, fd = pty.fork()
@@ -122,7 +190,7 @@ class UiTest(GoutTest):
                     output.extend(chunk)
 
         drain(1.5)
-        for keys in (b"ls\n", b"\x15", b"\x15", b"quit\n"):
+        for keys in (b"ls\n", b"\x15", b"\x15", b"gan 1 -2", b"\x1b[H", b"\x1b[C", b"\x1b[C", b"i\n", b"quit\n"):
             os.write(fd, keys)
             drain(0.8)
         _, status = os.waitpid(pid, 0)
@@ -130,3 +198,4 @@ class UiTest(GoutTest):
         self.assertEqual(os.waitstatus_to_exitcode(status), 0, text[-2000:])
         self.assertIn("timeline", text)
         self.assertNotIn("Traceback", text)
+        self.assertEqual(self.dump()["tracks"][0]["gain_db"], -2.0)  # home and right arrow edited the line

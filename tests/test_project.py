@@ -24,6 +24,14 @@ class ProjectTest(GoutTest):
         track = self.dump()["tracks"][0]
         self.assertEqual((track["name"], track["offset_ms"]), ("low", 1000))
 
+    def test_add_finds_a_file_name_with_spaces_without_quotes(self):
+        import shutil
+        shutil.copy(self.fx / "tone.wav", self.tmp / "Sandi piano .wav")
+        self.project()
+        self.gout("add", *str(self.tmp / "Sandi piano .wav").split(" "))
+        self.assertEqual([t["name"] for t in self.dump()["tracks"]], ["Sandi-piano"])
+        self.assertIn("needs quotes", self.gout("add", str(self.tmp / "nope.wav"), ok=False).stderr)
+
     def test_move_relative_absolute_and_negative(self):
         self.project("song", "bass.wav")
         self.gout("move", "1", "+1.5s")

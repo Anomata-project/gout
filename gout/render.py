@@ -156,7 +156,7 @@ def render_timeline(project: Project, width: int, styled: bool = False) -> list[
 
 
 CHEAT_TEMPLATE = """\
-CHEAT SHEET          long short        tab flips the pages
+CHEAT SHEET          long short  tab (empty line): next page
 TRACKS
  add   a  FILE.. [-a TIME] [-n NAME]  copy into master/
  scan  sc                             new files in master/
@@ -200,10 +200,14 @@ FLAGS  -N --no-mix skip the re-mix    -p DIR the project
 TIMES  2s  500ms  1:30  00:01:30.250  bare number = MINUTES
        trim times count from the track file's start
 TRACK  number from ls, or the name (unique prefix ok)
+LINE   ← → home end  edit it          ↑ ↓  earlier commands
+       tab  complete a command, track, preset or file name
+       → at the end of the line  take the grey suggestion
+       ctrl-w  delete a word   esc  clear the line
 KEYS   ctrl-u  timeline on/off   ctrl-k  sheet on/off
-       tab shift-tab  flip sheet (shows it when hidden)
+       tab shift-tab (empty line)  flip the cheat sheet
        ctrl-n ctrl-p  sheet line  pgup pgdn      scroll log
-       up down  earlier commands  ctrl-l  clear the log
+       ctrl-l  clear the log
        ctrl-← ctrl-→  move the split  (shift/alt too)
        ctrl-g  effect panel on/off  (eq N, comp N.. pick)
        ctrl-d  ctrl-c  quit

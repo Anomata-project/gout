@@ -127,7 +127,17 @@ picture, not a mouse target: the keyboard drives everything.
                                            │  move  m  TRACK +1s | -500ms | 1:30   later|earlier|place
 ```
 
-The two right-hand sections are independent: `ctrl-u` or `view` hides and shows the timeline,
+The two right-hand sections are independent: The prompt edits like a shell. Left and right arrows, Home and End (or ctrl-a) move the cursor
+and typing goes in where it is; up and down bring back earlier commands, kept per project in
+`.gout/ui-history`, ready to change a letter and run again. Tab completes the word under the
+cursor: a command, a track name, `master`, an effect preset, or a file or folder relative to where
+gout was started. Names with spaces come out escaped (`Sandi\ piano\ .m4a`), so they reach the
+command as one word. While you type, the rest of a matching earlier command (or the only possible
+completion) shows in grey after the cursor; the right arrow at the end of the line takes it. On an
+empty line Tab still flips the cheat sheet. `gout add` also finds a file whose name has spaces when
+it was typed without quotes.
+
+`ctrl-u` or `view` hides and shows the timeline,
 `ctrl-k` or `cheat` the cheat sheet (`tab` brings it back too). Hide both and the prompt gets the
 whole width. `help` prints the sheet into the log, `help all` the whole instruction page,
 `quit` / `ctrl-d` / `ctrl-c` leave. Both states are remembered per project.

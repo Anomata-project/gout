@@ -15,7 +15,11 @@ PROJECT
   gout                            inside a project: open the terminal ui (prompt left; timeline and
                                   cheat sheet right, ctrl-u / ctrl-k hide each; ctrl-e opens the
                                   parameter sheet: every setting and track parameter as name, value
-                                  and new value, ctrl-s applies); elsewhere: this page
+                                  and new value, ctrl-s applies); elsewhere: this page. The prompt
+                                  edits like a shell: arrows, home/end, up/down for earlier commands
+                                  (kept per project), tab completes commands, tracks, presets and file
+                                  names from where gout was started, right arrow takes the grey
+                                  suggestion after the cursor
   gout view  v                    print the timeline once: one row per track, each column a
                                   block ▁▂▃▄▅▆▇█ as tall as the peak there (6 dB per step)
   gout cheat c                    print the cheat sheet
