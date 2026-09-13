@@ -73,21 +73,25 @@ ENV_SR = 8000    # decode rate for the envelope: 160 samples per peak
 LEVELS = "▁▂▃▄▅▆▇█"  # 6 dB per step, top step is -6 dBFS and up
 
 
-def compute_envelope(path: Path) -> bytes:
-    """Peak per 20 ms window, 0..128, from a mono 8-bit decode. Empty when ffmpeg fails."""
+def compute_envelope(path: Path) -> tuple[bytes, bytes]:
+    """(peaks, wave) per 20 ms window from a mono 8-bit decode. peaks: the larger swing, 0..128.
+    wave: two bytes a window, the highest point above zero and the lowest below it, 0..128 each,
+    which is what a waveform picture needs. Empty when ffmpeg fails."""
     result = subprocess.run(
         ["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", str(path), "-map", "0:a:0",
          "-ac", "1", "-ar", str(ENV_SR), "-f", "u8", "-"],
         capture_output=True,
     )
     if result.returncode != 0:
-        return b""
+        return b"", b""
     data, n = result.stdout, ENV_SR // ENV_RATE
-    peaks = bytearray()
+    peaks, wave = bytearray(), bytearray()
     for i in range(0, len(data), n):
         chunk = data[i:i + n]  # max/min on bytes run in C, so this is quick even for hours
-        peaks.append(max(max(chunk) - 128, 128 - min(chunk)))
-    return bytes(peaks)
+        up, down = max(0, max(chunk) - 128), max(0, 128 - min(chunk))
+        peaks.append(max(up, down))
+        wave += bytes((up, min(down, 128)))
+    return bytes(peaks), bytes(wave)
 
 
 SPEC_BANDS = 40     # log-spaced 20 Hz .. 20 kHz

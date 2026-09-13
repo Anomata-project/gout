@@ -197,12 +197,18 @@ class GoutTest(unittest.TestCase):
 
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="gout-test-"))
+        self.saved_xdg = os.environ.get("XDG_CONFIG_HOME")
+        os.environ["XDG_CONFIG_HOME"] = str(self.tmp / "config")  # never the user's own color.json
         self.addons = self.tmp / "addons"
         self.addons.mkdir()
         self.fx = Fixtures.dir()
         self.cwd = self.tmp
 
     def tearDown(self) -> None:
+        if self.saved_xdg is None:
+            os.environ.pop("XDG_CONFIG_HOME", None)
+        else:
+            os.environ["XDG_CONFIG_HOME"] = self.saved_xdg
         if os.environ.get("GOUT_KEEP_TEST_DIRS"):
             print(f"\nkept {self.tmp}")
         else:
@@ -212,6 +218,7 @@ class GoutTest(unittest.TestCase):
         env = dict(os.environ)
         env["GOUT_ADDONS"] = str(self.addons)  # never the user's own addons
         env["GOUT_PLAYER"] = "null"  # play in real time, in silence
+        env["XDG_CONFIG_HOME"] = str(self.tmp / "config")
         env.pop("COLUMNS", None)
         return env
 

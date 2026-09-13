@@ -21,6 +21,7 @@ from .commands import save_as, slot_of
 from .cli import aliases, command_table, run
 from .lineedit import LineEditor, path_candidates
 from .player import Player
+from .theme import load_theme, Palette
 from .commands import head_seconds
 
 
@@ -46,11 +47,14 @@ class Tui:
         self.log: list[str] = [f"gout {__version__}  {project.root}",
                                "ctrl-u shows/hides the timeline, ctrl-k the cheat sheet, tab flips its pages,"
                                " ctrl-e opens the parameter sheet"]
+        self.theme, theme_problems, self.theme_path = load_theme(project.root)
+        self.palette = Palette(self.theme)
         self.player: Player | None = None
         self.playhead_ms = 0  # project time; stays where playback stopped
         self.start_dir = Path.cwd()  # file names complete from where gout was started
         self.line = LineEditor(self.complete_words)
         self.line.history = self.load_history()
+        self.log += [f"error: color.json: {problem}" for problem in theme_problems]
         self.mode = "prompt"  # or "sheet": the parameter table
         self.sheet_rows: list[dict] = []
         self.sheet_cur = 0
@@ -162,7 +166,7 @@ class Tui:
         if self.scroll:
             tag = " ↑ scrolled, pgdn "
             title = title[:max(0, left_w - len(tag))] + tag
-        self.put(0, 0, title, curses.A_REVERSE)
+        self.put(0, 0, title, self.palette.attr("header"))
 
         wrapped: list[str] = []
         for line in self.log:
@@ -176,7 +180,8 @@ class Tui:
             end = len(wrapped) - self.scroll
             visible, prompt_y = wrapped[max(0, end - avail):end], h - 1
         for i, line in enumerate(visible):
-            attr = curses.A_BOLD if line.startswith("> ") else (curses.A_DIM if line.startswith("error") else 0)
+            attr = (self.palette.attr("command_echo") if line.startswith("> ")
+                    else (self.palette.attr("error") if line.startswith("error") else 0))
             self.put(1 + i, 0, line, attr, left_w - 1)
 
         prompt = "… " if self.busy else "> "
@@ -184,37 +189,32 @@ class Tui:
         text, cursor = self.line.text, self.line.cursor
         first = max(0, cursor - room + 1)  # scroll sideways to keep the cursor in view
         shown = text[first:first + room]
-        self.put(prompt_y, 0, prompt + shown, curses.A_DIM if self.busy else curses.A_BOLD)
+        self.put(prompt_y, 0, prompt, self.palette.attr("suggestion") if self.busy else self.palette.attr("prompt"))
+        self.put(prompt_y, len(prompt), shown, curses.A_DIM if self.busy else curses.A_BOLD)
         if not self.busy and cursor == len(text):
             ghost = self.line.suggestion()[:max(0, room - len(shown))]
             if ghost:
-                self.put(prompt_y, len(prompt) + len(shown), ghost, curses.A_DIM)
+                self.put(prompt_y, len(prompt) + len(shown), ghost, self.palette.attr("suggestion"))
         cursor_x = len(prompt) + cursor - first
 
         if right_x is not None:
             for y in range(h):
-                self.put(y, right_x - 1, "│", curses.A_DIM)
+                self.put(y, right_x - 1, "│", self.palette.attr("gap_line"))
             top = 0
             if self.show_timeline:
                 where = self.play_position_ms()
                 state = (f"  ▶ {fmt_ms(where)}  space stops" if self.player
                          else (f"  ■ {fmt_ms(where)}  space plays" if where else "  space plays"))
-                self.put(0, right_x, (" timeline" + state).ljust(right_w), curses.A_REVERSE)
-                rows = render_timeline(p, right_w, styled=True,
-                                       playhead_ms=where if (self.player or where) else None)
-                room = max(3, h - 2 - 6) if self.show_cheat else max(3, h - 1)  # sheet keeps six lines
+                self.put(0, right_x, (" timeline" + state).ljust(right_w), self.palette.attr("header"))
+                room = max(3, h - 2 - 6) if self.show_cheat else max(3, h - 1)  # the cheat sheet keeps six lines
                 if self.show_panel and self.panel_track is not None:
                     room = max(3, room - (10 if h >= 32 else 8))
-                if len(rows) > room:
-                    heads = [r for r in rows if r[2] in ("axis", "ruler")]
-                    tail = [r for r in rows if r[2] in ("master", "note") and r not in heads]
-                    tracks = [r for r in rows if r[2] == "track"]
-                    keep = max(1, room - len(heads) - len(tail) - 1)
-                    rows = heads + tracks[:keep] + [("", f"+{len(tracks) - keep} more tracks — ls", "note", "")] + tail
-                for y, (label, cells, kind, classes) in enumerate(rows, 1):
+                rows = render_timeline(p, right_w, styled=True, playhead_ms=where if (self.player or where) else None,
+                                       max_rows=room, theme=self.theme)
+                for y, (label, cells, kind, classes, role) in enumerate(rows, 1):
                     if y >= h:
                         break
-                    self.put(y, right_x, label, curses.A_DIM if kind in ("axis", "ruler", "note") else 0)
+                    self.put(y, right_x, label, self.palette.attr(role) if role else 0)
                     self.draw_cells(y, right_x + LABEL_W + 1, cells, kind, classes)
                 top = 1 + len(rows)
 
@@ -228,11 +228,11 @@ class Tui:
                 rows = render_panel(p, track, right_w - 1, height, self.panel_kind)
                 who = "master" if self.panel_track == MASTER_N else f"{track['n']} {track['name']}"
                 self.put(top, right_x, (f" {who}  " + rows[0][0])[:right_w - 15].ljust(right_w - 15)
-                         + "  ctrl-g hides", curses.A_REVERSE)
+                         + "  ctrl-g hides", self.palette.attr("header"))
                 for i, (text, classes, kind) in enumerate(rows[1:], 1):
                     if top + i >= h:
                         break
-                    self.put(top + i, right_x + 1, text[:GUTTER], curses.A_DIM)
+                    self.put(top + i, right_x + 1, text[:GUTTER], self.palette.attr("ruler_labels"))
                     self.draw_cells(top + i, right_x + 1 + GUTTER, text[GUTTER:], kind, classes[GUTTER:])
                 top += len(rows)
 
@@ -243,10 +243,15 @@ class Tui:
             self.cheat_scroll = max(0, min(self.cheat_scroll, max(0, len(sheet) - self.sheet_h)))
             pages = max(1, math.ceil(len(sheet) / self.sheet_h))
             page = min(pages, math.ceil((self.cheat_scroll + self.sheet_h) / self.sheet_h))
-            self.put(top, right_x, f" cheat sheet  {page}/{pages}  tab".ljust(right_w), curses.A_REVERSE)
+            self.put(top, right_x, f" cheat sheet  {page}/{pages}  tab".ljust(right_w), self.palette.attr("header"))
             for i, line in enumerate(sheet[self.cheat_scroll:self.cheat_scroll + self.sheet_h]):
-                header = line[:1].isupper() and not line.startswith(" ")
-                self.put(top + 1 + i, right_x + 1, line, curses.A_BOLD if header else 0, right_w - 1)
+                if line[:1].isupper() and not line.startswith(" "):
+                    heading = line.split(" ", 1)[0]
+                    self.put(top + 1 + i, right_x + 1, heading, self.palette.attr("cheat_heading"), right_w - 1)
+                    self.put(top + 1 + i, right_x + 1 + len(heading), line[len(heading):], 0,
+                             max(0, right_w - 1 - len(heading)))
+                else:
+                    self.put(top + 1 + i, right_x + 1, line, 0, right_w - 1)
         try:
             scr.move(prompt_y, min(cursor_x, w - 1))
         except curses.error:
@@ -255,19 +260,29 @@ class Tui:
 
     def draw_cells(self, y: int, x: int, cells: str, kind: str, classes: str = "") -> None:
         import curses
-        if kind in ("note", "axis", "ruler"):
-            self.put(y, x, cells, curses.A_DIM)
+        if kind == "note":
+            self.put(y, x, cells, self.palette.attr("ruler_labels"))
             return
-        attrs = {"a": curses.A_BOLD, "s": curses.A_DIM, "t": curses.A_DIM, "z": curses.A_DIM, "m": curses.A_BOLD,
-                 "x": curses.A_DIM, "p": curses.A_REVERSE}
         classes = classes.ljust(len(cells))
         i = 0
         while i < len(cells):
             j = i
             while j < len(cells) and classes[j] == classes[i]:
                 j += 1
-            self.put(y, x + i, cells[i:j], attrs.get(classes[i], 0))
+            self.put(y, x + i, cells[i:j], self.class_attr(classes[i]))
             i = j
+
+    CLASS_ROLES = {"m": "master_wave", "s": "muted_wave", "t": "trimmed_wave", "c": "center_line", "r": "ruler",
+                   "l": "ruler_labels", "p": "playhead", "g": "gap_line", "a": "effect_curve", "z": "center_line",
+                   "x": "trimmed_wave"}
+
+    def class_attr(self, cls: str) -> int:
+        """Attributes for a cell class: theme roles, or a track's palette colour for digits."""
+        if cls in self.CLASS_ROLES:
+            return self.palette.attr(self.CLASS_ROLES[cls])
+        if cls >= "0" and cls < "a" and cls != " ":
+            return self.palette.track(ord(cls) - 0x30)
+        return 0
 
     # ---- input
 
@@ -277,6 +292,7 @@ class Tui:
             curses.curs_set(1)
         except curses.error:
             pass
+        self.palette.enable()
         try:
             while self.running:
                 self.check_player()
@@ -550,7 +566,7 @@ class Tui:
         pending = len(self.edits)
         title = (f" sheet  {pending} change{'s' if pending != 1 else ''}   ctrl-s apply   ctrl-x apply and close"
                  f"   esc close   ↑ ↓ rows")
-        self.put(0, 0, title.ljust(w), curses.A_REVERSE)
+        self.put(0, 0, title.ljust(w), self.palette.attr("header"))
         name_w = 12
         val_w = max(14, min(28, (w - name_w - 6) // 3))
         new_x = 2 + name_w + 1 + val_w + 1
@@ -565,7 +581,7 @@ class Tui:
         for i, r in enumerate(rows[self.sheet_top:self.sheet_top + avail]):
             y = 2 + i
             if r["head"]:
-                self.put(y, 0, r["name"], curses.A_BOLD)
+                self.put(y, 0, r["name"], self.palette.attr("cheat_heading"))
                 continue
             current = self.sheet_top + i == self.sheet_cur
             edit = self.edits.get(r["id"])
@@ -573,9 +589,9 @@ class Tui:
             self.put(y, 0, f"{mark} {r['name']:<{name_w}} {r['value'][:val_w]:<{val_w}} ".ljust(new_x),
                      curses.A_REVERSE if current else 0)
             if edit:
-                self.put(y, new_x, edit, curses.A_BOLD | (curses.A_REVERSE if current else 0))
+                self.put(y, new_x, edit, self.palette.attr("sheet_edit") | (curses.A_REVERSE if current else 0))
             else:
-                self.put(y, new_x, r["hint"], curses.A_DIM)
+                self.put(y, new_x, r["hint"], self.palette.attr("suggestion"))
             if current:
                 cursor = (y, min(w - 1, new_x + len(edit or "")))
         if self.saveas_name is not None:
@@ -585,7 +601,7 @@ class Tui:
         else:
             status = self.sheet_errors.get(rows[self.sheet_cur]["id"] or "", "") or self.sheet_status \
                 or "type a new value on the highlighted row; enter or ↓ for the next"
-            self.put(h - 1, 0, status[:w - 1], curses.A_DIM if not self.sheet_errors else 0)
+            self.put(h - 1, 0, status[:w - 1], self.palette.attr("error") if self.sheet_errors else self.palette.attr("suggestion"))
         try:
             self.scr.move(*cursor)
         except curses.error:

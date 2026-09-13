@@ -69,7 +69,8 @@ name (a unique prefix will do). `-N` / `--no-mix` on any change skips the automa
 | `add` | `a` | `FILE... [-a TIME] [-n NAME]` | add tracks at `TIME` (default 0) |
 | `scan` | `sc` | | register wav/mp3 files you copied into `master/` yourself; reports missing ones |
 | `ls` | `l` | | list tracks, positions, trims, flags |
-| `view` | `v` | `[-w COLS]` | print the timeline once, envelopes included (`░` marks soft-trimmed material there) |
+| `view` | `v` | `[-w COLS]` | print the timeline once: master first, tracks as waveforms |
+| `colors` | | `[--init [--project] [-f]]` | the colour and layout settings of `color.json` |
 | `move` | `m` | `TRACK +TIME \| -TIME \| TIME` | nudge later, nudge earlier, place at a time |
 | `trim` | `t` | `TRACK [-st T] [-et T \| -el T]` | soft trim, times count from the start of the track's file |
 | `trim` | `t` | `TRACK -c` | soft trim off (`--clear`) |
@@ -119,6 +120,39 @@ end, puts it back at the start. While the prompt is empty, left and right move t
 seconds. The timeline header shows the position and a marker runs across the tracks.
 
 ## The terminal ui
+
+### The timeline
+
+The master comes first, then every track, each drawn as a waveform from the audio's real highest
+and lowest points in braille dots (two columns and four rows of dots per character), with a gap
+row between them. The label shows the track's number, name, mute and solo, and underneath its gain
+and pan; the master's shows its loudness. Soft-trimmed material is drawn dim, muted tracks in
+grey, silence as a thin centre line. When the screen is short, tracks shrink to one row, then the
+master, then the gaps go, and what still does not fit is counted.
+
+### color.json
+
+Colours and the timeline's layout come from `color.json`: the project's own if it has one,
+otherwise `~/.config/gout/color.json`, otherwise the built-in defaults. `gout colors` shows which
+file is in use, anything wrong in it, and all 25 settings with their values; `gout colors --init`
+writes the defaults (each explained under `_help`) to fill in, `--project` into the project.
+
+| setting | default | what |
+| --- | --- | --- |
+| `master_height`, `track_height` | `2`, `2` | rows for the waveforms, 1 to 6 |
+| `gap_rows`, `gap_char` | `1`, `"┈"` | rows between tracks and what they are drawn with |
+| `wave_style` | `"braille"` | or `"blocks"` for fonts without braille |
+| `wave_scale` | `"linear"` | or `"db"`, which makes quiet passages visible |
+| `master_wave`, `master_label` | amber | the master |
+| `track_palette` | six colours | tracks take them in turn |
+| `track_label`, `muted_wave`, `trimmed_wave`, `center_line` | greys | labels, muted, trimmed, silence |
+| `ruler`, `ruler_labels`, `playhead`, `gap_line` | | the rest of the timeline |
+| `header`, `prompt`, `command_echo`, `error`, `suggestion` | | title bars and the prompt |
+| `cheat_heading`, `effect_curve`, `sheet_edit` | | cheat sheet, effect pictures, sheet edits |
+
+A colour is `"#rrggbb"`, `"#rgb"`, an xterm number, a name (`red`, `bright_cyan`, `default` ...), or
+`{"fg": ..., "bg": ..., "bold": true, "dim": true, "underline": true, "reverse": true}`. gout picks
+the nearest colour the terminal has; without colour everything falls back to bold, dim and reverse.
 
 `gout` inside a project (or `gout ui`) opens a split screen. The left side is a prompt that
 takes the same commands without the leading `gout`. It behaves like a terminal: the prompt sits

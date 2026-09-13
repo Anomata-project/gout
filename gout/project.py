@@ -51,7 +51,8 @@ CREATE TABLE IF NOT EXISTS envelopes (
     lufs  REAL,
     tp    REAL,
     lra   REAL,
-    spectrum BLOB
+    spectrum BLOB,
+    wave  BLOB
 );
 CREATE TABLE IF NOT EXISTS history (
     id       INTEGER PRIMARY KEY,
@@ -104,6 +105,9 @@ class Project:
         if "spectrum" not in {r[1] for r in self.conn.execute("PRAGMA table_info(envelopes)")}:
             with self.conn:
                 self.conn.execute("ALTER TABLE envelopes ADD COLUMN spectrum BLOB")
+        if "wave" not in {r[1] for r in self.conn.execute("PRAGMA table_info(envelopes)")}:
+            with self.conn:
+                self.conn.execute("ALTER TABLE envelopes ADD COLUMN wave BLOB")
         old = self.get("automix")  # the setting was called automix before 2.0.0 final
         if old is not None:
             if self.get("autorender") is None:
@@ -313,15 +317,23 @@ class Project:
             st = path.stat()
         except OSError:
             return b""
-        row = self.conn.execute("SELECT size, mtime, rate, peaks FROM envelopes WHERE file = ?",
+        row = self.conn.execute("SELECT size, mtime, rate, peaks, wave FROM envelopes WHERE file = ?",
                                 (name,)).fetchone()
-        if row and row["size"] == st.st_size and row["mtime"] == st.st_mtime and row["rate"] == ENV_RATE:
+        if (row and row["size"] == st.st_size and row["mtime"] == st.st_mtime and row["rate"] == ENV_RATE
+                and row["wave"] is not None):
             return row["peaks"]
-        peaks = compute_envelope(path)
+        peaks, wave = compute_envelope(path)
         with self.conn:
-            self.conn.execute("INSERT OR REPLACE INTO envelopes (file, size, mtime, rate, peaks)"
-                              " VALUES (?, ?, ?, ?, ?)", (name, st.st_size, st.st_mtime, ENV_RATE, peaks))
+            self.conn.execute("INSERT OR REPLACE INTO envelopes (file, size, mtime, rate, peaks, wave)"
+                              " VALUES (?, ?, ?, ?, ?, ?)", (name, st.st_size, st.st_mtime, ENV_RATE, peaks, wave))
         return peaks
+
+    def wave(self, name: str, path: Path) -> bytes:
+        """Cached highest and lowest point per 20 ms (two bytes a window) of a file."""
+        if not self.envelope(name, path):
+            return b""
+        row = self.conn.execute("SELECT wave FROM envelopes WHERE file = ?", (name,)).fetchone()
+        return (row["wave"] if row else None) or b""
 
     def loudness(self, name: str, path: Path) -> dict | None:
         """Cached integrated loudness, true peak and LRA of a file; measured on first use."""

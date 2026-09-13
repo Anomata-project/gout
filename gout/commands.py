@@ -1052,7 +1052,7 @@ def cmd_view(project: Project, args: Args) -> None:
              else f"{MASTER_WAV} not rendered")
     print(f"proj  {project.get('name')}  {project.rate} Hz  {len(tracks)} track"
           f"{'' if len(tracks) == 1 else 's'}  {state}")
-    for label, cells, _, _ in render_timeline(project, width):
+    for label, cells, _, _, _ in render_timeline(project, width):
         print(f"{label:<{LABEL_W}} {cells}".rstrip())
 
 
@@ -1097,3 +1097,35 @@ def cmd_addons(root_hint: Path | None, args: Args) -> None:
         missing = sorted(kind for kind in used if effect(kind) is None)
         if missing:
             print(f"       this project uses effects that are not installed: {', '.join(missing)}")
+
+
+def cmd_colors(root_hint: Path | None, args: Args) -> None:
+    """Which color.json is in use, what is wrong with it, and every setting with its value."""
+    from .theme import DEFAULTS, default_document, HELP, load_theme, user_file, FILE_NAME
+    init = args.flag("--init", "-i")
+    here = args.flag("--project", "-P")
+    force = args.flag("-f", "--force")
+    args.positionals("gout colors [--init [--project] [-f]]   (--init writes the defaults to fill in)")
+    project = Project.find(root_hint)
+    if init:
+        if here and project is None:
+            die("--project needs a project here or above")
+        target = project.root / FILE_NAME if here else user_file()
+        if target.exists() and not force:
+            die(f"{target} already exists — pass -f to replace it with the defaults")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(default_document())
+        print(f"colors wrote {target}  ({len(DEFAULTS)} settings, each explained under _help)")
+        return
+    theme, problems, path = load_theme(project.root if project else None)
+    where = str(path) if path else f"none: the defaults (gout colors --init writes {user_file()})"
+    print(f"colors {where}")
+    if project is not None and path != project.root / FILE_NAME:
+        print(f"       a {FILE_NAME} in {project.root} would take precedence for this project")
+    for problem in problems:
+        print(f"  problem: {problem}")
+    width = max(len(k) for k in DEFAULTS)
+    for key in DEFAULTS:
+        value = json.dumps(theme[key], ensure_ascii=False)
+        mark = " " if theme[key] == DEFAULTS[key] else "*"
+        print(f" {mark}{key:<{width}}  {value:<36} {HELP[key]}")

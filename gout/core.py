@@ -206,7 +206,7 @@ BASE_COMMANDS = {
     "set": ("se",), "stats": ("st",), "saveas": ("sa", "copy"), "stems": ("sm",), "import": ("im",),
     "new": ("n",), "cheat": ("c",), "help": ("h", "?"), "ui": ("tui",), "cut": (), "addons": (),
     "quit": ("q", "exit"), "clear": ("cl",), "split": ("sp",), "sheet": ("sh",), "version": ("-V",),
-    "play": ("pl",), "stop": (),
+    "play": ("pl",), "stop": (), "colors": ("colours",),
 }
 
 

@@ -13,6 +13,7 @@ from .commands import (
     cmd_add,
     cmd_addons,
     cmd_cheat,
+    cmd_colors,
     cmd_dump,
     cmd_fx,
     cmd_gain,
@@ -52,7 +53,8 @@ BASE_PROJECT_COMMANDS = {
 }
 
 
-FREE_COMMANDS = {"new": cmd_new, "rebuild": cmd_rebuild, "cheat": cmd_cheat, "addons": cmd_addons}
+FREE_COMMANDS = {"new": cmd_new, "rebuild": cmd_rebuild, "cheat": cmd_cheat, "addons": cmd_addons,
+                 "colors": cmd_colors}
 
 
 def command_table() -> dict[str, tuple[str, ...]]:

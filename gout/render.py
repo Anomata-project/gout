@@ -4,10 +4,12 @@ from __future__ import annotations
 import math
 import textwrap
 
-from .core import CELL_TRIMMED, CELL_ZERO, fmt_short, MASTER_WAV
-from .media import envelope_char
+from .core import CELL_ZERO, fmt_db, fmt_pan, fmt_short, MASTER_WAV
+from .media import ENV_RATE
 from .model import audible, is_heard
 from .fx import Effect, effect, effects, FxContext, GUTTER
+from .settings import setting
+from .theme import load_theme
 
 
 def blank_picture(head: str, height: int) -> list[tuple[str, str, str]]:
@@ -71,42 +73,143 @@ TICK_STEPS = (100, 250, 500, 1000, 2000, 5000, 10000, 15000, 30000, 60000, 12000
               600000, 900000, 1800000, 3600000, 7200000, 18000000)
 
 
-def render_timeline(project: Project, width: int, styled: bool = False,
-                    playhead_ms: int | None = None) -> list[tuple[str, str, str, str]]:
-    """Rows of (label, cells, kind, classes) for a timeline `width` columns wide.
+BRAILLE_BITS = ((0x01, 0x02, 0x04, 0x40), (0x08, 0x10, 0x20, 0x80))  # [dot column][dot row]
+WAVE_CLASSES = {"master": "m", "muted": "s", "trimmed": "t", "silent": "c"}
 
-    kind is axis, ruler, track, master or note. Every column of a track shows the
-    peak level of that slice of audio as a block ▁▂▃▄▅▆▇█ (6 dB per step). classes
-    marks each cell: a audible, s audible but muted or not soloed, t soft-trimmed
-    away, z the zero line, m master. Plain output draws trimmed material as ░;
-    `styled` (the ui) draws its envelope too and dims it.
+
+def track_class(index: int, palette_size: int) -> str:
+    """The class character for the index-th track's colour: '0', '1', ..."""
+    return chr(0x30 + index % max(1, palette_size))
+
+
+def wave_rows(columns: list[list[tuple[float, float, str] | None]], height: int, style: str) -> list[tuple[str, str]]:
+    """Draw a waveform `height` rows tall. columns: per character cell, per dot column (2 for
+    braille, 1 for blocks), None where there is no audio, else (up, down, class) with up and down
+    in 0..1 of half the height. Returns (cells, classes) per row."""
+    per_row = 4 if style == "braille" else 2
+    half = per_row * height // 2
+    rows_cells = [[" "] * len(columns) for _ in range(height)]
+    rows_classes = [[" "] * len(columns) for _ in range(height)]
+    for c, dots in enumerate(columns):
+        lit: set[tuple[int, int]] = set()  # (dot column, dot row from the top)
+        cls = " "
+        for x, spec in enumerate(dots):
+            if spec is None:
+                continue
+            up, down, kind = spec
+            if kind != "c" or cls == " ":
+                cls = kind
+            n_up = max(1, math.ceil(up * half - 1e-9))
+            n_down = max(1, math.ceil(down * half - 1e-9))
+            for y in range(half - min(n_up, half), half):
+                lit.add((x, y))
+            for y in range(half, half + min(n_down, half)):
+                lit.add((x, y))
+        if not lit:
+            continue
+        for r in range(height):
+            if style == "braille":
+                bits = 0
+                for (x, y) in lit:
+                    if y // 4 == r:
+                        bits |= BRAILLE_BITS[x][y % 4]
+                if bits:
+                    rows_cells[r][c] = chr(0x2800 + bits)
+                    rows_classes[r][c] = cls
+            else:
+                top, bottom = (0, 2 * r) in lit, (0, 2 * r + 1) in lit
+                if top or bottom:
+                    rows_cells[r][c] = "█" if top and bottom else ("▀" if top else "▄")
+                    rows_classes[r][c] = cls
+    return [("".join(rc), "".join(rk)) for rc, rk in zip(rows_cells, rows_classes)]
+
+
+def fit_layout(theme: dict, tracks: int, max_rows: int | None) -> tuple[int, int, int, int]:
+    """(master rows, track rows, gap rows, tracks shown) that fit max_rows, shrinking in steps:
+    tracks to one row, the master to one row, no gaps, then fewer tracks."""
+    mh, th, gap = theme["master_height"], theme["track_height"], theme["gap_rows"]
+
+    def need(mh_, th_, gap_, k):
+        return 2 + mh_ + (gap_ if k else 0) + k * th_ + max(0, k - 1) * gap_
+
+    if not max_rows:
+        return mh, th, gap, tracks
+    for mh_, th_, gap_ in ((mh, th, gap), (mh, 1, gap), (1, 1, gap), (1, 1, 0)):
+        if need(mh_, th_, gap_, tracks) <= max_rows:
+            return mh_, th_, gap_, tracks
+    k = tracks
+    while k > 0 and need(1, 1, 0, k) + 1 > max_rows:  # one row for "+N more"
+        k -= 1
+    return 1, 1, 0, k
+
+
+def render_timeline(project: "Project", width: int, styled: bool = False, playhead_ms: int | None = None,
+                    max_rows: int | None = None, theme: dict | None = None) -> list[tuple[str, str, str, str, str]]:
+    """Rows of (label, cells, kind, classes, label role) for a timeline `width` columns wide.
+
+    The master comes first, then every track, each a waveform some rows tall with a gap row
+    between them (color.json sets the heights, the gap and braille or blocks). Kinds: axis,
+    ruler, wave, gap, note. Cell classes: m master, a digit for a track's palette colour, s muted
+    or not soloed, t soft-trimmed away (styled only; plain output leaves it out), c silence and
+    the zero line, r ruler, l ruler labels, g gap, p playhead. Label roles are theme keys.
     """
+    theme = theme or load_theme(project.root)[0]
     tracks = project.tracks()
     tw = max(10, width - LABEL_W - 1)
-    master_ms = int(project.get("master_ms") or 0) if project.master.exists() else 0
     if not tracks:
-        return [("", "no tracks yet — add FILE", "note", "")]
+        return [("", "no tracks yet — add FILE", "note", "", "")]
+    style = theme["wave_style"]
+    per_cell = 2 if style == "braille" else 1
+    scale_db = theme["wave_scale"] == "db"
+    palette = len(theme["track_palette"])
+    master_ms = int(project.get("master_ms") or 0) if project.master.exists() else 0
+    head_ms = int(setting(project, "head"))
 
     t0 = min(0, min(t["offset_ms"] for t in tracks))
-    t1 = max(max(t["offset_ms"] + t["length_ms"] for t in tracks), master_ms, t0 + 1000)
+    t1 = max(max(t["offset_ms"] + t["length_ms"] for t in tracks), master_ms - head_ms, t0 + 1000)
     scale = tw / (t1 - t0)  # columns per millisecond
+    dot_ms = 1 / (scale * per_cell)
 
-    def col(ms: int) -> int:
+    def col(ms: float) -> int:
         return int((ms - t0) * scale)
 
-    def cols(a: int, b: int) -> tuple[int, int]:
-        start = max(0, min(tw - 1, col(a)))
-        end = max(start + 1, min(tw, math.ceil((b - t0) * scale)))
-        return start, end
+    def level(value: int) -> float:
+        v = min(value, 128) / 128
+        if not scale_db:
+            return v
+        return max(0.0, 1 + 20 * math.log10(v) / 48) if v > 0 else 0.0
 
-    def paint(cells: list[str], classes: list[str], env: bytes, offset: int, lo: int, hi: int,
-              first: int, last: int, cls: str) -> None:
-        """Envelope blocks for columns first..last-1, clipped to file time lo..hi."""
-        for c in range(first, last):
-            lo_ms = max(lo, t0 + c / scale - offset)
-            hi_ms = min(hi, t0 + (c + 1) / scale - offset)
-            cells[c] = envelope_char(env, lo_ms, hi_ms)
-            classes[c] = cls
+    def columns_for(wave: bytes, offset: int, length: int, a: int, b: int, cls: str, show_trimmed: bool):
+        """Dot columns across the timeline for audio placed at offset; a..b is what is heard."""
+        windows = len(wave) // 2
+        out = []
+        for c in range(tw):
+            dots = []
+            for x in range(per_cell):
+                t_lo = t0 + (c * per_cell + x) * dot_ms - offset
+                t_hi = t_lo + dot_ms
+                if t_hi <= 0 or t_lo >= length:
+                    dots.append(None)
+                    continue
+                heard = a < t_hi and t_lo < b
+                if not heard and not show_trimmed:
+                    dots.append(None)
+                    continue
+                kind = cls if heard else "t"
+                i0 = max(0, int(max(t_lo, 0) * ENV_RATE / 1000))
+                i1 = max(i0 + 1, min(windows, math.ceil(min(t_hi, length) * ENV_RATE / 1000)))
+                if i0 >= windows:
+                    dots.append((0.0, 0.0, "c" if heard else "t"))
+                    continue
+                up = max(wave[2 * i0:2 * i1:2], default=0)
+                down = max(wave[2 * i0 + 1:2 * i1:2], default=0)
+                if max(up, down) <= 1 and heard:
+                    kind = "c"  # silence: just the centre line
+                dots.append((level(up), level(down), kind))
+            out.append(dots)
+        return out
+
+    mh, th, gap, shown = fit_layout(theme if master_ms else {**theme, "master_height": 1}, len(tracks), max_rows)
 
     step = next((s for s in TICK_STEPS if s * scale >= 9), TICK_STEPS[-1])
     decimals = 0 if step >= 1000 else (2 if step == 250 else 1)
@@ -122,45 +225,58 @@ def render_timeline(project: Project, width: int, styled: bool = False,
                 labels[c:c + len(text)] = list(text)
                 last_end = c + len(text)
         tick += step
+    rows = [("", "".join(labels), "axis", "l" * tw, ""),
+            ("", "".join(ruler), "ruler", "r" * tw, "")]
     zero = col(0) if t0 < 0 else -1
-    rows = [("", "".join(labels), "axis", ""), ("", "".join(ruler), "ruler", "")]
+
+    def add_group(label_lines: list[tuple[str, str]], drawn: list[tuple[str, str]]) -> None:
+        for r, (cells, classes) in enumerate(drawn):
+            if 0 <= zero < tw and cells[zero] == " ":
+                cells, classes = cells[:zero] + CELL_ZERO + cells[zero + 1:], classes[:zero] + "c" + classes[zero + 1:]
+            text, role = label_lines[r] if r < len(label_lines) else ("", "")
+            rows.append((text[:LABEL_W].ljust(LABEL_W), cells, "wave", classes, role))
+
+    def add_gap() -> None:
+        char = theme["gap_char"] or " "
+        for _ in range(gap):
+            rows.append(("", char * tw, "gap", "g" * tw, ""))
+
+    # the master, first
+    if master_ms:
+        wave = project.wave(MASTER_WAV, project.master)
+        loud = project.get("master_lufs")
+        lines = [(" master", "master_label"), (f"  {float(loud):.1f} LUFS" if loud else "", "ruler_labels")]
+        add_group(lines, wave_rows(columns_for(wave, -head_ms, master_ms, 0, master_ms, "m", False), mh, style))
+    else:
+        rows.append((" master".ljust(LABEL_W), "not rendered yet: mix, or space to play", "note", "", "master_label"))
+    if shown:
+        add_gap()
 
     any_solo = any(t["solo"] for t in tracks)
-    for t in tracks:
-        cells, classes = [" "] * tw, [" "] * tw
-        if 0 <= zero < tw:
-            cells[zero], classes[zero] = CELL_ZERO, "z"
-        env = project.envelope(t["file"], project.tracks_dir / t["file"])
-        off, length = t["offset_ms"], t["length_ms"]
-        fs, fe = cols(off, off + length)
-        if styled:
-            paint(cells, classes, env, off, 0, length, fs, fe, "t")
-        else:
-            cells[fs:fe], classes[fs:fe] = [CELL_TRIMMED] * (fe - fs), ["t"] * (fe - fs)
+    for i, t in enumerate(tracks[:shown]):
+        if i:
+            add_gap()
+        wave = project.wave(t["file"], project.tracks_dir / t["file"])
         a, b = audible(t)
-        if b > a:
-            s_, e_ = cols(off + a, off + b)
-            paint(cells, classes, env, off, a, b, s_, e_, "a" if is_heard(t, any_solo) else "s")
+        cls = track_class(i, palette) if is_heard(t, any_solo) else "s"
         flags = ("M" if t["mute"] else " ") + ("S" if t["solo"] else " ")
-        rows.append((f"{t['n']:>2} {t['name'][:9]:<9} {flags}", "".join(cells), "track", "".join(classes)))
+        strip = " ".join(part for part in (fmt_db(t["gain_db"]) if t["gain_db"] else "",
+                                           fmt_pan(t["pan"]) if abs(t["pan"]) >= 0.005 else "") if part)
+        lines = [(f"{t['n']:>2} {t['name'][:9]:<9} {flags}", "track_label"), (f"   {strip}", "ruler_labels")]
+        drawn = wave_rows(columns_for(wave, t["offset_ms"], t["length_ms"], a, b, cls, styled), th, style)
+        add_group(lines, drawn)
+    if shown < len(tracks):
+        rows.append(("", f"+{len(tracks) - shown} more tracks, not enough room — ls lists them", "note", "", ""))
 
-    label = f"   {MASTER_WAV}"[:LABEL_W].ljust(LABEL_W)
-    if master_ms:
-        cells, classes = [" "] * tw, [" "] * tw
-        env = project.envelope(MASTER_WAV, project.master)
-        s_, e_ = cols(0, master_ms)
-        paint(cells, classes, env, 0, 0, master_ms, s_, e_, "m")
-        rows.append((label, "".join(cells), "master", "".join(classes)))
-    else:
-        rows.append((label, "not rendered — mix", "note", ""))
     if playhead_ms is not None and t0 <= playhead_ms <= t1:
         c = max(0, min(tw - 1, col(playhead_ms)))
         marked = []
-        for label_, cells, kind, classes in rows:
-            if kind in ("ruler", "track", "master") and len(cells) == tw:
-                cells = cells[:c] + (cells[c] if cells[c].strip() else "│") + cells[c + 1:]
+        for label, cells, kind, classes, role in rows:
+            if kind in ("ruler", "wave", "gap") and len(cells) == tw:
+                char = cells[c] if cells[c].strip() and kind == "wave" else "│"
+                cells = cells[:c] + char + cells[c + 1:]
                 classes = classes.ljust(tw)[:c] + "p" + classes.ljust(tw)[c + 1:]
-            marked.append((label_, cells, kind, classes))
+            marked.append((label, cells, kind, classes, role))
         rows = marked
     return rows
 
@@ -198,6 +314,7 @@ PROJECT
  quit  q  leave the ui  clear cl      empty the log
  split sp 50 | +5 | -5                left pane width (ui)
  sheet sh (or ctrl-e)                 parameters as a table
+ colors [--init]                      color.json settings
  addons   the addon folder and what loaded
 MASTER set KEY VALUE
  lufs -14|off  ceiling -1  gain -3    loudness, dBTP, gain

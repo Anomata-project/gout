@@ -25,8 +25,11 @@ PROJECT
                                   line plays and stops, left/right there move the playhead 5 s, and
                                   play FROM / stop work at the prompt. Player: ffplay, else pw-cat,
                                   paplay or aplay; GOUT_PLAYER picks one (null plays in silence)
-  gout view  v                    print the timeline once: one row per track, each column a
-                                  block ▁▂▃▄▅▆▇█ as tall as the peak there (6 dB per step)
+  gout view  v                    print the timeline once: the master first, then each track as a
+                                  waveform (braille dots from the real highest and lowest points)
+  gout colors [--init [--project]]  the 25 colour and layout settings from color.json: which file is in
+                                  use, what is wrong with it, every value; --init writes the defaults
+                                  to ~/.config/gout/color.json (--project: into this project)
   gout cheat c                    print the cheat sheet
   gout ls    l                    list the tracks and the state of {MASTER_WAV}
   gout mix   x  [-3] [-v]         render {MASTER_WAV} (32-bit float stereo); -3 also writes {MASTER_MP3}
