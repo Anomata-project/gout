@@ -224,6 +224,31 @@ class UiTest(GoutTest):
         self.assertIn("ctrl-g hides", head)
         self.assertGreater(pictures, 3)
 
+    def test_effect_panel_lets_go_of_an_effect_that_was_removed(self):
+        root = self.project("song", "bass.wav")
+        project, screen, ui = self.open_ui(root)
+
+        def line_for(command):
+            ui.input = command
+            ui.submit()
+            ui.draw()
+            return next((screen.row(y).split("│", 1)[1] for y in range(screen.h)
+                         if "│ 1 bass  " in screen.row(y) and "ctrl-g" in screen.row(y)), None)
+
+        self.assertIn("reverb 0.8s", line_for("reverb 1 room"))
+        self.assertIsNone(line_for("fx 1 clear"))  # the chain is empty: no panel line
+        self.assertEqual(project.tracks()[0]["fx"], [])
+
+        line_for("eq 1 hp80")
+        self.assertIn("comp", line_for("comp 1 vocal"))
+        self.assertIn("eq hp80", line_for("fx 1 2 rm"))  # the comp went: the eq that is left
+        self.assertIn("comp none", line_for("comp 1"))  # a look at an effect the track never had
+        self.assertIsNone(line_for("eq 1 clear"))
+
+        line_for("delay 1 slap")
+        self.assertIsNone(line_for("undo"))  # undo takes it away too
+        self.assertEqual(project.tracks()[0]["fx"], [])
+
     def test_grey_suggestion_is_taken_with_the_right_arrow(self):
         root = self.project("song", "bass.wav")
         project, screen, ui = self.open_ui(root)

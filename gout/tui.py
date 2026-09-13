@@ -687,6 +687,7 @@ class Tui:
     def sheet_apply(self, close: bool) -> None:
         rows = self.sheet_rows
         done = failed = 0
+        before = self.chain_kinds()
         buf = io.StringIO()
         for r in rows:
             if not r["id"] or r["id"] not in self.edits:
@@ -704,6 +705,7 @@ class Tui:
                 buf.write(f"error: {exc}\n")
                 failed += 1
         self.log.extend(buf.getvalue().rstrip("\n").splitlines())
+        self.settle_panel(before)
         if done and self.project.autorender:
             self.sheet_status = "rendering…"
             self.draw()
@@ -824,6 +826,31 @@ class Tui:
         self.show_panel = not self.show_panel  # the pictures only: the name line stays
         self.project.set("ui_fx_pictures", "on" if self.show_panel else "off")
 
+    def chain_kinds(self) -> dict[int, list[str]]:
+        """The effect kinds on every track and the master, by track number (master: MASTER_N)."""
+        chains = {t["n"]: [i["kind"] for i in t["fx"]] for t in self.project.tracks()}
+        chains[MASTER_N] = [i["kind"] for i in master_track(self.project)["fx"]]
+        return chains
+
+    def settle_panel(self, before: dict[int, list[str]]) -> None:
+        """After a change: when the effect the panel shows was on its track and is gone now (fx
+        clear, fx N rm, KIND clear, undo, the sheet), show the first effect left there, or no
+        panel line when the chain is empty. A look at an effect the track never had (eq 3 on a
+        track without an eq) keeps showing it as none."""
+        if self.panel_track is None:
+            return
+        after = self.chain_kinds()
+        if self.panel_track not in after:
+            self.panel_track = None
+            return
+        if self.panel_kind not in before.get(self.panel_track, []) or self.panel_kind in after[self.panel_track]:
+            return
+        left = [kind for kind in after[self.panel_track] if effect(kind) is not None]
+        if left:
+            self.panel_kind = left[0]
+        else:
+            self.panel_track = None
+
     def follow(self, head: str, argv: list[str]) -> None:
         """Point the effect panel at what an effect command just touched."""
         if len(argv) < 2 or argv[1].lower() in ("presets", "preset", "kinds", "effects"):
@@ -941,6 +968,7 @@ class Tui:
         else:
             self.busy = True
             self.draw()
+            before = self.chain_kinds()
             buf = io.StringIO()
             try:
                 with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
@@ -954,6 +982,7 @@ class Tui:
             self.log.extend(buf.getvalue().rstrip("\n").splitlines())
             if is_effect:
                 self.follow(head, argv)
+            self.settle_panel(before)
         del self.log[:-2000]
 
 
