@@ -7,8 +7,10 @@ import math
 import os
 import re
 import shlex
+import subprocess
 import sys
 import textwrap
+import time
 from pathlib import Path
 
 from .core import __version__, fmt_ms, fmt_pan, GoutError, is_master, MASTER_N, MASTER_WAV, parse_time
@@ -22,7 +24,7 @@ from .cli import aliases, command_table, run
 from .lineedit import LineEditor, path_candidates
 from .player import Player
 from .theme import load_theme, Palette
-from .commands import head_seconds
+from .commands import head_seconds, player_for
 
 
 # arrow, paging and editing sequences as curses key names, for terminals that send the plain form
@@ -36,6 +38,8 @@ ESCAPE_KEYS = {"[A": "KEY_UP", "OA": "KEY_UP", "[B": "KEY_DOWN", "OB": "KEY_DOWN
 TRACK_FIRST = {"move", "trim", "rm", "mute", "solo", "gain", "pan", "fx"}
 UI_WORDS = ("quit", "clear", "split", "sheet", "view", "help")
 HISTORY_FILE = ".gout/ui-history"
+IDLE_RENDER_SECONDS = 1.5  # how long nothing must change before the ui renders in the background
+PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 HISTORY_KEEP = 500
 
 
@@ -51,6 +55,11 @@ class Tui:
         self.palette = Palette(self.theme)
         self.player: Player | None = None
         self.playhead_ms = 0  # project time; stays where playback stopped
+        self.render_proc: subprocess.Popen | None = None  # a background mix, in its own process
+        self.render_state = ""       # the project state that render is making master.wav of
+        self.seen_state = ""         # the state at the last look, to notice changes
+        self.changed_at = 0.0
+        self.given_up_state = ""     # a state a render could not make current (nothing audible)
         self.start_dir = Path.cwd()  # file names complete from where gout was started
         self.line = LineEditor(self.complete_words)
         self.line.history = self.load_history()
@@ -162,7 +171,7 @@ class Tui:
         p = self.project
         tracks = p.tracks()
         title = (f" gout {p.get('name')}  {p.rate} Hz  {len(tracks)} track{'' if len(tracks) == 1 else 's'}"
-                 f"  autorender {'on' if p.autorender else 'off'}").ljust(left_w)
+                 f"  autorender {p.render_mode}").ljust(left_w)
         if self.scroll:
             tag = " ↑ scrolled, pgdn "
             title = title[:max(0, left_w - len(tag))] + tag
@@ -203,8 +212,10 @@ class Tui:
             top = 0
             if self.show_timeline:
                 where = self.play_position_ms()
-                state = (f"  ▶ {fmt_ms(where)}  space stops" if self.player
+                state = (f"  ▶ {fmt_ms(where)}{'  live' if self.player.live else ''}  space stops" if self.player
                          else (f"  ■ {fmt_ms(where)}  space plays" if where else "  space plays"))
+                if self.render_proc is not None:
+                    state += "   rendering master.wav…"
                 self.put(0, right_x, (" timeline" + state).ljust(right_w), self.palette.attr("header"))
                 room = max(3, h - 2 - 6) if self.show_cheat else max(3, h - 1)  # the cheat sheet keeps six lines
                 if self.show_panel and self.panel_track is not None:
@@ -297,7 +308,9 @@ class Tui:
             while self.running:
                 self.check_player()
                 self.draw()
-                self.scr.timeout(100 if self.player else -1)  # redraw the playhead while playing
+                self.background_render()
+                waiting = self.render_proc is not None or self.project.render_mode == "idle"
+                self.scr.timeout(100 if self.player else (250 if waiting else -1))  # playhead, renders
                 try:
                     key = self.scr.get_wch()
                 except KeyboardInterrupt:
@@ -307,6 +320,7 @@ class Tui:
                 self.handle(key)
         finally:
             self.stop_playing(keep=False)
+            self.cancel_render()
 
     # ---- playback
 
@@ -321,26 +335,85 @@ class Tui:
             self.playhead_ms = 0  # played to the end: back to the start
 
     def start_playing(self, from_ms: int | None = None) -> None:
-        """Play master.wav from the playhead (or from_ms), rendering it first if it is stale."""
+        """Play from the playhead (or from_ms): master.wav when it matches the project, the project
+        streamed live when it does not, so a change is heard at once."""
         self.stop_playing(keep=False)
         if from_ms is not None:
             self.playhead_ms = max(0, from_ms)
         p = self.project
-        if not p.master_is_current():
-            self.log.append(f"play  {MASTER_WAV} is out of date or missing: rendering it first")
-            self.run_logged(["mix"])
-            if not p.master_is_current():
+        buf = io.StringIO()
+        for attempt in (0, 1):
+            try:
+                with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+                    player = player_for(p, self.playhead_ms)
+                    player.start()
+                break
+            except GoutError as exc:
+                if attempt == 0 and self.playhead_ms and "past the end" in str(exc):
+                    self.playhead_ms = 0  # at the end: from the top
+                    continue
+                self.log.extend(buf.getvalue().rstrip("\n").splitlines())
+                self.log.append(f"error: {exc}")
                 return
-        length = int(p.get("master_ms") or 0) / 1000
-        head = head_seconds(p)
-        if self.playhead_ms / 1000 + head >= length:
-            self.playhead_ms = 0
-        try:
-            self.player = Player(p.master, self.playhead_ms / 1000 + head, length).start()
-        except GoutError as exc:
-            self.log.append(f"error: {exc}")
+        self.log.extend(buf.getvalue().rstrip("\n").splitlines())
+        self.player = player
+        how = "live, as the project is now" if player.live else MASTER_WAV
+        self.log.append(f"play  {how} from {fmt_ms(self.playhead_ms)}  ({player.backend}; space stops)")
+
+    # ---- rendering in the background
+
+    def background_render(self, now: float | None = None) -> None:
+        """With autorender idle: once the project has not changed for a moment and master.wav is
+        out of date, render it in a separate process; a change meanwhile cancels that render."""
+        now = time.monotonic() if now is None else now
+        p = self.project
+        if self.render_proc is not None:
+            if self.render_proc.poll() is None:
+                if p.state_fingerprint() != self.render_state:
+                    self.cancel_render()
+                    self.log.append("render  the project changed: starting over when it settles")
+                    self.seen_state, self.changed_at = "", now
+                return
+            output, _ = self.render_proc.communicate()
+            self.render_proc = None
+            self.log.extend(line for line in output.rstrip("\n").splitlines() if line.strip())
+            if not p.master_is_current():
+                self.given_up_state = self.render_state
             return
-        self.log.append(f"play  from {fmt_ms(self.playhead_ms)}  ({self.player.backend}; space stops)")
+        if p.render_mode != "idle" or self.player is not None or self.busy or self.mode != "prompt":
+            return
+        state = p.state_fingerprint()
+        if state != self.seen_state:
+            self.seen_state, self.changed_at = state, now
+            return
+        if now - self.changed_at < IDLE_RENDER_SECONDS or state == self.given_up_state:
+            return
+        if not p.tracks() or p.master_is_current():
+            return
+        code = (f"import sys; sys.path.insert(0, {str(PACKAGE_ROOT)!r}); from gout.cli import main; "
+                f"sys.exit(main(['-p', {str(p.root)!r}, 'mix']))")
+        self.render_proc = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE,
+                                            stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, text=True,
+                                            start_new_session=True)
+        self.render_state = state
+
+    def cancel_render(self) -> None:
+        if self.render_proc is None:
+            return
+        if self.render_proc.poll() is None:
+            try:
+                os.killpg(self.render_proc.pid, 15)
+            except (ProcessLookupError, PermissionError):
+                pass
+            try:
+                self.render_proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                self.render_proc.kill()
+        if self.render_proc.stdout:
+            self.render_proc.stdout.close()
+        self.render_proc = None
+        for leftover in ("master.raw.part.wav", "master.part.wav"):
+            (self.project.root / leftover).unlink(missing_ok=True)
 
     def stop_playing(self, keep: bool = True) -> None:
         if self.player is None:
@@ -475,7 +548,7 @@ class Tui:
             rows.append({"id": rid, "head": False, "name": name, "value": value, "hint": hint, "cmd": cmd})
 
         hints = {
-            "rate": "Hz", "autorender": "on | off",
+            "rate": "Hz", "autorender": "idle | on | off",
             "lufs": "-14 | -16 | -23 | off", "ceiling": "dBTP", "gain": "dB",
             "fadein": "500ms", "fadeout": "3s", "head": "500ms", "tail": "2s",
             "bits": "32f | 24 | 16", "mp3": "320k | 192k | v0", "bpm": "120",
@@ -494,7 +567,7 @@ class Tui:
                 "KIND [SETTINGS]: " + " | ".join(effects()))
         head(f"project  {p.get('name')}")
         row("set:rate", "rate", str(p.rate), lambda v: ["set", "rate", v], hints["rate"])
-        row("set:autorender", "autorender", "on" if p.autorender else "off",
+        row("set:autorender", "autorender", p.render_mode,
             lambda v: ["set", "autorender", v], hints["autorender"])
         for key in MASTER_DEFAULTS:
             value = setting(p, key)
@@ -807,6 +880,7 @@ class Tui:
         is_effect = head == "fx" or resolve(head) is not None
         if head in ("q", "quit", "exit"):
             self.stop_playing(keep=False)
+            self.cancel_render()
             self.running = False
         elif head in ("view", "timeline"):
             self.toggle("timeline")

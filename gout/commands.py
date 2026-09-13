@@ -34,7 +34,7 @@ from .model import audible, is_heard, timeline
 from .fx import Effect, effect, effects, FxContext, resolve
 from .settings import BITS_CODEC, MASTER_DEFAULTS, master_track, parse_setting, setting, TAG_KEYS
 from .project import legacy_chain, Project
-from .mixer import autorender, mix, sounding_end, track_chain, track_head
+from .mixer import autorender, live_source, mix, sounding_end, track_chain, track_head
 from .render import effect_picture, LABEL_W, render_cheat, render_timeline
 from .player import Player
 
@@ -205,7 +205,7 @@ def cmd_ls(project: Project, args: Args) -> None:
     args.positionals("gout ls")
     tracks = project.tracks()
     print(f"proj  {project.get('name')}  {project.rate} Hz  {len(tracks)} track"
-          f"{'' if len(tracks) == 1 else 's'}  {TRACK_DIR}/  autorender {'on' if project.autorender else 'off'}")
+          f"{'' if len(tracks) == 1 else 's'}  {TRACK_DIR}/  autorender {project.render_mode}")
     if not tracks:
         print("      no tracks yet — gout add FILE")
         return
@@ -229,7 +229,8 @@ def cmd_ls(project: Project, args: Args) -> None:
     if master_ms and project.master.exists():
         lufs, tp = project.get("master_lufs"), project.get("master_tp")
         loud = f"  {float(lufs):.1f} LUFS  peak {float(tp):+.1f} dBTP" if lufs and tp else ""
-        print(f"      {MASTER_WAV}  {fmt_ms(int(master_ms))}{loud}")
+        stale = "" if project.master_is_current() else "  (out of date: play streams the project live, mix renders it)"
+        print(f"      {MASTER_WAV}  {fmt_ms(int(master_ms))}{loud}{stale}")
     else:
         print(f"      {MASTER_WAV} not rendered — gout mix")
 
@@ -679,7 +680,7 @@ def cmd_set(project: Project, args: Args) -> None:
     pos = args.positionals(SET_USAGE, 0)
     if not pos:
         hints = {
-            "autorender": "render master.wav after every change",
+            "autorender": "idle: render in the ui's quiet moments; on: after every change; off: only mix",
             "lufs": "loudness target: -14 (streaming) -16 (Apple) -23 (broadcast) or off",
             "ceiling": "true-peak ceiling in dBTP for the loudness step",
             "bpm": "tempo, so delays can be note values like 1/8",
@@ -690,7 +691,7 @@ def cmd_set(project: Project, args: Args) -> None:
         }
         print(f"{'name':<11} {project.get('name')}")
         print(f"{'rate':<11} {project.rate}")
-        print(f"{'autorender':<11} {'on' if project.autorender else 'off':<14} {hints['autorender']}")
+        print(f"{'autorender':<11} {project.render_mode:<14} {hints['autorender']}")
         for key in MASTER_DEFAULTS:
             value = setting(project, key)
             if key in ("fadein", "fadeout", "head", "tail") and value != "0":
@@ -762,14 +763,28 @@ def cmd_mix(project: Project, args: Args) -> None:
     mix(project, args.verbose, mp3)
 
 
-def master_for_playing(project: Project) -> float:
-    """Render master.wav when it does not match the project; returns its length in seconds."""
-    if not project.master_is_current():
-        print(f"play  {MASTER_WAV} is out of date or missing: rendering it first")
+def player_for(project: Project, from_ms: int, render: bool = False) -> Player:
+    """A player for the project from from_ms: master.wav when it matches the project (or after
+    rendering it, with render), otherwise the project streamed live. Not started yet."""
+    if render and not project.master_is_current():
+        print(f"play  rendering {MASTER_WAV} first")
         mix(project)
-        if not project.master.exists():
-            die("nothing to play: no track is audible")
-    return probe(project.master)["duration"]
+    if project.master_is_current():
+        length = probe(project.master)["duration"]
+        head = head_seconds(project)
+        if from_ms / 1000 + head >= length:
+            die(f"{fmt_ms(from_ms)} is past the end of {MASTER_WAV} ({fmt_ms((length - head) * 1000)})")
+        return Player(project.master, from_ms / 1000 + head, length)
+    warnings: set[str] = set()
+    source = live_source(project, from_ms, warnings)
+    for warning in sorted(warnings):
+        print(f"      {warning}")
+    if source is None:
+        die("nothing to play: no track is audible there" + (f" from {fmt_ms(from_ms)}" if from_ms else ""))
+    args, length_ms = source
+    if length_ms <= 0:
+        die(f"{fmt_ms(from_ms)} is past the end of the project")
+    return Player(None, from_ms / 1000, (from_ms + length_ms) / 1000, stream=args)
 
 
 def head_seconds(project: Project) -> float:
@@ -783,14 +798,14 @@ def progress_bar(position: float, length: float, width: int = 30) -> str:
 
 
 def cmd_play(project: Project, args: Args) -> None:
-    pos = args.positionals("gout play [FROM]   e.g. gout play 1:30, gout play 45s  (ctrl-c stops)", 0, 1)
+    render = args.flag("--render", "-r")
+    pos = args.positionals("gout play [FROM] [-r]   e.g. gout play 1:30  (-r renders first; ctrl-c stops)", 0, 1)
     start = parse_ms(pos[0]) / 1000 if pos else 0.0
-    length = master_for_playing(project)
-    head = head_seconds(project)
-    if start + head >= length:
-        die(f"{fmt_ms(start * 1000)} is past the end of {MASTER_WAV} ({fmt_ms((length - head) * 1000)})")
-    player = Player(project.master, start + head, length).start()
-    print(f"play  {MASTER_WAV} from {fmt_ms(start * 1000)}  ({player.backend}; ctrl-c stops)")
+    player = player_for(project, round(start * 1000), render).start()
+    head = 0.0 if player.live else head_seconds(project)
+    length = player.length_s
+    what = "live (master.wav is out of date; mix or play -r renders it)" if player.live else MASTER_WAV
+    print(f"play  {what} from {fmt_ms(start * 1000)}  ({player.backend}; ctrl-c stops)")
     live = sys.stdout.isatty()
     try:
         while player.running():
@@ -875,6 +890,8 @@ def apply_document(project: Project, data: dict, settings: bool = True, tracks: 
                 continue
             if key == "automix":
                 key = "autorender"
+            if key == "autorender" and value == "on" and "settings_version" not in (data.get("project") or {}):
+                value = "idle"  # a document from before render modes, where on was only the default
             if key not in ("rate", "autorender") and key not in MASTER_DEFAULTS:
                 continue  # something a newer or older gout knew about
             try:
@@ -1038,7 +1055,7 @@ def cmd_rebuild(root_hint: Path | None, args: Args) -> None:
     else:
         print(f"      no {SIDECAR} found: every track at 0, default settings")
     project.sync_json()
-    if files and project.autorender:
+    if files and project.render_mode != "off":
         mix(project)
 
 

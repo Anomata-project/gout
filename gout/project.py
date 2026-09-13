@@ -108,6 +108,10 @@ class Project:
         if "wave" not in {r[1] for r in self.conn.execute("PRAGMA table_info(envelopes)")}:
             with self.conn:
                 self.conn.execute("ALTER TABLE envelopes ADD COLUMN wave BLOB")
+        if self.get("settings_version") is None:  # before render modes: on was the default, idle is now
+            if self.get("autorender") == "on":
+                self.set("autorender", "idle")
+            self.set("settings_version", "2")
         old = self.get("automix")  # the setting was called automix before 2.0.0 final
         if old is not None:
             if self.get("autorender") is None:
@@ -157,7 +161,7 @@ class Project:
         project = cls(root)
         project.set("name", root.resolve().name)
         project.set("rate", str(rate))
-        project.set("autorender", "on")
+        project.set("autorender", "idle")
         project.set("created", dt.datetime.now().isoformat(timespec="seconds"))
         return project
 
@@ -180,8 +184,16 @@ class Project:
         return int(self.get("rate") or DEFAULT_RATE)
 
     @property
+    def render_mode(self) -> str:
+        """on: render after every change; idle: the ui renders in the background when idle;
+        off: only mix, stems and play render."""
+        mode = self.get("autorender") or "idle"
+        return mode if mode in ("on", "idle", "off") else "idle"
+
+    @property
     def autorender(self) -> bool:
-        return (self.get("autorender") or "on") != "off"
+        """Whether a change renders master.wav right away."""
+        return self.render_mode == "on"
 
     # ---- tracks
 

@@ -20,9 +20,10 @@ PROJECT
                                   (kept per project), tab completes commands, tracks, presets and file
                                   names from where gout was started, right arrow takes the grey
                                   suggestion after the cursor
-  gout play  pl [FROM]            play master.wav from FROM (1:30, 45s), rendering it first when it does
-                                  not match the project; ctrl-c stops. In the ui: space on an empty
-                                  line plays and stops, left/right there move the playhead 5 s, and
+  gout play  pl [FROM] [-r]       play from FROM (1:30, 45s): master.wav when it matches the project,
+                                  otherwise the project streamed live, effects and all, at once
+                                  (-r renders first instead); ctrl-c stops. In the ui: space on an
+                                  empty line plays and stops, left/right there move the playhead 5 s,
                                   play FROM / stop work at the prompt. Player: ffplay, else pw-cat,
                                   paplay or aplay; GOUT_PLAYER picks one (null plays in silence)
   gout view  v                    print the timeline once: the master first, then each track as a
@@ -43,7 +44,10 @@ PROJECT
                                   (-s settings only, e.g. a master template; -t tracks only)
   gout rebuild rb [-f]            recreate {DB_NAME} from the files in {TRACK_DIR}/, then restore positions,
                                   trims and settings from {SIDECAR} when it is there
-  gout set   se KEY VALUE         settings; gout set alone lists them:  autorender on|off,  rate HZ
+  gout set   se KEY VALUE         settings; gout set alone lists them:  rate HZ, and autorender idle|on|off:
+                                  idle (default) changes are instant and the ui renders master.wav when
+                                  nothing has changed for a moment; on renders after every change;
+                                  off only when you mix. Out of date, play streams the project live.
   gout stats st                   integrated LUFS, LRA and true peak per track file, and for {MASTER_WAV}
 
 MASTER   (gout set KEY VALUE)

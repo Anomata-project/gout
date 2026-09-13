@@ -60,8 +60,7 @@ points at it: `scan` reports it as missing. `gout rebuild` is the last resort: i
 
 Every command has a long and a short name; `gout add` and `gout a` are the same. Run them
 inside the project, or pass `-p DIR` first. `TRACK` is the number shown by `ls` or the track
-name (a unique prefix will do). `-N` / `--no-mix` on any change skips the automatic re-mix;
-`gout set autorender off` turns it off for good. `gout cheat` prints the whole sheet.
+name (a unique prefix will do). `-N` / `--no-mix` on any change skips an automatic render when autorender is on (see Playing). `gout cheat` prints the whole sheet.
 
 | long | short | arguments | meaning |
 | --- | --- | --- | --- |
@@ -86,7 +85,7 @@ name (a unique prefix will do). `-N` / `--no-mix` on any change skips the automa
 | `reverb` | `rv` | `TRACK DECAY [pN dN wN] \| PRESET \| on \| off \| clear` | reverb after the fader; `reverb TRACK` draws its decay |
 | `comp` | `cp` | `TRACK SETTINGS... \| PRESET \| on \| off \| clear` | compressor after the eq; `comp TRACK` shows its curve |
 | `fx` | `f` | `TRACK [add KIND ... \| N SETTINGS \| N on\|off\|rm \| N move M \| clear]` | the track's (or master's) effect chain, in order; `fx kinds` lists every effect |
-| `play` | `pl` | `[FROM]` | play `master.wav`, rendering it first when stale; in the ui, space plays and stops |
+| `play` | `pl` | `[FROM] [-r]` | play `master.wav`, or the project live when it is out of date; in the ui, space plays and stops |
 | `mix` | `x` | `[-3] [-v]` | render `master.wav`; `-3` / `--mp3` also writes `master.mp3` |
 | `undo` | `u` | | undo the last change (not a hard trim or `rm -D`) |
 | `stems` | `sm` | `[DIR] [-A]` | one wav per track, processed as in the mix and all the same length, into `stems/`; `-A` only what the mix hears |
@@ -104,20 +103,37 @@ Long flags exist for every short one: `--at --name --hard --clear --reencode --d
 ## Playing
 
 ```sh
-gout play            # master.wav from the start; ctrl-c stops and says where
+gout play            # from the start; ctrl-c stops and says where
 gout play 1:30       # from a minute and a half in
+gout play -r         # render master.wav first, then play the file
 ```
 
-`play` compares `master.wav` with the project first (settings, tracks, effects and the track files)
-and renders it when it is out of date, so what you hear is what the project says. It plays through
-`ffplay` when ffmpeg came with it, and otherwise pipes decoded audio into `pw-cat` (PipeWire),
-`paplay` (PulseAudio) or `aplay` (ALSA). `GOUT_PLAYER=paplay` picks one; `GOUT_PLAYER=null` plays in
-real time without sound.
+When `master.wav` matches the project, `play` plays it. When it does not (you changed something
+since the last render), `play` streams the project live: the tracks, their effects, the master
+chain, gain and fades run straight into the player, starting at once from the playhead. Audio
+before the playhead is cut off before any effect sees it, so starting late in a long song costs
+nothing. A loudness target cannot be applied live (it needs the whole mix), so live playback uses
+the gain the last render measured, with a limiter holding peaks under -1 dBFS.
+
+It plays through `ffplay` when ffmpeg came with it, otherwise it pipes decoded audio into `pw-cat`
+(PipeWire), `paplay` (PulseAudio) or `aplay` (ALSA). `GOUT_PLAYER=paplay` picks one;
+`GOUT_PLAYER=null` plays in real time without sound; `GOUT_PLAYER=file:out.wav` writes what would be
+heard to a file.
 
 In the ui, space on an empty prompt plays and stops, like the space bar in a DAW. Stopping leaves
 the playhead where it was and the next play carries on from there; `stop` again, or playing to the
 end, puts it back at the start. While the prompt is empty, left and right move the playhead five
-seconds. The timeline header shows the position and a marker runs across the tracks.
+seconds. The timeline header shows the position (and `live` when streaming) and a marker runs across
+the tracks.
+
+### When master.wav is rendered
+
+`gout set autorender idle|on|off` decides. `idle`, the default, makes changes instant: nothing is
+rendered when you add an effect or move a track. In the ui, once nothing has changed for about a
+second and a half, `master.wav` is rendered in a separate process while you keep working, and a
+new change cancels it and waits again. The timeline draws an out-of-date master in grey and says
+so. `on` renders after every change, from the shell too, as older versions did; `off` renders only
+when you run `mix`. `stems`, `mix` and `play -r` always render what they need.
 
 ## The terminal ui
 

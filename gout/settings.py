@@ -27,6 +27,8 @@ def parse_setting(key: str, value: str) -> tuple[str, str]:
     """Validate a `set` value; returns (canonical key, stored string)."""
     v = value.strip()
     if key in ("autorender", "automix"):
+        if v.lower() == "idle":
+            return "autorender", "idle"
         return "autorender", "on" if on_off(v, 0) else "off"
     if key == "rate":
         if not v.isdigit() or not 8000 <= int(v) <= 384000:

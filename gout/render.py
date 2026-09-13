@@ -245,10 +245,14 @@ def render_timeline(project: "Project", width: int, styled: bool = False, playhe
     if master_ms:
         wave = project.wave(MASTER_WAV, project.master)
         loud = project.get("master_lufs")
-        lines = [(" master", "master_label"), (f"  {float(loud):.1f} LUFS" if loud else "", "ruler_labels")]
-        add_group(lines, wave_rows(columns_for(wave, -head_ms, master_ms, 0, master_ms, "m", False), mh, style))
+        current = project.master_is_current()
+        second = (f"  {float(loud):.1f} LUFS" if loud else "") if current else "  out of date"
+        lines = [(" master", "master_label"), (second, "ruler_labels")]
+        drawn = columns_for(wave, -head_ms, master_ms, 0, master_ms, "m" if current else "s", False)
+        add_group(lines, wave_rows(drawn, mh, style))
     else:
-        rows.append((" master".ljust(LABEL_W), "not rendered yet: mix, or space to play", "note", "", "master_label"))
+        rows.append((" master".ljust(LABEL_W), "not rendered yet: space plays the project live", "note", "",
+                     "master_label"))
     if shown:
         add_gap()
 
@@ -298,7 +302,7 @@ MIXER
  gain  g  TRACK -6                    dB, -60 .. +24
  pan   p  TRACK L30 | R30 | C         all start at C
 {EFFECTS} mix   x  [-3] [-v]                   -3 also master.mp3
- play  pl [FROM]                      hear master.wav
+ play  pl [FROM] [-r]                 hear it, live if stale
 PROJECT
  undo  u                              not hard trim / rm -D
  view  v  [-w COLS]                   print the timeline

@@ -76,11 +76,12 @@ def chain_graph(project: "Project", t: dict, pre: list[str], post: list[str], sr
     return ";".join(parts)
 
 
-def track_head(project: "Project", t: dict) -> list[str] | None:
+def track_head(project: "Project", t: dict, shift_ms: int = 0) -> list[str] | None:
     """The filters that put a track on the timeline in stereo: format, soft trim, position.
-    None when nothing of it is audible."""
+    shift_ms starts the timeline that late (live playback from the playhead): what comes before
+    is trimmed off here, before any effect sees it. None when nothing of it is audible."""
     a, b = audible(t)
-    start = t["offset_ms"] + a
+    start = t["offset_ms"] + a - shift_ms
     trim_start, delay = a, start
     if start < 0:  # the head hangs before the timeline: cut it, no delay
         trim_start, delay = a - start, 0
@@ -98,10 +99,10 @@ def track_head(project: "Project", t: dict) -> list[str] | None:
 
 
 def track_chain(project: "Project", t: dict, src: str, out: str, inputs: list[Path],
-                warnings: set[str] | None = None) -> str | None:
+                warnings: set[str] | None = None, shift_ms: int = 0) -> str | None:
     """One track's whole filtergraph from its input label to [out]: position, effects in
     order, then gain and pan like a channel strip's fader. None when nothing is audible."""
-    head = track_head(project, t)
+    head = track_head(project, t, shift_ms)
     if head is None:
         return None
     post = []
@@ -112,14 +113,14 @@ def track_chain(project: "Project", t: dict, src: str, out: str, inputs: list[Pa
     return chain_graph(project, t, head, post, src, out, inputs, warnings)
 
 
-def build_graph(project: "Project", tracks: list[dict], warnings: set[str] | None = None
-                ) -> tuple[list[Path], str, list[dict]]:
+def build_graph(project: "Project", tracks: list[dict], warnings: set[str] | None = None,
+                shift_ms: int = 0) -> tuple[list[Path], str, list[dict]]:
     any_solo = any(t["solo"] for t in tracks)
-    used = [t for t in tracks if is_heard(t, any_solo) and track_head(project, t) is not None]
+    used = [t for t in tracks if is_heard(t, any_solo) and track_head(project, t, shift_ms) is not None]
     if not used:
         return [], "", []
     inputs: list[Path] = [project.tracks_dir / t["file"] for t in used]  # effect files follow
-    chains = [track_chain(project, t, f"[{i}:a]", f"t{i}", inputs, warnings) for i, t in enumerate(used)]
+    chains = [track_chain(project, t, f"[{i}:a]", f"t{i}", inputs, warnings, shift_ms) for i, t in enumerate(used)]
     labels = "".join(f"[t{i}]" for i in range(len(used)))
     chains.append(f"{labels}amix=inputs={len(used)}:normalize=0:duration=longest"
                   f":dropout_transition=0[mix]")
@@ -239,6 +240,10 @@ def mix(project: Project, verbose: bool = False, mp3: bool = False) -> None:
         project.set(key, "" if got is None else f"{got[field]:.2f}")
     project.envelope(MASTER_WAV, project.master)
     project.set("master_state", state)
+    if target is not None and measured is not None and got is not None:
+        project.set("master_norm_db", f"{got['i'] - measured['i']:.2f}")  # what live playback applies
+    else:
+        project.unset("master_norm_db")
     skipped = len(tracks) - len(used)
     note = f"  ({len(used)} of {len(tracks)} tracks)" if skipped else ""
     print(f"mix   {MASTER_WAV}  {fmt_ms(length_ms)}  {fmt_lufs(got)}{note}")
@@ -257,8 +262,42 @@ def mix(project: Project, verbose: bool = False, mp3: bool = False) -> None:
         print(f"      {MASTER_MP3}  {fmt_size(out.stat().st_size)}  ({quality})")
 
 
+def live_source(project: "Project", from_ms: int, warnings: set[str] | None = None) -> tuple[list[str], int] | None:
+    """ffmpeg arguments (inputs and filtergraph, mapped to one stream, no output) that play the
+    project from from_ms without rendering it: the tracks, their effects, the master chain, gain
+    and fades as in mix. A loudness target is applied as the gain the last render measured, and a
+    limiter keeps peaks under -1 dBFS, since the real loudness step needs the whole mix.
+    Returns (arguments, length of what will play in ms), or None when nothing is audible."""
+    tracks = project.tracks()
+    inputs, graph, used = build_graph(project, tracks, warnings, from_ms)
+    if not inputs:
+        return None
+    master = master_track(project)
+    end_ms = max(sounding_end(project, t) for t in used) + effect_tail_ms(project, master)
+    after: list[str] = []
+    gain = float(setting(project, "gain"))
+    if gain:
+        after.append(f"volume={gain:.2f}dB")
+    fade_in, fade_out = int(setting(project, "fadein")), int(setting(project, "fadeout"))
+    if fade_in > 0 and from_ms < fade_in:
+        after.append(f"afade=t=in:st=0:d={(fade_in - from_ms) / 1000:.3f}")
+    if fade_out > 0:
+        start = max(0, end_ms - fade_out - from_ms)
+        after.append(f"afade=t=out:st={start / 1000:.3f}:d={min(fade_out, end_ms - from_ms) / 1000:.3f}")
+    norm = project.get("master_norm_db")
+    if setting(project, "lufs") != "off" and norm:
+        after.append(f"volume={float(norm):.2f}dB")
+    after.append("alimiter=limit=0.891:level=false:latency=true")  # no lookahead delay on the playhead
+    graph = graph[:-len("[mix]")] + "[sum];" + chain_graph(project, master, [], after, "[sum]", "live", inputs, warnings)
+    args: list[str] = []
+    for path in inputs:
+        args += ["-i", str(path)]
+    args += ["-filter_complex", graph, "-map", "[live]"]
+    return args, max(0, end_ms - from_ms)
+
+
 def autorender(project: Project, args: "Args") -> None:
-    """Re-render master.wav after a change, unless -N was given or the setting is off."""
+    """Re-render master.wav after a change when autorender is on, unless -N was given."""
     if args.no_mix:
         return
     if project.autorender:

@@ -6,19 +6,21 @@ from test_ui import FakeScreen
 
 
 class PlayTest(GoutTest):
-    def test_play_renders_a_stale_master_and_takes_real_time(self):
-        self.project("song", "click.wav")  # 4 s
+    def test_play_streams_a_stale_project_live_and_takes_real_time(self):
+        root = self.project("song", "click.wav")  # 4 s
         started = time.monotonic()
         out = self.gout("play", "2.5s").stdout
-        self.assertIn("rendering it first", out)
+        self.assertIn("live", out)
         self.assertIn("finished", out)
         self.assertGreater(time.monotonic() - started, 1.4)  # 1.5 s of audio
-        started = time.monotonic()
-        out = self.gout("play", "3s").stdout
-        self.assertNotIn("rendering", out)  # already current
-        self.assertLess(time.monotonic() - started, 3)
+        self.assertFalse((root / "master.wav").exists())  # nothing rendered
+        out = self.gout("play", "3s", "-r").stdout  # -r renders first, then plays the file
+        self.assertIn("rendering", out)
+        self.assertNotIn("live", out)
+        self.assertTrue((root / "master.wav").exists())
+        self.assertNotIn("live", self.gout("play", "3.5s").stdout)  # current: the file
         self.gout("gain", "1", "-3")
-        self.assertIn("rendering", self.gout("play", "3.5s").stdout)  # a change makes it stale
+        self.assertIn("live", self.gout("play", "3.5s").stdout)  # a change: live again
         self.gout("play", "10s", ok=False)
         self.gout("stop", ok=False)  # only means something in the ui
 
@@ -29,9 +31,10 @@ class PlayTest(GoutTest):
         project = gout_attr("project", "Project")(root)
         screen = FakeScreen(30, 120)
         ui = gout_attr("tui", "Tui")(project, screen)
-        ui.handle(" ")  # empty line: play
+        ui.handle(" ")  # empty line: play, live since nothing is rendered
         self.assertIsNotNone(ui.player)
-        self.assertTrue(project.master.exists())
+        self.assertTrue(ui.player.live)
+        self.assertFalse(project.master.exists())
         time.sleep(0.6)
         ui.draw()
         header = next(screen.row(y) for y in range(30) if "timeline" in screen.row(y))
