@@ -4,21 +4,18 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from .core import __version__, DB_NAME, die, GoutError, need_tools
+from .core import __version__, BASE_COMMANDS, DB_NAME, die, GoutError, need_tools
 from .project import Project
-from .helptext import HELP
+from .helptext import help_text
+from .fx import effects
 from .commands import (
     Args,
     cmd_add,
     cmd_cheat,
-    cmd_comp,
-    cmd_delay,
     cmd_dump,
-    cmd_eq,
+    cmd_fx,
     cmd_gain,
-    cmd_hp,
     cmd_import,
-    cmd_lp,
     cmd_ls,
     cmd_mix,
     cmd_move,
@@ -26,7 +23,6 @@ from .commands import (
     cmd_new,
     cmd_pan,
     cmd_rebuild,
-    cmd_reverb,
     cmd_rm,
     cmd_saveas,
     cmd_scan,
@@ -38,28 +34,15 @@ from .commands import (
     cmd_ui,
     cmd_undo,
     cmd_view,
+    effect_commands,
+    run_tui,
 )
 from .cut import cmd_cut
-from .commands import run_tui
 
 
-# long name -> the short form and the other spellings; every command works under all of them
-COMMANDS = {
-    "add": ("a",), "scan": ("sc",), "ls": ("l", "list"), "view": ("v",), "move": ("m", "mv"), "trim": ("t",),
-    "rm": ("r", "remove", "del"), "mute": ("mu",), "solo": ("s",), "gain": ("g",), "pan": ("p",), "eq": ("e",), "hp": (), "lp": (), "comp": ("cp",), "delay": ("dl", "echo"), "reverb": ("rv", "verb"),
-    "mix": ("x", "render", "bounce"), "undo": ("u",), "dump": ("dp",), "rebuild": ("rb",),
-    "set": ("se",), "stats": ("st",), "saveas": ("sa", "copy"), "stems": ("sm",), "import": ("im",), "new": ("n",), "cheat": ("c",), "help": ("h", "?"), "ui": ("tui",), "cut": (),
-    "quit": ("q", "exit"), "clear": ("cl",), "split": ("sp",), "sheet": ("sh",),
-}
-
-
-ALIASES = {alias: name for name, aliases in COMMANDS.items() for alias in aliases}
-
-
-PROJECT_COMMANDS = {
+BASE_PROJECT_COMMANDS = {
     "add": cmd_add, "scan": cmd_scan, "ls": cmd_ls, "move": cmd_move, "trim": cmd_trim, "rm": cmd_rm,
-    "mute": cmd_mute, "solo": cmd_solo, "gain": cmd_gain, "pan": cmd_pan,
-    "eq": cmd_eq, "hp": cmd_hp, "lp": cmd_lp, "comp": cmd_comp, "delay": cmd_delay, "reverb": cmd_reverb,
+    "mute": cmd_mute, "solo": cmd_solo, "gain": cmd_gain, "pan": cmd_pan, "fx": cmd_fx,
     "set": cmd_set, "stats": cmd_stats, "mix": cmd_mix, "undo": cmd_undo, "dump": cmd_dump,
     "saveas": cmd_saveas, "stems": cmd_stems, "import": cmd_import,
     "view": cmd_view, "ui": cmd_ui,
@@ -67,6 +50,24 @@ PROJECT_COMMANDS = {
 
 
 FREE_COMMANDS = {"new": cmd_new, "rebuild": cmd_rebuild, "cheat": cmd_cheat}
+
+
+def command_table() -> dict[str, tuple[str, ...]]:
+    """Long name -> short names, for every command including the effects'."""
+    table = dict(BASE_COMMANDS)
+    for eff in effects().values():
+        table[eff.name] = eff.aliases
+        for name in eff.shortcuts:
+            table[name] = ()
+    return table
+
+
+def aliases() -> dict[str, str]:
+    return {alias: name for name, short in command_table().items() for alias in short}
+
+
+def project_commands() -> dict:
+    return {**BASE_PROJECT_COMMANDS, **effect_commands()}
 
 
 def run(argv: list[str], project: Project | None = None) -> int:
@@ -87,7 +88,7 @@ def run(argv: list[str], project: Project | None = None) -> int:
     if not argv:
         found = project or Project.find(root_hint)
         if found is None:
-            print(HELP, end="")
+            print(help_text(), end="")
             return 0
         need_tools()
         if sys.stdin.isatty() and sys.stdout.isatty():
@@ -97,9 +98,9 @@ def run(argv: list[str], project: Project | None = None) -> int:
         return 0
 
     head, rest = argv[0], argv[1:]
-    head = ALIASES.get(head, head)
+    head = aliases().get(head, head)
     if head in ("-h", "--help", "help"):
-        print(HELP, end="")
+        print(help_text(), end="")
         return 0
     if head in ("-V", "--version", "version"):
         print(f"gout {__version__}")
@@ -111,11 +112,12 @@ def run(argv: list[str], project: Project | None = None) -> int:
     if head in FREE_COMMANDS:
         FREE_COMMANDS[head](root_hint, Args(rest))
         return 0
-    if head in PROJECT_COMMANDS:
+    table = project_commands()
+    if head in table:
         found = project or Project.find(root_hint)
         if found is None:
             die(f"not inside a gout project (no {DB_NAME} here or above) — gout new NAME")
-        PROJECT_COMMANDS[head](found, Args(rest))
+        table[head](found, Args(rest))
         found.sync_json()
         return 0
     if head == "cut":

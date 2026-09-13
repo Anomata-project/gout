@@ -12,12 +12,12 @@ import textwrap
 
 from .core import __version__, fmt_ms, fmt_pan, GoutError, is_master, MASTER_N
 from .model import audible, timeline
-from .effects.eq import EQ_GUTTER
+from .fx import effect, effects, GUTTER, resolve
 from .settings import MASTER_DEFAULTS, master_track, setting
 from .render import LABEL_W, render_cheat, render_panel, render_timeline
-from .helptext import HELP
-from .commands import save_as
-from .cli import ALIASES, run
+from .helptext import help_text
+from .commands import save_as, slot_of
+from .cli import aliases, run
 
 
 # arrow and paging sequences as curses key names, for terminals that send the plain form
@@ -45,9 +45,9 @@ class Tui:
         self.sheet_errors: dict[str, str] = {}
         self.sheet_status = ""
         self.saveas_name: str | None = None  # the "save as:" field in the sheet while it is open
-        self.eq_track: int | None = None  # track number whose eq and compressor curves the panel shows
-        self.show_eq = True
-        self.panel_prefer = "eq"  # which curve a narrow panel shows: the one last touched
+        self.panel_track: int | None = None  # the track (0: master) whose effect the panel shows
+        self.panel_kind = "eq"               # which effect: the one last touched
+        self.show_panel = True
         self.show_timeline = (project.get("ui_timeline") or "on") != "off"
         self.show_cheat = (project.get("ui_cheat") or "on") != "off"
         split = project.get("ui_split") or "40"
@@ -126,7 +126,7 @@ class Tui:
                 self.put(0, right_x, " timeline".ljust(right_w), curses.A_REVERSE)
                 rows = render_timeline(p, right_w, styled=True)
                 room = max(3, h - 2 - 6) if self.show_cheat else max(3, h - 1)  # sheet keeps six lines
-                if self.show_eq and self.eq_track is not None:
+                if self.show_panel and self.panel_track is not None:
                     room = max(3, room - (10 if h >= 32 else 8))
                 if len(rows) > room:
                     heads = [r for r in rows if r[2] in ("axis", "ruler")]
@@ -141,24 +141,22 @@ class Tui:
                     self.draw_cells(y, right_x + LABEL_W + 1, cells, kind, classes)
                 top = 1 + len(rows)
 
-        if right_x is not None and self.show_eq and self.eq_track is not None:
-            track = master_track(p) if self.eq_track == MASTER_N else \
-                next((t for t in tracks if t["n"] == self.eq_track), None)
+        if right_x is not None and self.show_panel and self.panel_track is not None:
+            track = master_track(p) if self.panel_track == MASTER_N else \
+                next((t for t in tracks if t["n"] == self.panel_track), None)
             if track is None:
-                self.eq_track = None
+                self.panel_track = None
             else:
                 height = 8 if h >= 32 else 6
-                path = p.master if self.eq_track == MASTER_N else p.tracks_dir / track["file"]
-                peaks = (p.envelope(track["file"], path) if path.exists() else b"") or None
-                rows = render_panel(p, track, right_w - 1, height, self.spectrum_for(track), peaks,
-                                    self.panel_prefer)
-                self.put(top, right_x, (" " + rows[0][0][:right_w - 16] + "   ctrl-g hides").ljust(right_w),
-                         curses.A_REVERSE)
+                rows = render_panel(p, track, right_w - 1, height, self.panel_kind)
+                who = "master" if self.panel_track == MASTER_N else f"{track['n']} {track['name']}"
+                self.put(top, right_x, (f" {who}  " + rows[0][0])[:right_w - 15].ljust(right_w - 15)
+                         + "  ctrl-g hides", curses.A_REVERSE)
                 for i, (text, classes, kind) in enumerate(rows[1:], 1):
                     if top + i >= h:
                         break
-                    self.put(top + i, right_x + 1, text[:EQ_GUTTER], curses.A_DIM)
-                    self.draw_cells(top + i, right_x + 1 + EQ_GUTTER, text[EQ_GUTTER:], kind, classes[EQ_GUTTER:])
+                    self.put(top + i, right_x + 1, text[:GUTTER], curses.A_DIM)
+                    self.draw_cells(top + i, right_x + 1 + GUTTER, text[GUTTER:], kind, classes[GUTTER:])
                 top += len(rows)
 
         if right_x is not None and self.show_cheat:
@@ -177,12 +175,6 @@ class Tui:
         except curses.error:
             pass
         scr.refresh()
-
-    def spectrum_for(self, track: dict) -> bytes | None:
-        path = self.project.master if track["n"] == MASTER_N else self.project.tracks_dir / track["file"]
-        if not path.exists():
-            return None
-        return self.project.spectrum(track["file"], path) or None
 
     def draw_cells(self, y: int, x: int, cells: str, kind: str, classes: str = "") -> None:
         import curses
@@ -227,8 +219,8 @@ class Tui:
             return
         if key == "\x05":  # ctrl-e
             self.sheet_open()
-        elif key == "\x07":  # ctrl-g: the eq curve panel
-            self.toggle_eq()
+        elif key == "\x07":  # ctrl-g: the effect panel
+            self.toggle_panel()
         elif key == "\x15":  # ctrl-u
             self.toggle("timeline")
         elif key == "\x0b":  # ctrl-k
@@ -306,10 +298,20 @@ class Tui:
             "rate": "Hz", "autorender": "on | off",
             "lufs": "-14 | -16 | -23 | off", "ceiling": "dBTP", "gain": "dB",
             "fadein": "500ms", "fadeout": "3s", "head": "500ms", "tail": "2s",
-            "bits": "32f | 24 | 16", "mp3": "320k | 192k | v0",
-            "eq": "hp30 hs10k:+1 | warm | off", "comp": "-16 2:1 a30 r300 k8 | glue | off",
-            "delay": "1/8 w20 f30 n3 | slap | off", "reverb": "2.5s p20 d50 w15 | hall | off", "bpm": "120",
+            "bits": "32f | 24 | 16", "mp3": "320k | 192k | v0", "bpm": "120",
         }
+
+        def fx_rows(spec: str, key: str, items: list[dict]) -> None:
+            """A row per effect in the chain (edit: settings, on, off, rm, move N) and one to add."""
+            for pos, item in enumerate(items, 1):
+                eff = effect(item["kind"])
+                value = item["params"] or (eff.empty if eff else "")
+                value += ("  (off)" if not item["on"] else "") + ("" if eff else "  (not installed)")
+                hint = (eff.hint if eff else "not installed") + " | on | off | rm | move N"
+                row(f"fx#{item['id']}", f"{pos} {item['kind']}", value,
+                    lambda v, s=spec, fid=item["id"]: ["fx", s, f"#{fid}", *v.split()], hint)
+            row(f"{key}:+fx", "+ effect", "", lambda v, s=spec: ["fx", s, "add", *v.split()],
+                "KIND [SETTINGS]: " + " | ".join(effects()))
         head(f"project  {p.get('name')}")
         row("set:rate", "rate", str(p.rate), lambda v: ["set", "rate", v], hints["rate"])
         row("set:autorender", "autorender", "on" if p.autorender else "off",
@@ -319,6 +321,8 @@ class Tui:
             if key in ("fadein", "fadeout", "head", "tail") and value != "0":
                 value = fmt_ms(int(value))
             row(f"set:{key}", key, value, (lambda k: lambda v: ["set", k, v])(key), hints.get(key, "text"))
+        head("master effects  (in order, before master gain and fades)")
+        fx_rows("master", "master", master_track(p)["fx"])
         for t in p.tracks():
             n = str(t["n"])
             a, b = audible(t)
@@ -331,14 +335,7 @@ class Tui:
             row(f"t{n}:pan", "pan", fmt_pan(t["pan"]), lambda v, n=n: ["pan", n, v], "L30 | C | R30")
             row(f"t{n}:mute", "mute", "on" if t["mute"] else "off", lambda v, n=n: ["mute", n, v], "on | off")
             row(f"t{n}:solo", "solo", "on" if t["solo"] else "off", lambda v, n=n: ["solo", n, v], "on | off")
-            row(f"t{n}:eq", "eq", (t["eq"] or "flat") + ("" if t["eq_on"] else " (off)"),
-                lambda v, n=n: ["eq", n, *v.split()], "hp80 +3@200 hs8k:-2 | voice | off | clear")
-            row(f"t{n}:comp", "comp", (t["comp"] or "none") + ("" if t["comp_on"] else " (off)"),
-                lambda v, n=n: ["comp", n, *v.split()], "-18 4:1 a10 r120 k6 m3 | vocal | off | clear")
-            row(f"t{n}:delay", "delay", (t["delay"] or "none") + ("" if t["delay_on"] else " (off)"),
-                lambda v, n=n: ["delay", n, *v.split()], "375ms w30 f40 n4 | 1/8 | slap | off | clear")
-            row(f"t{n}:reverb", "reverb", (t["reverb"] or "none") + ("" if t["reverb_on"] else " (off)"),
-                lambda v, n=n: ["reverb", n, *v.split()], "2.5s p20 d50 w25 | hall | plate | off | clear")
+            fx_rows(n, f"t{n}", t["fx"])
         return rows
 
     def sheet_open(self) -> None:
@@ -557,15 +554,43 @@ class Tui:
         if not (self.show_timeline or self.show_cheat):
             self.toggle("timeline")
 
-    def toggle_eq(self) -> None:
-        if self.eq_track is None:
+    def toggle_panel(self) -> None:
+        if self.panel_track is None:
             tracks = self.project.tracks()
             if not tracks:
-                self.log.append("no tracks yet, nothing to show an eq for")
+                self.log.append("no tracks yet, nothing to show an effect for")
                 return
-            self.eq_track, self.show_eq = tracks[0]["n"], True
+            self.panel_track, self.show_panel = tracks[0]["n"], True
+            if tracks[0]["fx"]:
+                self.panel_kind = tracks[0]["fx"][0]["kind"]
         else:
-            self.show_eq = not self.show_eq
+            self.show_panel = not self.show_panel
+
+    def follow(self, head: str, argv: list[str]) -> None:
+        """Point the effect panel at what an effect command just touched."""
+        if len(argv) < 2 or argv[1].lower() in ("presets", "preset", "kinds", "effects"):
+            return
+        try:
+            t = master_track(self.project) if is_master(argv[1]) else self.project.track(argv[1])
+        except GoutError:
+            return
+        kind = None
+        if head == "fx":
+            if len(argv) > 3 and argv[2].lower() == "add":
+                eff = resolve(argv[3])
+                kind = eff.name if eff else None
+            elif len(argv) > 2:
+                try:
+                    kind = slot_of(t, argv[2])["kind"]
+                except GoutError:
+                    kind = None
+            elif t["fx"]:
+                kind = t["fx"][0]["kind"]
+        else:
+            eff = resolve(head)
+            kind = eff.name if eff else None
+        if kind:
+            self.panel_track, self.panel_kind, self.show_panel = t["n"], kind, True
 
     def toggle(self, what: str) -> None:
         """Show or hide one section of the right panel; remembered per project."""
@@ -589,7 +614,8 @@ class Tui:
         except ValueError as exc:
             self.log.append(f"error: {exc}")
             return
-        head = ALIASES.get(argv[0], argv[0])
+        head = aliases().get(argv[0], argv[0])
+        is_effect = head == "fx" or resolve(head) is not None
         if head in ("q", "quit", "exit"):
             self.running = False
         elif head in ("view", "timeline"):
@@ -598,11 +624,14 @@ class Tui:
             self.toggle("cheat")
         elif head == "sheet":
             self.sheet_open()
-        elif head in ("eq", "comp", "delay", "reverb") and len(argv) == 1:
-            if self.eq_track is not None and self.show_eq and self.panel_prefer != head and head in ("delay", "reverb", "comp"):
-                self.panel_prefer = head  # switch the panel to that picture rather than hiding it
+        elif is_effect and head != "fx" and len(argv) == 1:
+            kind = resolve(head).name
+            if self.panel_track is not None and self.show_panel and self.panel_kind != kind:
+                self.panel_kind = kind  # switch the panel to that effect rather than hiding it
             else:
-                self.toggle_eq()
+                if self.panel_track is None or not self.show_panel:
+                    self.panel_kind = kind
+                self.toggle_panel()
         elif head == "clear":
             self.log.clear()
         elif head == "split":
@@ -616,7 +645,7 @@ class Tui:
             self.log.append(f"split  left pane {self.split}% of the width  (ctrl-← ctrl-→ move it)")
         elif head in ("help", "-h", "--help"):
             full = argv[1:] == ["all"]
-            self.log.extend(HELP.rstrip().splitlines() if full else render_cheat(max(40, self.layout()[2] - 2)))
+            self.log.extend(help_text().rstrip().splitlines() if full else render_cheat(max(40, self.layout()[2] - 2)))
         elif head == "saveas":
             if len(argv) != 2:
                 self.log.append("saveas NAME  (a bare name goes next to this project; a path goes where it says)")
@@ -638,13 +667,8 @@ class Tui:
             finally:
                 self.busy = False
             self.log.extend(buf.getvalue().rstrip("\n").splitlines())
-            if head in ("eq", "hp", "lp", "comp", "delay", "reverb") and len(argv) > 1:
-                try:  # the panel follows the track (or the master) you are working on
-                    self.eq_track = MASTER_N if is_master(argv[1]) else self.project.track(argv[1])["n"]
-                    self.show_eq = True
-                    self.panel_prefer = head if head in ("comp", "delay", "reverb") else "eq"
-                except GoutError:
-                    pass
+            if is_effect:
+                self.follow(head, argv)
         del self.log[:-2000]
 
 

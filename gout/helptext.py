@@ -2,13 +2,10 @@
 from __future__ import annotations
 
 from .core import __version__, DB_NAME, DEFAULT_RATE, MASTER_MP3, MASTER_WAV, SIDECAR, STEMS_DIR, TRACK_DIR
-from .effects.eq import EQ_PRESETS, EQ_SYNTAX
-from .effects.comp import COMP_PRESETS
-from .effects.delay import DELAY_PRESETS
-from .effects.reverb import REVERB_PRESETS
+from .fx import effects
 
 
-HELP = f"""\
+HELP_TEMPLATE = f"""\
 gout {__version__} — a command-line DAW. Stack wav/mp3 tracks on a timeline, mix to master.wav.
 
 Every command has a long and a short name (gout add / gout a). gout cheat prints the sheet.
@@ -42,9 +39,8 @@ MASTER   (gout set KEY VALUE)
                         whenever the ceiling allows, otherwise dynamic, and the mix line says which.
                         -14 streaming (Spotify, YouTube), -16 Apple Music and podcasts, -23 broadcast
   ceiling -1            true-peak ceiling in dBTP for that step (default -1)
-  eq hp30 hs10k:+1      master eq,  comp -16 2:1 a30 r300 k8  master compressor,  delay 1/8 w15
-                        master delay,  reverb hall w10  master reverb: same syntax and presets as a
-                        track's; also  gout eq master ...,  gout reverb master ...
+  effects               the master has an effect chain like a track: gout fx master ...,
+                        gout eq master hp30, gout reverb master room (also: gout set eq hp30)
   bpm 120               the tempo, so delay times can be note values
   gain -3               master gain in dB before the loudness step
   fadein 500ms          fades on the sum;  fadeout 3s
@@ -66,24 +62,7 @@ TRACKS   (TRACK is the number shown by ls, or the track name)
   gout solo  s  TRACK [on|off]               toggle solo        (solo all off)
   gout gain  g  TRACK DB                     gain 2 -6
   gout pan   p  TRACK C | L30 | R30          balance; every track starts centred, 50/50
-  gout hp       TRACK HZ [SLOPE] | off       high-pass cut, e.g. hp 3 80, hp 3 80 24 (dB per octave)
-  gout lp       TRACK HZ [SLOPE] | off       low-pass cut, e.g. lp 3 12k
-  gout eq    e  TRACK BANDS...               the whole eq in one line, before the fader:
-                                             {EQ_SYNTAX}
-  gout eq    e  TRACK PRESET [BANDS...]      a named start: {' '.join(EQ_PRESETS)}
-  gout eq    e  TRACK on | off | clear       bypass, bring back, or remove;  eq presets lists them
-  gout comp  cp TRACK -18 4:1 a10 r120 k6 m3 compressor after the eq: threshold dB, ratio, attack ms,
-                                             release ms, knee dB, makeup dB (mauto picks one)
-  gout comp  cp TRACK PRESET | on | off | clear   presets: {' '.join(COMP_PRESETS)}
-  gout comp  cp TRACK                        show it with its curve and where this track's peaks sit
-  gout delay dl TRACK 375ms w30 f40 n4       delay after the compressor: time, wet %, feedback %, repeats;
-                                             with  set bpm 120  the time can be a note value: 1/8, 3/16, 1/8d, 1/8t
-  gout delay dl TRACK PRESET | on | off | clear   presets: {' '.join(DELAY_PRESETS)};  delay TRACK draws the taps
-  gout reverb rv TRACK 2.5s p20 d50 w25      reverb after the delay: decay to -60 dB, pre-delay ms, damping %, wet %
-  gout reverb rv TRACK PRESET | on | off | clear  presets: {' '.join(REVERB_PRESETS)};  reverb TRACK draws its decay
-  gout eq    e  TRACK                        show the bands and draw the curve, 20 Hz to 20 kHz; in
-                                             the ui the curve panel follows the track you eq (ctrl-g)
-  -N (--no-mix) on any of these skips the automatic re-mix; -p DIR before a command picks
+{{EFFECTS}}  -N (--no-mix) on any of these skips the automatic re-mix; -p DIR before a command picks
   the project. Long flags: --at --name --hard --clear --reencode --delete --mp3 --rate --width
 
 CUT   (any file, no project needed; `gout INPUT ...` still works as in 1.x)
@@ -135,3 +114,38 @@ NOTES
   Everything else is the Python standard library — the project state lives in {DB_NAME}
   (sqlite), the audio in {TRACK_DIR}/ is never modified by moves or trims.
 """
+
+
+def effects_help() -> str:
+    lines = [
+        "",
+        "EFFECTS   (a chain per track and one for the master; TRACK can be master. The audio goes",
+        "          through the effects in order, then the track's gain and pan.)",
+        "  gout fx    f  TRACK                      the chain, numbered;  gout fx kinds  lists every effect",
+        "  gout fx    f  TRACK add KIND [SETTINGS]  add an effect at the end",
+        "  gout fx    f  TRACK N SETTINGS | on | off | rm   change, bypass or remove slot N",
+        "  gout fx    f  TRACK N move M             move slot N to position M",
+        "  gout fx    f  TRACK clear                remove them all",
+        "  gout KIND     TRACK SETTINGS | PRESET    the first effect of that kind; added where it",
+        "                                           usually goes when the track has none",
+        "  gout KIND     TRACK on | off | clear     bypass, bring back, remove;  gout KIND TRACK shows it",
+        "  gout KIND     presets                    what the presets are",
+        "",
+    ]
+    for eff in effects().values():
+        short = eff.aliases[0] if eff.aliases else ""
+        origin = "" if eff.source == "built-in" else f"   [addon: {eff.source}]"
+        lines.append(f"  gout {eff.name:<6} {short:<3}TRACK SETTINGS            {eff.summary}{origin}")
+        lines.append(f"                                           e.g.  gout {eff.name} 3 {eff.syntax}")
+        for extra in eff.help:
+            lines.append(f"                                           {extra}")
+        if eff.presets:
+            lines.append(f"                                           presets: {' '.join(eff.presets)}")
+        for name, (usage, summary, _) in eff.shortcuts.items():
+            lines.append(f"  gout {name:<10}TRACK {usage:<27} {summary}")
+    return "\n".join(lines) + "\n"
+
+
+def help_text() -> str:
+    """The instruction page, with the effects there are (addons included)."""
+    return HELP_TEMPLATE.replace("{EFFECTS}", effects_help(), 1)

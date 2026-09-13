@@ -11,28 +11,47 @@ from pathlib import Path
 from .core import die, fmt_ms, fmt_size, GoutError, MASTER_MP3, MASTER_WAV, run_quiet
 from .media import fmt_lufs, measure_loudness, probe
 from .model import audible, is_heard, timeline
-from .effects.eq import eq_filters, track_eq
-from .effects.comp import comp_filter, track_comp
-from .effects.delay import delay_filter, delay_taps, track_delay
-from .effects.reverb import reverb_graph, reverb_tail_ms, track_reverb
-from .settings import BITS_CODEC, master_track, project_bpm, setting, tag_args
+from .fx import Effect, FxContext, effect
+from .settings import BITS_CODEC, master_track, setting, tag_args
+
+
+def active_effects(project: "Project", t: dict, warnings: set[str] | None = None,
+                   strict: bool = True) -> list[tuple[Effect, dict, FxContext]]:
+    """The effects of a track (or the master) that will run, in order, with their settings.
+
+    Bypassed ones are skipped; unknown kinds (a missing addon) and unreadable settings are
+    skipped with a warning. An effect whose check fails stops the mix when strict, because
+    a render that silently drops a delay is worse than an error."""
+    ctx = FxContext(project, t)
+    who = t.get("name", "master")
+    out = []
+    for item in t.get("fx", []):
+        if not item["on"]:
+            continue
+        eff = effect(item["kind"])
+        if eff is None:
+            if warnings is not None:
+                warnings.add(f"{who}: {item['kind']} is not installed (an addon?), left out of the mix")
+            continue
+        try:
+            params = eff.read(item["params"])
+        except ValueError as exc:
+            if warnings is not None:
+                warnings.add(f"{who}: {item['kind']} {item['params']!r} is not valid ({exc}), left out")
+            continue
+        try:
+            eff.check(ctx, params)
+        except GoutError:
+            if strict:
+                raise
+            continue
+        out.append((eff, params, ctx))
+    return out
 
 
 def effect_tail_ms(project: "Project", t: dict) -> int:
-    """How far a track's effects ring on after its audio ends."""
-    tail = 0.0
-    dly = track_delay(t)
-    if dly is not None:
-        try:
-            taps = delay_taps(dly, project_bpm(project))
-        except GoutError:
-            taps = []
-        if taps:
-            tail = max(tail, taps[-1][0])
-    rv = track_reverb(t)
-    if rv is not None:
-        tail += reverb_tail_ms(rv)  # a reverb after a delay rings on after its last repeat
-    return math.ceil(tail)
+    """How far a track's effects ring on after its audio ends: each effect adds its own tail."""
+    return sum(eff.tail_ms(ctx, params) for eff, params, ctx in active_effects(project, t, strict=False))
 
 
 def sounding_end(project: "Project", t: dict) -> int:
@@ -40,12 +59,21 @@ def sounding_end(project: "Project", t: dict) -> int:
     return timeline(t)[1] + effect_tail_ms(project, t)
 
 
-def track_chain(project: "Project", t: dict, steps: list[str], src: str, out: str, inputs: list[Path]) -> str:
-    """One track's whole filtergraph from its input label to [out], reverb included."""
-    rv = track_reverb(t)
-    if rv is None:
-        return f"{src}{','.join(steps)}[{out}]"
-    return f"{src}{','.join(steps)}[{out}p];" + reverb_graph(project, rv, f"[{out}p]", out, inputs)
+def chain_graph(project: "Project", t: dict, pre: list[str], post: list[str], src: str, out: str,
+                inputs: list[Path], warnings: set[str] | None = None) -> str:
+    """Filtergraph from `src` through `pre`, the effects in order, and `post`, to [out]."""
+    parts: list[str] = []
+    cur = src
+    filters = list(pre)
+    for k, (eff, params, ctx) in enumerate(active_effects(project, t, warnings)):
+        if eff.uses_graph():
+            parts.append(f"{cur}{','.join(filters) or 'anull'}[{out}p{k}]")
+            parts.append(eff.graph(ctx, params, f"[{out}p{k}]", f"{out}q{k}", inputs))
+            cur, filters = f"[{out}q{k}]", []
+        else:
+            filters += eff.filters(ctx, params)
+    parts.append(f"{cur}{','.join(filters + post) or 'anull'}[{out}]")
+    return ";".join(parts)
 
 
 def pan_filter(channels: int, pan: float) -> str:
@@ -59,9 +87,9 @@ def pan_filter(channels: int, pan: float) -> str:
     return f"aformat=channel_layouts=stereo,pan=stereo|c0={left:.4f}*c0|c1={right:.4f}*c1"
 
 
-def track_steps(project: Project, t: dict) -> list[str] | None:
-    """The filters that put one track on the timeline as the mix hears it: format, soft
-    trim, position, gain, pan. None when nothing of it is audible."""
+def track_head(project: "Project", t: dict) -> list[str] | None:
+    """The filters that put a track on the timeline in stereo: format, soft trim, position.
+    None when nothing of it is audible."""
     a, b = audible(t)
     start = t["offset_ms"] + a
     trim_start, delay = a, start
@@ -75,43 +103,44 @@ def track_steps(project: Project, t: dict) -> list[str] | None:
         steps.append("asetpts=PTS-STARTPTS")
     if delay > 0:
         steps.append(f"adelay={delay}:all=1")
-    steps += eq_filters(track_eq(t))
-    comp = track_comp(t)
-    if comp is not None:
-        steps.append(comp_filter(comp))
-    dly = track_delay(t)
-    if dly is not None:
-        echo = delay_filter(dly, project_bpm(project))
-        if echo:
-            steps.append(echo)
-    if t["gain_db"]:
-        steps.append(f"volume={t['gain_db']:.2f}dB")
-    steps.append(pan_filter(t["channels"], t["pan"]))
+    if t["channels"] != 2:
+        steps.append(pan_filter(t["channels"], 0.0))  # effects always see stereo
     return steps
 
 
-def build_graph(project: Project, tracks: list[dict]) -> tuple[list[Path], str, list[dict]]:
+def track_chain(project: "Project", t: dict, src: str, out: str, inputs: list[Path],
+                warnings: set[str] | None = None) -> str | None:
+    """One track's whole filtergraph from its input label to [out]: position, effects in
+    order, then gain and pan like a channel strip's fader. None when nothing is audible."""
+    head = track_head(project, t)
+    if head is None:
+        return None
+    post = []
+    if t["gain_db"]:
+        post.append(f"volume={t['gain_db']:.2f}dB")
+    if abs(t["pan"]) >= 0.005:
+        post.append(pan_filter(2, t["pan"]))
+    return chain_graph(project, t, head, post, src, out, inputs, warnings)
+
+
+def build_graph(project: "Project", tracks: list[dict], warnings: set[str] | None = None
+                ) -> tuple[list[Path], str, list[dict]]:
     any_solo = any(t["solo"] for t in tracks)
-    plans = []
-    for t in tracks:
-        if not is_heard(t, any_solo):
-            continue
-        steps = track_steps(project, t)
-        if steps is not None:
-            plans.append((t, steps))
-    if not plans:
+    used = [t for t in tracks if is_heard(t, any_solo) and track_head(project, t) is not None]
+    if not used:
         return [], "", []
-    inputs: list[Path] = [project.tracks_dir / t["file"] for t, _ in plans]  # reverb responses follow
-    chains = [track_chain(project, t, steps, f"[{i}:a]", f"t{i}", inputs) for i, (t, steps) in enumerate(plans)]
-    labels = "".join(f"[t{i}]" for i in range(len(plans)))
-    chains.append(f"{labels}amix=inputs={len(plans)}:normalize=0:duration=longest"
+    inputs: list[Path] = [project.tracks_dir / t["file"] for t in used]  # effect files follow
+    chains = [track_chain(project, t, f"[{i}:a]", f"t{i}", inputs, warnings) for i, t in enumerate(used)]
+    labels = "".join(f"[t{i}]" for i in range(len(used)))
+    chains.append(f"{labels}amix=inputs={len(used)}:normalize=0:duration=longest"
                   f":dropout_transition=0[mix]")
-    return inputs, ";".join(chains), [t for t, _ in plans]
+    return inputs, ";".join(chains), used
 
 
 def mix(project: Project, verbose: bool = False, mp3: bool = False) -> None:
     tracks = project.tracks()
-    inputs, graph, used = build_graph(project, tracks)
+    warnings: set[str] = set()
+    inputs, graph, used = build_graph(project, tracks, warnings)
     if not inputs:
         if project.master.exists():
             project.master.unlink()
@@ -121,38 +150,19 @@ def mix(project: Project, verbose: bool = False, mp3: bool = False) -> None:
               + ("" if tracks else " (no tracks yet)"))
         return
 
-    # pass 1: the sum, master eq and compressor, master gain and fades, float at the project rate
-    post: list[str] = []
-    post += eq_filters(track_eq(master_track(project)))
-    master_comp = track_comp(master_track(project))
-    if master_comp is not None:
-        post.append(comp_filter(master_comp))
-    master_delay = track_delay(master_track(project))
-    if master_delay is not None:
-        echo = delay_filter(master_delay, project_bpm(project))
-        if echo:
-            post.append(echo)
-    master_reverb = track_reverb(master_track(project))
-    after: list[str] = []  # gain and fades come after the master reverb
+    # pass 1: the sum, the master's effects, master gain and fades, float at the project rate
+    master = master_track(project)
+    after: list[str] = []
     gain = float(setting(project, "gain"))
     if gain:
         after.append(f"volume={gain:.2f}dB")
     fade_in, fade_out = int(setting(project, "fadein")), int(setting(project, "fadeout"))
-    end_ms = max(sounding_end(project, t) for t in used) + effect_tail_ms(project, master_track(project))
+    end_ms = max(sounding_end(project, t) for t in used) + effect_tail_ms(project, master)
     if fade_in > 0:
         after.append(f"afade=t=in:d={fade_in / 1000:.3f}")
     if fade_out > 0:
         after.append(f"afade=t=out:st={max(0, end_ms - fade_out) / 1000:.3f}:d={fade_out / 1000:.3f}")
-    if post or after or master_reverb is not None:
-        graph = graph[:-len("[mix]")] + "[sum]"
-        cur = "[sum]"
-        if post:
-            graph += f";{cur}{','.join(post)}[mpre]"
-            cur = "[mpre]"
-        if master_reverb is not None:
-            graph += ";" + reverb_graph(project, master_reverb, cur, "mrev", inputs)
-            cur = "[mrev]"
-        graph += f";{cur}{','.join(after) if after else 'anull'}[mix]"
+    graph = graph[:-len("[mix]")] + "[sum];" + chain_graph(project, master, [], after, "[sum]", "mix", inputs, warnings)
     raw = project.root / "master.raw.part.wav"
     final = project.root / "master.part.wav"
     cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"]
@@ -231,6 +241,8 @@ def mix(project: Project, verbose: bool = False, mp3: bool = False) -> None:
     print(f"mix   {MASTER_WAV}  {fmt_ms(length_ms)}  {fmt_lufs(got)}{note}")
     if how:
         print(f"      {how}")
+    for warning in sorted(warnings):
+        print(f"      {warning}")
     if got and target is None and got["tp"] > 0:
         print("      true peak above 0 dBTP: it will clip on export — set lufs -14, or lower a gain")
     if mp3:

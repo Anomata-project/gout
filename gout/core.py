@@ -191,7 +191,22 @@ def run_quiet(cmd: list[str], verbose: bool = False) -> subprocess.CompletedProc
     return result
 
 
-MASTER_N = 0  # the track number the master answers to in eq/comp commands and the ui panel
+MASTER_N = 0  # the track number the master answers to in effect commands and the ui panel
+
+
+MASTER_OWNER = "@master"  # whose effect chain: a track's file name, or this for the master bus
+
+
+# commands other than effects: long name -> short names. Effects add their own names, and an
+# addon may not take any of these.
+BASE_COMMANDS = {
+    "add": ("a",), "scan": ("sc",), "ls": ("l", "list"), "view": ("v",), "move": ("m", "mv"), "trim": ("t",),
+    "rm": ("r", "remove", "del"), "mute": ("mu",), "solo": ("s",), "gain": ("g",), "pan": ("p",),
+    "fx": ("f",), "mix": ("x", "render", "bounce"), "undo": ("u",), "dump": ("dp",), "rebuild": ("rb",),
+    "set": ("se",), "stats": ("st",), "saveas": ("sa", "copy"), "stems": ("sm",), "import": ("im",),
+    "new": ("n",), "cheat": ("c",), "help": ("h", "?"), "ui": ("tui",), "cut": (), "addons": (),
+    "quit": ("q", "exit"), "clear": ("cl",), "split": ("sp",), "sheet": ("sh",), "version": ("-V",),
+}
 
 
 def is_master(spec: str) -> bool:

@@ -6,14 +6,14 @@ from pathlib import Path
 
 from .core import __version__, die, fmt_size, fmt_time, parse_size, parse_time, TAG_ALLOWANCE
 from .media import cut, cut_to_size, probe
-from .helptext import HELP
+from .helptext import help_text
 
 
 class Parser(argparse.ArgumentParser):
     """Prints the hand-written instruction page instead of argparse's."""
 
     def format_help(self) -> str:
-        return HELP
+        return help_text()
 
     def format_usage(self) -> str:
         return "usage: gout cut INPUT [-o OUT] [-st TIME] [-et TIME | -el TIME | -fs SIZE]\n" \

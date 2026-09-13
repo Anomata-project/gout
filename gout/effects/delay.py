@@ -5,7 +5,7 @@ import math
 import re
 
 from ..core import die, GoutError
-from ..effects.eq import EQ_GUTTER
+from ..fx import Effect, FxContext, GUTTER as EQ_GUTTER
 
 
 #
@@ -20,7 +20,6 @@ DELAY_PRESETS = {
     "quarter": ("1/4 w30 f40 n4", "quarter notes, needs a bpm"),
     "dotted":  ("3/16 w30 f40 n4", "dotted eighths, the classic"),
     "long":    ("500ms w25 f50 n6", "half a second, six repeats"),
-    "none":    ("", "no delay"),
 }
 
 
@@ -100,23 +99,13 @@ def delay_filter(d: dict, bpm: float | None) -> str | None:
             + ":" + "|".join(f"{lvl:.4f}" for _, lvl in taps))
 
 
-def track_delay(t: dict) -> dict | None:
-    if not t.get("delay") or not t.get("delay_on", 1):
-        return None
-    try:
-        return parse_delay(t["delay"])
-    except ValueError:
-        return None
-
-
-def render_delay(t: dict, bpm: float | None, width: int = 60, height: int = 6) -> list[tuple[str, str, str]]:
+def render_delay(d: dict | None, bpm: float | None, width: int = 60, height: int = 6) -> list[tuple[str, str, str]]:
     """The dry hit and its repeats over time, bar height by level in dB (0 .. -48)."""
     gw = max(12, width - EQ_GUTTER)
     try:
-        d = parse_delay(t["delay"]) if t["delay"] else None
         taps = delay_taps(d, bpm) if d else []
-    except (ValueError, GoutError):
-        d, taps = None, []
+    except GoutError:
+        taps = []
     total = (taps[-1][0] * 1.15) if taps else 1000.0
     cells = [[" "] * gw for _ in range(height)]
     classes = [[" "] * gw for _ in range(height)]
@@ -133,7 +122,7 @@ def render_delay(t: dict, bpm: float | None, width: int = 60, height: int = 6) -
     bar(0, 1.0, "z")
     for ms, level in taps:
         bar(max(1, min(gw - 1, round(ms / total * (gw - 1)))), level, "a")
-    head = f"delay {t['delay'] or 'none'}" + ("  (off)" if t["delay"] and not t["delay_on"] else "")
+    head = f"delay {fmt_delay(d) if d else 'none'}"
     if d and taps:
         head += f"  = {delay_ms(d, bpm):.0f} ms" + (f" at {bpm:g} bpm" if bpm and not d["time"].endswith("ms") else "")
     rows = [(head, "", "head")]
@@ -148,3 +137,48 @@ def render_delay(t: dict, bpm: float | None, width: int = 60, height: int = 6) -
             axis[col:col + len(text)] = list(text)
     rows.append((" " * EQ_GUTTER + "".join(axis) + "  ms", "", "axis"))
     return rows
+
+
+def needs_bpm(d: dict) -> bool:
+    return not d["time"].endswith("ms")
+
+
+class DelayEffect(Effect):
+    name = "delay"
+    aliases = ("dl", "echo")
+    summary = "delay: time (or a note value with a bpm), wet %, feedback %, repeats"
+    syntax = "375ms w30 f40 n4"
+    hint = "375ms w30 f40 n4 | 1/8 | slap"
+    presets = DELAY_PRESETS
+    order = 30
+    picture_width = (40, 80)
+    picture_height = 6
+    cheat = (
+        " delay dl TRACK 375ms|1/8 w30 f40 n4  time wet feedback n",
+        " delay dl TRACK slap|dotted|long      presets; set bpm 120",
+    )
+    help = (f"settings: {DELAY_SYNTAX}",
+            "with  set bpm 120  the time can be a note value: 1/4 1/8 1/16 3/16, 1/8d dotted, 1/8t triplet")
+
+    def parse(self, text: str) -> dict:
+        return parse_delay(text)
+
+    def format(self, params: dict) -> str:
+        return fmt_delay(params)
+
+    def check(self, ctx: FxContext, params: dict) -> None:
+        if needs_bpm(params) and ctx.bpm is None:
+            die(f"the delay time {params['time']} is a note value: set bpm 120 first, or give the time in ms")
+
+    def filters(self, ctx: FxContext, params: dict) -> list[str]:
+        echo = delay_filter(params, ctx.bpm)
+        return [echo] if echo else []
+
+    def tail_ms(self, ctx: FxContext, params: dict) -> int:
+        if needs_bpm(params) and ctx.bpm is None:
+            return 0
+        taps = delay_taps(params, ctx.bpm)
+        return math.ceil(taps[-1][0]) if taps else 0
+
+    def picture(self, ctx: FxContext, params: dict | None, width: int, height: int):
+        return render_delay(params, ctx.bpm, width, height)

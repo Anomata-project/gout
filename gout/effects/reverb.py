@@ -9,7 +9,7 @@ from array import array
 
 from ..core import IR_DIR
 from ..media import write_float_wav
-from ..effects.eq import EQ_GUTTER
+from ..fx import Effect, FxContext, GUTTER as EQ_GUTTER
 
 
 #
@@ -28,7 +28,6 @@ REVERB_PRESETS = {
     "plate":     ("1.8s p10 d15 w25", "bright and smooth, the vocal classic"),
     "hall":      ("2.6s p25 d50 w25", "a concert hall"),
     "cathedral": ("6s p40 d60 w30", "long and dark"),
-    "none":      ("", "no reverb"),
 }
 
 
@@ -73,15 +72,6 @@ def parse_reverb(text: str) -> dict:
 
 def fmt_reverb(r: dict) -> str:
     return f"{r['decay']:g}s p{r['pre']:g} d{r['damp']:g} w{r['wet']:g}"
-
-
-def track_reverb(t: dict) -> dict | None:
-    if not t.get("reverb") or not t.get("reverb_on", 1):
-        return None
-    try:
-        return parse_reverb(t["reverb"])
-    except ValueError:
-        return None
 
 
 def reverb_shape(r: dict) -> str:
@@ -158,13 +148,9 @@ def reverb_graph(project: "Project", r: dict, src: str, out: str, inputs: list[P
             f"[{out}d][{out}r]amix=inputs=2:normalize=0:duration=longest[{out}]")
 
 
-def render_reverb(project: "Project", t: dict, width: int = 60, height: int = 6) -> list[tuple[str, str, str]]:
+def render_reverb(project: "Project", r: dict | None, width: int = 60, height: int = 6) -> list[tuple[str, str, str]]:
     """The impulse response's level over time, 0 to -60 dB, both channels' peak per column."""
     gw = max(12, width - EQ_GUTTER)
-    try:
-        r = parse_reverb(t["reverb"]) if t["reverb"] else None
-    except ValueError:
-        r = None
     cells = [[" "] * gw for _ in range(height)]
     classes = [[" "] * gw for _ in range(height)]
     total_ms = 1000.0
@@ -190,7 +176,7 @@ def render_reverb(project: "Project", t: dict, width: int = 60, height: int = 6)
                 if 2 * row + 1 >= top_sub:
                     cells[row][col] = "█" if 2 * row >= top_sub else "▄"
                     classes[row][col] = "a"
-    head = f"reverb {t['reverb'] or 'none'}" + ("  (off)" if t["reverb"] and not t["reverb_on"] else "")
+    head = f"reverb {fmt_reverb(r) if r is not None else 'none'}"
     if r is not None:
         head += f"  rings {reverb_tail_ms(r) / 1000:.2f} s after the sound stops"
     rows = [(head, "", "head")]
@@ -207,3 +193,36 @@ def render_reverb(project: "Project", t: dict, width: int = 60, height: int = 6)
             axis[col:col + len(text)] = list(text)
     rows.append((" " * EQ_GUTTER + "".join(axis), "", "axis"))
     return rows
+
+
+class ReverbEffect(Effect):
+    name = "reverb"
+    aliases = ("rv", "verb")
+    summary = "reverb: decay to -60 dB, pre-delay, damping, wet; convolution with a synthesised room"
+    syntax = "2.5s p20 d50 w25"
+    hint = "2.5s p20 d50 w25 | hall | plate"
+    presets = REVERB_PRESETS
+    order = 40
+    picture_width = (40, 80)
+    picture_height = 6
+    cheat = (
+        " reverb rv TRACK 2.5s p20 d50 w25     decay pre damp wet",
+        " reverb rv TRACK room|plate|hall..    presets (rv presets)",
+    )
+    help = (f"settings: {REVERB_SYNTAX}",
+            "the reverb of a mono sum, wide whatever comes before it; its tail counts toward the length")
+
+    def parse(self, text: str) -> dict:
+        return parse_reverb(text)
+
+    def format(self, params: dict) -> str:
+        return fmt_reverb(params)
+
+    def graph(self, ctx: FxContext, params: dict, src: str, out: str, inputs: list) -> str:
+        return reverb_graph(ctx, params, src, out, inputs)
+
+    def tail_ms(self, ctx: FxContext, params: dict) -> int:
+        return reverb_tail_ms(params)
+
+    def picture(self, ctx: FxContext, params: dict | None, width: int, height: int):
+        return render_reverb(ctx, params, width, height)

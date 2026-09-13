@@ -3,15 +3,11 @@ from __future__ import annotations
 
 import re
 
-from .core import die, MASTER_N, MASTER_WAV, on_off, parse_ms
-from .effects.eq import fmt_eq, parse_eq
-from .effects.comp import fmt_comp, parse_comp
-from .effects.delay import fmt_delay, parse_delay
-from .effects.reverb import fmt_reverb, parse_reverb
+from .core import die, MASTER_N, MASTER_OWNER, MASTER_WAV, on_off, parse_ms
 
 
 MASTER_DEFAULTS = {
-    "lufs": "off", "ceiling": "-1", "eq": "", "comp": "", "delay": "", "reverb": "", "bpm": "", "gain": "0",
+    "lufs": "off", "ceiling": "-1", "bpm": "", "gain": "0",
     "fadein": "0", "fadeout": "0", "head": "0", "tail": "0",
     "bits": "32f", "mp3": "320k", "title": "", "artist": "", "album": "", "year": "", "comment": "",
 }
@@ -69,15 +65,6 @@ def parse_setting(key: str, value: str) -> tuple[str, str]:
         return key, v.lower()
     if key in TAG_KEYS:
         return key, value
-    if key in ("eq", "comp", "delay", "reverb"):  # the master's own, same syntax as a track's
-        if v.lower() in ("off", "none", "clear", "flat", ""):
-            return key, ""
-        try:
-            return key, {"eq": lambda: fmt_eq(parse_eq(v)), "comp": lambda: fmt_comp(parse_comp(v)),
-                         "delay": lambda: fmt_delay(parse_delay(v)),
-                         "reverb": lambda: fmt_reverb(parse_reverb(v))}[key]()
-        except ValueError as exc:
-            die(str(exc))
     if key == "bpm":
         if v.lower() in ("off", "none", ""):
             return key, ""
@@ -101,11 +88,9 @@ def tag_args(project: "Project") -> list[str]:
 
 
 def master_track(project: "Project") -> dict:
-    """The master bus in the shape of a track row, for the eq/comp code and their curves."""
-    return {"n": MASTER_N, "name": "master", "file": MASTER_WAV, "kind": "wav",
-            "eq": setting(project, "eq"), "eq_on": 1, "comp": setting(project, "comp"), "comp_on": 1,
-            "delay": setting(project, "delay"), "delay_on": 1,
-            "reverb": setting(project, "reverb"), "reverb_on": 1}
+    """The master bus in the shape of a track row, for the effect code and its pictures."""
+    return {"n": MASTER_N, "name": "master", "file": MASTER_WAV, "owner": MASTER_OWNER, "kind": "wav",
+            "fx": project.chain(MASTER_OWNER)}
 
 
 def project_bpm(project: "Project") -> float | None:

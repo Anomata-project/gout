@@ -5,6 +5,8 @@ import cmath
 import math
 import re
 
+from ..fx import Effect, FxContext, GUTTER
+
 
 #
 # A track's eq is one line of bands:  hp80  lp12k  hp80/24  +3@200  -4@2.5k/3  ls100:+2  hs8k:-3
@@ -124,16 +126,6 @@ def eq_filters(bands: list[dict]) -> list[str]:
     return out
 
 
-def track_eq(t: dict) -> list[dict]:
-    """The stored bands of a track, if its eq is on."""
-    if not t.get("eq") or not t.get("eq_on", 1):
-        return []
-    try:
-        return parse_eq(t["eq"])
-    except ValueError:
-        return []
-
-
 def biquad(kind: str, f: float, fs: float, q: float = EQ_SHELF_Q, g: float = 0.0) -> tuple:
     """RBJ cookbook coefficients, the same family ffmpeg's biquads use."""
     w0 = 2 * math.pi * min(f, fs * 0.499) / fs
@@ -191,14 +183,14 @@ def eq_response(bands: list[dict], fs: float, freqs: list[float]) -> list[float]
     return out
 
 
-EQ_GUTTER = 4
+EQ_GUTTER = GUTTER
 
 
 EQ_TICKS = ((20, "20"), (50, "50"), (100, "100"), (200, "200"), (500, "500"), (1000, "1k"),
             (2000, "2k"), (5000, "5k"), (10000, "10k"), (20000, "20k"))
 
 
-def render_eq(project: "Project", t: dict, width: int, height: int = 8,
+def render_eq(rate: int, bands: list[dict] | None, width: int, height: int = 8,
               spectrum: bytes | None = None) -> list[tuple[str, str, str]]:
     """Rows of (text, classes, kind) plotting a track's eq curve from 20 Hz to 20 kHz.
 
@@ -207,11 +199,8 @@ def render_eq(project: "Project", t: dict, width: int, height: int = 8,
     """
     gw = max(12, width - EQ_GUTTER)
     freqs = [20 * (1000 ** (c / (gw - 1))) for c in range(gw)]
-    try:
-        bands = parse_eq(t["eq"]) if t["eq"] else []
-    except ValueError:
-        bands = []
-    curve = eq_response(bands, project.rate, freqs)
+    bands = bands or []
+    curve = eq_response(bands, rate, freqs)
     # the range follows the boosts and cuts of peaks and shelves; cut slopes run off the bottom
     loudest = max([abs(b["g"]) for b in bands if b["type"] in ("peak", "ls", "hs")] + [0.0])
     span = max(12, min(24, math.ceil((loudest + 1.5) / 6) * 6))
@@ -242,9 +231,7 @@ def render_eq(project: "Project", t: dict, width: int, height: int = 8,
             if top or bot:
                 cells[row][c] = "█" if top and bot else ("▀" if top else "▄")
                 classes[row][c] = "a"
-    state = "" if not t["eq"] else ("  (off)" if not t["eq_on"] else "")
-    rows = [(f"eq   {t['n']:>2} {t['name'][:9]:<9} {t['eq'] or 'flat'}{state}"
-             + ("  ░ spectrum" if spectrum else "")[:width], "", "head")]
+    rows = [((f"eq {fmt_eq(bands) or 'flat'}" + ("  ░ spectrum" if spectrum else ""))[:width], "", "head")]
     for row in range(height):
         label = f"{span:+d}" if row == 0 else (f"{-span:+d}" if row == height - 1 else ("0" if row == zero_row else ""))
         rows.append((f"{label:>{EQ_GUTTER - 1}} " + "".join(cells[row]),
@@ -259,3 +246,61 @@ def render_eq(project: "Project", t: dict, width: int, height: int = 8,
             last = c + len(text) - 1
     rows.append((" " * EQ_GUTTER + "".join(axis), "", "axis"))
     return rows
+
+
+def cut_shortcut(kind: str):
+    """`hp TRACK 80 [24]` and `lp TRACK 12k`: set or remove one cut in an eq line."""
+    def apply(line: str, words: list[str]) -> str:
+        if not 1 <= len(words) <= 2:
+            raise ValueError(f"{kind} takes a frequency and an optional slope, or off: {kind} 3 80 24")
+        bands = [b for b in parse_eq(line) if b["type"] != kind]
+        if words[0].lower() != "off":
+            try:
+                slope = int(words[1]) if len(words) > 1 else 12
+            except ValueError:
+                raise ValueError(f"slope {words[1]!r}: use 6, 12, 18, 24, 36 or 48 dB per octave") from None
+            if slope not in EQ_SLOPES:
+                raise ValueError(f"slope {slope}: use 6, 12, 18, 24, 36 or 48 dB per octave")
+            bands.append({"type": kind, "f": parse_hz(words[0]), "slope": slope})
+        return fmt_eq(parse_eq(fmt_eq(bands)))
+    return apply
+
+
+class EqEffect(Effect):
+    name = "eq"
+    aliases = ("e",)
+    summary = "equaliser: cuts, peaks and shelves in one line, before anything else by default"
+    syntax = "hp80 +3@200 -4@2.5k/3 hs8k:-2"
+    hint = "hp80 +3@200 hs8k:-2 | voice"
+    presets = EQ_PRESETS
+    empty = "flat"
+    order = 10
+    picture_width = (40, 100)
+    legend = "░ the track's own spectrum, loudest band at the top"
+    shortcuts = {
+        "hp": ("HZ [SLOPE] | off", "high-pass cut on the first eq, e.g. hp 3 80, hp 3 80 24 (dB per octave)",
+               cut_shortcut("hp")),
+        "lp": ("HZ [SLOPE] | off", "low-pass cut on the first eq, e.g. lp 3 12k", cut_shortcut("lp")),
+    }
+    cheat = (
+        " hp/lp    TRACK 80 [24] | off         cuts, slope dB/oct",
+        " eq    e  TRACK hp80 +3@200 hs8k:-2   peaks gain@hz/q",
+        " eq    e  TRACK voice|warm|air|mud..  shelves ls100:+2",
+    )
+    help = (
+        f"bands: {EQ_SYNTAX}",
+        "hp/lp: cut with a slope in dB per octave (12 by default); +3@200: a peak of +3 dB at 200 Hz,",
+        "/3 sets its Q; ls100:+2 and hs8k:-3 are shelves. Presets mix with bands: eq 3 voice +1@5k",
+    )
+
+    def parse(self, text: str) -> dict:
+        return {"bands": parse_eq(text)}
+
+    def format(self, params: dict) -> str:
+        return fmt_eq(params["bands"])
+
+    def filters(self, ctx: FxContext, params: dict) -> list[str]:
+        return eq_filters(params["bands"])
+
+    def picture(self, ctx: FxContext, params: dict | None, width: int, height: int):
+        return render_eq(ctx.rate, params["bands"] if params else [], width, height, ctx.spectrum())

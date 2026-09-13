@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 import re
 
-from ..effects.eq import EQ_GUTTER
+from ..fx import Effect, FxContext, GUTTER as EQ_GUTTER
 
 
 #
@@ -21,7 +21,6 @@ COMP_PRESETS = {
     "glue":   ("-16 2:1 a30 r300 k8 m2", "slow and soft, for a whole part"),
     "squash": ("-24 8:1 a2 r60 k1 m8", "flat and loud"),
     "limit":  ("-6 20:1 a0.5 r50 k1", "catches peaks only"),
-    "none":   ("", "no compressor"),
 }
 
 
@@ -85,15 +84,6 @@ def comp_filter(c: dict) -> str:
             f":makeup={10 ** (c['makeup'] / 20):.4f}")
 
 
-def track_comp(t: dict) -> dict | None:
-    if not t.get("comp") or not t.get("comp_on", 1):
-        return None
-    try:
-        return parse_comp(t["comp"])
-    except ValueError:
-        return None
-
-
 def comp_out(c: dict, x: float, makeup: bool = True) -> float:
     """Static transfer curve: output level for an input level x, both in dB, soft knee."""
     thr, ratio, w = c["threshold"], c["ratio"], c["knee"]
@@ -121,16 +111,12 @@ def comp_estimate(c: dict, peaks: bytes) -> tuple[float, float, float] | None:
 COMP_W = 30  # columns of the transfer plot including the gutter
 
 
-def render_comp(t: dict, width: int = COMP_W, height: int = 8,
+def render_comp(c: dict | None, width: int = COMP_W, height: int = 8,
                 peaks: bytes | None = None) -> list[tuple[str, str, str]]:
     """Rows of (text, classes, kind): input dB left to right, output dB bottom to top,
     both -60 .. 0. Classes: a the curve, z the unity line, x the track's level histogram."""
     gw = max(10, width - EQ_GUTTER)
     sub = 2 * height
-    try:
-        c = parse_comp(t["comp"]) if t["comp"] else None
-    except ValueError:
-        c = None
     xs = [-60 + 60 * col / (gw - 1) for col in range(gw)]
 
     def ysub(db: float) -> int:
@@ -166,8 +152,7 @@ def render_comp(t: dict, width: int = COMP_W, height: int = 8,
                 if top or bot:
                     cells[row][col] = "█" if top and bot else ("▀" if top else "▄")
                     classes[row][col] = "a"
-    state = "" if not t["comp"] else ("  (off)" if not t["comp_on"] else "")
-    head = f"comp {t['comp'] or 'none'}{state}"
+    head = f"comp {fmt_comp(c) if c is not None else 'none'}"
     if c is not None and peaks:
         est = comp_estimate(c, peaks)
         if est and est[0] > 0:
@@ -186,3 +171,32 @@ def render_comp(t: dict, width: int = COMP_W, height: int = 8,
         axis[col:col + len(text)] = list(text)
     rows.append((" " * EQ_GUTTER + "".join(axis), "", "axis"))
     return rows
+
+
+class CompEffect(Effect):
+    name = "comp"
+    aliases = ("cp",)
+    summary = "compressor: threshold, ratio, attack, release, knee, makeup"
+    syntax = "-18 4:1 a10 r120 k6 m3"
+    hint = "-18 4:1 a10 r120 k6 m3 | vocal"
+    presets = COMP_PRESETS
+    order = 20
+    picture_width = (30, 64)
+    legend = "· output = input   █ the compressor   ░ how often this track's peaks sit at that level"
+    cheat = (
+        " comp  cp TRACK -18 4:1 a10 r120 k6 m3  thr ratio a r k m",
+        " comp  cp TRACK vocal|drums|glue..    presets (comp presets)",
+    )
+    help = (f"settings: {COMP_SYNTAX}",)
+
+    def parse(self, text: str) -> dict:
+        return parse_comp(text)
+
+    def format(self, params: dict) -> str:
+        return fmt_comp(params)
+
+    def filters(self, ctx: FxContext, params: dict) -> list[str]:
+        return [comp_filter(params)]
+
+    def picture(self, ctx: FxContext, params: dict | None, width: int, height: int):
+        return render_comp(params, width, height, ctx.peaks())

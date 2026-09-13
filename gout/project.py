@@ -8,7 +8,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from .core import __version__, DB_NAME, DEFAULT_RATE, die, GoutError, MASTER_WAV, SIDECAR, TRACK_DIR
+from .core import __version__, DB_NAME, DEFAULT_RATE, die, GoutError, MASTER_OWNER, MASTER_WAV, SIDECAR, TRACK_DIR
 from .media import compute_envelope, compute_spectrum, ENV_RATE, measure_loudness, probe
 
 
@@ -31,15 +31,15 @@ CREATE TABLE IF NOT EXISTS tracks (
     gain_db     REAL NOT NULL DEFAULT 0,
     pan         REAL NOT NULL DEFAULT 0,
     mute        INTEGER NOT NULL DEFAULT 0,
-    solo        INTEGER NOT NULL DEFAULT 0,
-    eq          TEXT NOT NULL DEFAULT '',
-    eq_on       INTEGER NOT NULL DEFAULT 1,
-    comp        TEXT NOT NULL DEFAULT '',
-    comp_on     INTEGER NOT NULL DEFAULT 1,
-    delay       TEXT NOT NULL DEFAULT '',
-    delay_on    INTEGER NOT NULL DEFAULT 1,
-    reverb      TEXT NOT NULL DEFAULT '',
-    reverb_on   INTEGER NOT NULL DEFAULT 1
+    solo        INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS fx (
+    id      INTEGER PRIMARY KEY,
+    owner   TEXT NOT NULL,              -- the track's file name, or @master
+    pos     INTEGER NOT NULL,           -- 1, 2, ... in the order the audio goes through them
+    kind    TEXT NOT NULL,              -- the effect's name: eq, comp, or an addon's
+    params  TEXT NOT NULL DEFAULT '',   -- its canonical settings line
+    enabled INTEGER NOT NULL DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS envelopes (
     file  TEXT PRIMARY KEY,
@@ -64,8 +64,21 @@ CREATE TABLE IF NOT EXISTS history (
 
 
 TRACK_COLUMNS = ("n", "name", "file", "kind", "length_ms", "channels", "sample_rate",
-                 "offset_ms", "in_ms", "out_ms", "gain_db", "pan", "mute", "solo", "eq", "eq_on",
-                 "comp", "comp_on", "delay", "delay_on", "reverb", "reverb_on")
+                 "offset_ms", "in_ms", "out_ms", "gain_db", "pan", "mute", "solo")
+
+
+# before the effect chain, a track had one column per effect and the master one setting each
+LEGACY_FX = ("eq", "comp", "delay", "reverb")
+
+
+def legacy_chain(item: dict) -> list[dict]:
+    """A chain from the old per-effect fields (eq, eq_on, comp, ...) of a track or settings dict."""
+    chain = []
+    for kind in LEGACY_FX:
+        text = item.get(kind)
+        if text:
+            chain.append({"kind": kind, "params": str(text), "on": bool(int(item.get(f"{kind}_on", 1) or 0))})
+    return chain
 
 
 class Project:
@@ -82,22 +95,7 @@ class Project:
         if "created" not in {r[1] for r in self.conn.execute("PRAGMA table_info(history)")}:
             with self.conn:  # databases from before the column existed
                 self.conn.execute("ALTER TABLE history ADD COLUMN created TEXT NOT NULL DEFAULT '[]'")
-        if "eq" not in {r[1] for r in self.conn.execute("PRAGMA table_info(tracks)")}:
-            with self.conn:
-                self.conn.execute("ALTER TABLE tracks ADD COLUMN eq TEXT NOT NULL DEFAULT ''")
-                self.conn.execute("ALTER TABLE tracks ADD COLUMN eq_on INTEGER NOT NULL DEFAULT 1")
-        if "comp" not in {r[1] for r in self.conn.execute("PRAGMA table_info(tracks)")}:
-            with self.conn:
-                self.conn.execute("ALTER TABLE tracks ADD COLUMN comp TEXT NOT NULL DEFAULT ''")
-                self.conn.execute("ALTER TABLE tracks ADD COLUMN comp_on INTEGER NOT NULL DEFAULT 1")
-        if "delay" not in {r[1] for r in self.conn.execute("PRAGMA table_info(tracks)")}:
-            with self.conn:
-                self.conn.execute("ALTER TABLE tracks ADD COLUMN delay TEXT NOT NULL DEFAULT ''")
-                self.conn.execute("ALTER TABLE tracks ADD COLUMN delay_on INTEGER NOT NULL DEFAULT 1")
-        if "reverb" not in {r[1] for r in self.conn.execute("PRAGMA table_info(tracks)")}:
-            with self.conn:
-                self.conn.execute("ALTER TABLE tracks ADD COLUMN reverb TEXT NOT NULL DEFAULT ''")
-                self.conn.execute("ALTER TABLE tracks ADD COLUMN reverb_on INTEGER NOT NULL DEFAULT 1")
+        self.migrate_effects()
         if "lufs" not in {r[1] for r in self.conn.execute("PRAGMA table_info(envelopes)")}:
             with self.conn:
                 for col in ("lufs", "tp", "lra"):
@@ -110,6 +108,32 @@ class Project:
             if self.get("autorender") is None:
                 self.set("autorender", old)
             self.unset("automix")
+
+    def migrate_effects(self) -> None:
+        """Move effects from the old per-effect columns and master settings into the chain table."""
+        columns = {r[1] for r in self.conn.execute("PRAGMA table_info(tracks)")}
+        old_keys = [k for k in LEGACY_FX if self.get(k) is not None]
+        if not (columns & set(LEGACY_FX)) and not old_keys:
+            return
+        with self.conn:
+            if columns & set(LEGACY_FX):
+                for row in self.conn.execute("SELECT * FROM tracks ORDER BY n").fetchall():
+                    for pos, item in enumerate(legacy_chain(dict(row)), 1):
+                        self.conn.execute("INSERT INTO fx (owner, pos, kind, params, enabled) VALUES (?, ?, ?, ?, ?)",
+                                          (row["file"], pos, item["kind"], item["params"], int(item["on"])))
+                for col in LEGACY_FX:
+                    for name in (col, f"{col}_on"):
+                        if name in columns:
+                            self.conn.execute(f"ALTER TABLE tracks DROP COLUMN {name}")
+            settings = {k: self.conn.execute("SELECT value FROM project WHERE key = ?", (k,)).fetchone()
+                        for k in LEGACY_FX}
+            start = len(self.chain(MASTER_OWNER))
+            for pos, item in enumerate(legacy_chain({k: (v["value"] if v else "") for k, v in settings.items()}),
+                                       start + 1):
+                self.conn.execute("INSERT INTO fx (owner, pos, kind, params, enabled) VALUES (?, ?, ?, ?, ?)",
+                                  (MASTER_OWNER, pos, item["kind"], item["params"], 1))
+            for k in LEGACY_FX:
+                self.conn.execute("DELETE FROM project WHERE key = ?", (k,))
 
     # ---- locating
 
@@ -157,8 +181,15 @@ class Project:
     # ---- tracks
 
     def tracks(self) -> list[dict]:
-        rows = self.conn.execute("SELECT * FROM tracks ORDER BY n").fetchall()
-        return [dict(r) for r in rows]
+        """Every track as a dict, with its effect chain under "fx" and its chain owner."""
+        chains = self.chains()
+        out = []
+        for r in self.conn.execute("SELECT * FROM tracks ORDER BY n").fetchall():
+            t = dict(r)
+            t["owner"] = t["file"]
+            t["fx"] = chains.get(t["file"], [])
+            out.append(t)
+        return out
 
     def track(self, spec: str) -> dict:
         tracks = self.tracks()
@@ -194,6 +225,9 @@ class Project:
 
     def delete(self, n: int) -> None:
         with self.conn:
+            row = self.conn.execute("SELECT file FROM tracks WHERE n = ?", (n,)).fetchone()
+            if row:
+                self.conn.execute("DELETE FROM fx WHERE owner = ?", (row["file"],))
             self.conn.execute("DELETE FROM tracks WHERE n = ?", (n,))
             rows = self.conn.execute("SELECT n FROM tracks ORDER BY n").fetchall()
             for new, row in enumerate(rows, 1):  # keep numbering contiguous
@@ -208,6 +242,67 @@ class Project:
         while name in taken:
             name, i = f"{base}-{i}", i + 1
         return name
+
+    # ---- effect chains
+
+    def chains(self) -> dict[str, list[dict]]:
+        out: dict[str, list[dict]] = {}
+        for r in self.conn.execute("SELECT * FROM fx ORDER BY owner, pos, id"):
+            out.setdefault(r["owner"], []).append(
+                {"id": r["id"], "kind": r["kind"], "params": r["params"], "on": bool(r["enabled"])})
+        return out
+
+    def chain(self, owner: str) -> list[dict]:
+        return self.chains().get(owner, [])
+
+    def fx_insert(self, owner: str, kind: str, params: str, pos: int | None = None, on: bool = True) -> int:
+        """Put an effect into a chain at position pos (1-based; the end when None). Returns its id."""
+        with self.conn:
+            size = self.conn.execute("SELECT COUNT(*) FROM fx WHERE owner = ?", (owner,)).fetchone()[0]
+            pos = size + 1 if pos is None else max(1, min(pos, size + 1))
+            self.conn.execute("UPDATE fx SET pos = pos + 1 WHERE owner = ? AND pos >= ?", (owner, pos))
+            cur = self.conn.execute("INSERT INTO fx (owner, pos, kind, params, enabled) VALUES (?, ?, ?, ?, ?)",
+                                    (owner, pos, kind, params, int(on)))
+            return cur.lastrowid
+
+    def fx_get(self, fid: int) -> dict | None:
+        r = self.conn.execute("SELECT * FROM fx WHERE id = ?", (fid,)).fetchone()
+        return None if r is None else {"id": r["id"], "owner": r["owner"], "pos": r["pos"], "kind": r["kind"],
+                                       "params": r["params"], "on": bool(r["enabled"])}
+
+    def fx_set(self, fid: int, params: str | None = None, on: bool | None = None) -> None:
+        with self.conn:
+            if params is not None:
+                self.conn.execute("UPDATE fx SET params = ? WHERE id = ?", (params, fid))
+            if on is not None:
+                self.conn.execute("UPDATE fx SET enabled = ? WHERE id = ?", (int(on), fid))
+
+    def fx_remove(self, fid: int) -> None:
+        item = self.fx_get(fid)
+        if item is None:
+            return
+        with self.conn:
+            self.conn.execute("DELETE FROM fx WHERE id = ?", (fid,))
+            self._renumber(item["owner"])
+
+    def fx_move(self, fid: int, pos: int) -> None:
+        item = self.fx_get(fid)
+        if item is None:
+            return
+        ids = [i["id"] for i in self.chain(item["owner"]) if i["id"] != fid]
+        ids.insert(max(0, min(pos - 1, len(ids))), fid)
+        with self.conn:
+            for new, i in enumerate(ids, 1):
+                self.conn.execute("UPDATE fx SET pos = ? WHERE id = ?", (new, i))
+
+    def fx_clear(self, owner: str) -> None:
+        with self.conn:
+            self.conn.execute("DELETE FROM fx WHERE owner = ?", (owner,))
+
+    def _renumber(self, owner: str) -> None:
+        rows = self.conn.execute("SELECT id FROM fx WHERE owner = ? ORDER BY pos, id", (owner,)).fetchall()
+        for new, r in enumerate(rows, 1):
+            self.conn.execute("UPDATE fx SET pos = ? WHERE id = ?", (new, r["id"]))
 
     # ---- envelopes
 
@@ -269,7 +364,7 @@ class Project:
     def snapshot(self) -> dict:
         settings = {r["key"]: r["value"] for r in self.conn.execute("SELECT key, value FROM project")
                     if not r["key"].startswith("ui_")}  # ui_ keys are preferences, not state
-        return {"project": settings, "tracks": self.tracks()}
+        return {"project": settings, "master": {"fx": self.chain(MASTER_OWNER)}, "tracks": self.tracks()}
 
     def record(self, command: str, undoable: bool = True) -> None:
         with self.conn:
@@ -287,7 +382,17 @@ class Project:
                                   (json.dumps(files),))
 
     def document(self) -> dict:
-        return {"gout": __version__, **self.snapshot()}
+        """The state as gout.json holds it: the snapshot without database ids."""
+        snap = self.snapshot()
+
+        def clean(items: list[dict]) -> list[dict]:
+            return [{"kind": i["kind"], "params": i["params"], "on": i["on"]} for i in items]
+
+        snap["master"]["fx"] = clean(snap["master"]["fx"])
+        for t in snap["tracks"]:
+            t.pop("owner", None)
+            t["fx"] = clean(t["fx"])
+        return {"gout": __version__, **snap}
 
     def sync_json(self) -> None:
         """Write gout.json next to the database whenever the state it describes changed."""
@@ -313,17 +418,28 @@ class Project:
                 self.conn.execute("UPDATE tracks SET n = ? WHERE n = ?", (new, -t["n"]))
 
     def restore(self, snap: dict) -> None:
+        """Put back a snapshot, including ones taken before effects became a chain."""
+        master = (snap.get("master") or {}).get("fx")
+        if master is None:
+            master = legacy_chain(snap["project"])
         with self.conn:
             self.conn.execute("DELETE FROM tracks")
+            self.conn.execute("DELETE FROM fx")
             for t in snap["tracks"]:
                 cols = [c for c in TRACK_COLUMNS if c in t]
                 self.conn.execute(
                     f"INSERT INTO tracks ({', '.join(cols)}) VALUES ({', '.join('?' for _ in cols)})",
                     tuple(t[c] for c in cols),
                 )
+            owners = [(t["file"], t["fx"] if "fx" in t else legacy_chain(t)) for t in snap["tracks"]]
+            for owner, items in owners + [(MASTER_OWNER, master)]:
+                for pos, item in enumerate(items, 1):
+                    self.conn.execute("INSERT INTO fx (id, owner, pos, kind, params, enabled) VALUES (?, ?, ?, ?, ?, ?)",
+                                      (item.get("id"), owner, pos, item["kind"], item["params"], int(item["on"])))
             self.conn.execute("DELETE FROM project WHERE key NOT LIKE 'ui_%'")
             for k, v in snap["project"].items():
-                self.conn.execute("INSERT INTO project (key, value) VALUES (?, ?)", (k, v))
+                if k not in LEGACY_FX:
+                    self.conn.execute("INSERT INTO project (key, value) VALUES (?, ?)", (k, v))
 
     def undo(self) -> str:
         row = self.conn.execute("SELECT * FROM history ORDER BY id DESC LIMIT 1").fetchone()

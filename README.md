@@ -84,6 +84,7 @@ name (a unique prefix will do). `-N` / `--no-mix` on any change skips the automa
 | `delay` | `dl` | `TRACK TIME [wN fN nN] \| PRESET \| on \| off \| clear` | delay after the compressor; note values with `set bpm` |
 | `reverb` | `rv` | `TRACK DECAY [pN dN wN] \| PRESET \| on \| off \| clear` | reverb after the fader; `reverb TRACK` draws its decay |
 | `comp` | `cp` | `TRACK SETTINGS... \| PRESET \| on \| off \| clear` | compressor after the eq; `comp TRACK` shows its curve |
+| `fx` | `f` | `TRACK [add KIND ... \| N SETTINGS \| N on\|off\|rm \| N move M \| clear]` | the track's (or master's) effect chain, in order; `fx kinds` lists every effect |
 | `mix` | `x` | `[-3] [-v]` | render `master.wav`; `-3` / `--mp3` also writes `master.mp3` |
 | `undo` | `u` | | undo the last change (not a hard trim or `rm -D`) |
 | `stems` | `sm` | `[DIR] [-A]` | one wav per track, processed as in the mix and all the same length, into `stems/`; `-A` only what the mix hears |
@@ -174,12 +175,44 @@ mix   master.wav  00:03:12.500  -14.0 LUFS  LRA 6.2  peak -1.0 dBTP
 | `mp3 320k` / `192k` / `v0` | quality of the `mix --mp3` bounce |
 | `title`, `artist`, `album`, `year`, `comment` | tags written into `master.wav` and `master.mp3` |
 
-The chain is: sum of the tracks, master eq, master compressor, master gain, fades, loudness
-step, head and tail padding, then the file, with the master delay and reverb after its compressor. Per track, before the sum:
-soft trim, position, eq, compressor, delay, gain, pan, reverb. Under three seconds of material the loudness step is a plain gain, since `loudnorm`
+The chain is: sum of the tracks, the master's effect chain, master gain, fades, loudness step,
+head and tail padding, then the file. Per track, before the sum: soft trim, position, the
+track's effect chain in order, gain, pan. Under three seconds of material the loudness step is a plain gain, since `loudnorm`
 cannot measure that reliably. `gout stats` shows integrated LUFS, loudness range and true peak
 for every track file (and what it comes to after the track's gain), so you can balance tracks
 by numbers before touching the master.
+
+## Effects
+
+Every track has an effect chain, and so does the master. The audio goes through the effects in
+order, then through the track's gain and pan, like the inserts and the fader of a mixer strip.
+
+```
+gout eq 3 hp80                 # the first eq on track 3; added where an eq usually goes if missing
+gout comp 3 vocal              # likewise: eq, comp, delay, reverb find their usual places
+gout fx 3                      # the chain, numbered
+       1  eq hp80
+       2  comp -20 3:1 a5 r120 k4 m4
+gout fx 3 add eq +2@5k         # a second eq, at the end
+gout fx 3 3 move 1             # reorder: slot 3 to the front
+gout fx 3 2 off                # bypass slot 2;  on, rm, or new settings work the same way
+gout fx 3 clear                # remove them all
+gout fx master add reverb room # the master chain, before master gain and fades
+gout fx kinds                  # every effect there is, built in or from an addon
+```
+
+`gout KIND TRACK ...` (`eq`, `comp`, `delay`, `reverb`, and any addon's) always works on the
+first effect of that kind in the chain; `fx` reaches any slot. In the parameter sheet each effect
+is a row named by its slot and kind: type new settings, `off`, `on`, `rm` or `move 1` into it, and
+the `+ effect` row takes `KIND SETTINGS` to add one. `gout.json` stores each chain as a list:
+
+```json
+"fx": [{"kind": "eq", "params": "hp80", "on": true}, {"kind": "comp", "params": "-20 3:1 a5 r120 k4 m4", "on": true}]
+```
+
+Projects from before chains, and their `gout.json` files, are converted when opened or imported.
+An effect a project uses but this machine does not have (an addon not installed) stays in the
+chain, is marked `(not installed)`, and is left out of the mix with a warning on every render.
 
 ## EQ
 
@@ -272,9 +305,8 @@ wide whatever the pan. The response has unit energy, so `w100` on a sustained so
 loud as the dry signal. Responses are cached in `.gout/ir/` inside the project and rebuilt when
 missing; they take a fraction of a second.
 
-The per-track order is: soft trim, position, eq, compressor, delay, gain, pan, reverb. The
-reverb comes after the fader, like a post-fader send, and its tail counts: stems and the master
-run on until it has died away.
+The reverb sums what reaches it to mono and returns it wide, so it stays wide whatever comes
+after it. Its tail counts: stems and the master run on until it has died away.
 
 ## Stems
 

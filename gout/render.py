@@ -7,38 +7,61 @@ import textwrap
 from .core import CELL_TRIMMED, CELL_ZERO, fmt_short, MASTER_WAV
 from .media import envelope_char
 from .model import audible, is_heard
-from .effects.eq import render_eq
-from .effects.comp import COMP_W, render_comp
-from .effects.delay import render_delay
-from .effects.reverb import render_reverb
-from .settings import project_bpm
+from .fx import Effect, effect, effects, FxContext, GUTTER
 
 
-def render_track_panel(project: "Project", t: dict, width: int, height: int = 8,
-                       spectrum: bytes | None = None, peaks: bytes | None = None,
-                       prefer: str = "eq") -> list[tuple[str, str, str]]:
-    """The eq curve and the compressor curve side by side; only one when the panel is narrow."""
-    if width >= 76:
-        left_w = width - COMP_W - 2
-        left = render_eq(project, t, left_w, height, spectrum)
-        right = render_comp(t, COMP_W, height, peaks)
+def blank_picture(head: str, height: int) -> list[tuple[str, str, str]]:
+    return [(head, "", "head")] + [("", "", "graph")] * height + [("", "", "axis")]
+
+
+def effect_picture(project: "Project", t: dict, eff: Effect, item: dict | None, width: int,
+                   height: int) -> list[tuple[str, str, str]]:
+    """One effect's picture for a track (or the master); its settings or none when missing."""
+    params = None
+    if item is not None:
+        try:
+            params = eff.read(item["params"])
+        except ValueError:
+            params = None
+    rows = eff.picture(FxContext(project, t), params, width, height)
+    if not rows:
+        rows = blank_picture(f"{eff.name} {item['params'] if item else 'none'}", height)
+    if item is not None and not item["on"]:
+        rows = [(rows[0][0] + "  (off)", rows[0][1], rows[0][2])] + list(rows[1:])
+    return rows
+
+
+def render_panel(project: "Project", t: dict, width: int, height: int, kind: str) -> list[tuple[str, str, str]]:
+    """The track panel: the first effect of `kind` on the track, and the next effect in its
+    chain beside it when there is room for both pictures."""
+    eff = effect(kind)
+    if eff is None:
+        return blank_picture(f"{kind}: no such effect installed", height)
+    items = t.get("fx", [])
+    at = next((i for i, it in enumerate(items) if it["kind"] == kind), None)
+    item = items[at] if at is not None else None
+    neighbour = None
+    if at is not None:
+        for it in items[at + 1:]:
+            other = effect(it["kind"])
+            if other is not None:
+                neighbour = (other, it)
+                break
+    lo, hi = eff.picture_width
+    if neighbour and width >= lo + neighbour[0].picture_width[0] + 2:
+        right_w = neighbour[0].picture_width[0]
+        left_w = min(hi, width - right_w - 2)
+        right_w = min(neighbour[0].picture_width[1], width - left_w - 2)
+        left = effect_picture(project, t, eff, item, left_w, height)
+        right = effect_picture(project, t, neighbour[0], neighbour[1], right_w, height)
+        count = max(len(left), len(right))
+        left += [("", "", "graph")] * (count - len(left))
+        right += [("", "", "graph")] * (count - len(right))
         rows = [(left[0][0][:left_w].ljust(left_w) + "  " + right[0][0], "", "head")]
-        for (lt, lc, kind), (rt, rc, _) in zip(left[1:], right[1:]):
-            rows.append((lt.ljust(left_w) + "  " + rt, lc.ljust(left_w) + "  " + rc, kind))
+        for (lt, lc, kind_), (rt, rc, _) in zip(left[1:], right[1:]):
+            rows.append((lt[:left_w].ljust(left_w) + "  " + rt, lc[:left_w].ljust(left_w) + "  " + rc, kind_))
         return rows
-    if prefer == "comp":
-        return render_comp(t, min(width, 60), height, peaks)
-    return render_eq(project, t, width, height, spectrum)
-
-
-def render_panel(project: "Project", t: dict, width: int, height: int, spectrum: bytes | None,
-                 peaks: bytes | None, prefer: str) -> list[tuple[str, str, str]]:
-    """What the ui's track panel shows: delay or reverb when that was touched last, else eq and comp."""
-    if prefer == "delay":
-        return render_delay(t, project_bpm(project), min(width, 80), height)
-    if prefer == "reverb":
-        return render_reverb(project, t, min(width, 80), height)
-    return render_track_panel(project, t, width, height, spectrum, peaks, prefer)
+    return effect_picture(project, t, eff, item, min(width, hi), height)
 
 
 LABEL_W = 15  # " n name      MS"
@@ -132,7 +155,7 @@ def render_timeline(project: Project, width: int, styled: bool = False) -> list[
     return rows
 
 
-CHEAT = """\
+CHEAT_TEMPLATE = """\
 CHEAT SHEET          long short        tab flips the pages
 TRACKS
  add   a  FILE.. [-a TIME] [-n NAME]  copy into master/
@@ -148,17 +171,7 @@ MIXER
  solo  s  TRACK [on|off]              solo all off
  gain  g  TRACK -6                    dB, -60 .. +24
  pan   p  TRACK L30 | R30 | C         all start at C
- hp/lp    TRACK 80 [24] | off         cuts, slope dB/oct
- eq    e  TRACK hp80 +3@200 hs8k:-2   peaks gain@hz/q
- eq    e  TRACK on | off | clear      shelves ls100:+2
- eq    e  TRACK voice|warm|air|mud..  presets (eq presets)
- comp  cp TRACK -18 4:1 a10 r120 k6 m3  thr ratio a r k m
- comp  cp TRACK vocal|drums|glue..    presets (comp presets)
- delay dl TRACK 375ms|1/8 w30 f40 n4  time wet feedback n
- delay dl TRACK slap|dotted|long      presets; set bpm 120
- reverb rv TRACK 2.5s p20 d50 w25     decay pre damp wet
- reverb rv TRACK room|plate|hall..    presets (rv presets)
- mix   x  [-3] [-v]                   -3 also master.mp3
+{EFFECTS} mix   x  [-3] [-v]                   -3 also master.mp3
 PROJECT
  undo  u                              not hard trim / rm -D
  view  v  [-w COLS]                   print the timeline
@@ -176,7 +189,7 @@ PROJECT
  sheet sh (or ctrl-e)                 parameters as a table
 MASTER set KEY VALUE
  lufs -14|off  ceiling -1  gain -3    loudness, dBTP, gain
- eq warm  comp glue                   or: eq master hp30
+ eq master hp30  reverb master room   any effect, on master
  fadein 1s  fadeout 3s  head 1s  tail 2s
  bits 32f|24|16  mp3 320k|v0  title artist album year
 FLAGS  -N --no-mix skip the re-mix    -p DIR the project
@@ -191,7 +204,7 @@ KEYS   ctrl-u  timeline on/off   ctrl-k  sheet on/off
        ctrl-n ctrl-p  sheet line  pgup pgdn      scroll log
        up down  earlier commands  ctrl-l  clear the log
        ctrl-← ctrl-→  move the split  (shift/alt too)
-       ctrl-g  eq curve panel on/off  (eq N picks the track)
+       ctrl-g  effect panel on/off  (eq N, comp N.. pick)
        ctrl-d  ctrl-c  quit
 SHEET  ↑↓ rows, type the new value, ctrl-s apply and stay
        ctrl-x apply and close  esc close  ctrl-w clear cell
@@ -199,9 +212,25 @@ SHEET  ↑↓ rows, type the new value, ctrl-s apply and stay
 """
 
 
+
+
+def cheat_text() -> str:
+    lines: list[str] = []
+    for eff in effects().values():
+        lines += eff.cheat_lines()
+    block = """EFFECTS  in order per track; TRACK can be master
+ fx    f  TRACK                       the chain, numbered
+ fx    f  TRACK add KIND [SETTINGS]   add at the end
+ fx    f  TRACK N SETTINGS|on|off|rm  change slot N
+ fx    f  TRACK N move M              reorder
+ KIND     TRACK SETTINGS|PRESET|off  its first one there
+""" + "\n".join(lines) + "\n"
+    return CHEAT_TEMPLATE.replace("{EFFECTS}", "", 1).replace("MASTER set KEY VALUE", block + "MASTER set KEY VALUE", 1)
+
+
 def render_cheat(width: int) -> list[str]:
     lines: list[str] = []
-    for line in CHEAT.rstrip("\n").splitlines():
+    for line in cheat_text().rstrip("\n").splitlines():
         if len(line) <= width:
             lines.append(line)
         else:

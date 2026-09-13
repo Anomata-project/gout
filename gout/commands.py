@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .core import (
     DB_NAME,
+    MASTER_OWNER,
     DEFAULT_RATE,
     die,
     fmt_db,
@@ -29,21 +30,11 @@ from .core import (
 )
 from .media import cut, mp3_frame_cut, probe
 from .model import audible, is_heard, timeline
-from .effects.eq import EQ_PRESETS, EQ_SLOPES, EQ_SYNTAX, fmt_eq, parse_eq, parse_hz, render_eq
-from .effects.comp import COMP_PRESETS, COMP_SYNTAX, fmt_comp, parse_comp, render_comp
-from .effects.delay import DELAY_PRESETS, DELAY_SYNTAX, fmt_delay, parse_delay, render_delay
-from .effects.reverb import (
-    fmt_reverb,
-    impulse_path,
-    parse_reverb,
-    render_reverb,
-    REVERB_PRESETS,
-    REVERB_SYNTAX,
-)
-from .settings import BITS_CODEC, MASTER_DEFAULTS, master_track, parse_setting, project_bpm, setting, TAG_KEYS
-from .project import Project
-from .mixer import autorender, mix, sounding_end, track_chain, track_steps
-from .render import LABEL_W, render_cheat, render_timeline
+from .fx import Effect, effect, effects, FxContext, resolve
+from .settings import BITS_CODEC, MASTER_DEFAULTS, master_track, parse_setting, setting, TAG_KEYS
+from .project import legacy_chain, Project
+from .mixer import autorender, mix, sounding_end, track_chain, track_head
+from .render import effect_picture, LABEL_W, render_cheat, render_timeline
 
 
 class Args:
@@ -205,14 +196,8 @@ def cmd_ls(project: Project, args: Args) -> None:
         flags = ("M" if t["mute"] else "-") + ("S" if t["solo"] else "-")
         if not is_heard(t, any_solo):
             flags += " (silent)"
-        if t["eq"]:
-            flags += f"  eq {t['eq']}" + ("" if t["eq_on"] else " (off)")
-        if t["comp"]:
-            flags += f"  comp {t['comp']}" + ("" if t["comp_on"] else " (off)")
-        if t["delay"]:
-            flags += f"  delay {t['delay']}" + ("" if t["delay_on"] else " (off)")
-        if t["reverb"]:
-            flags += f"  reverb {t['reverb']}" + ("" if t["reverb_on"] else " (off)")
+        if t["fx"]:
+            flags += "  fx " + " | ".join(fx_text(item) for item in t["fx"])
         print(f"{t['n']:>4}  {t['name']:<16} {t['kind']:<4} {t['channels']:>2}  {fmt_ms(start):<12} "
               f"{fmt_ms(b - a):<12} {fmt_ms(t['length_ms']):<12} {trim:<27} "
               f"{fmt_db(t['gain_db']):<7} {fmt_pan(t['pan']):<4} {flags}")
@@ -399,260 +384,265 @@ def cmd_pan(project: Project, args: Args) -> None:
 SET_USAGE = "gout set KEY VALUE   (gout set alone lists the keys and their values)"
 
 
-EQ_USAGE = (f"gout eq TRACK [BANDS... | PRESET | on | off | clear]\n       bands: {EQ_SYNTAX}\n"
-            f"       presets: {' '.join(EQ_PRESETS)}   (eq presets explains them)\n"
-            "       hp/lp: cut with a slope in dB per octave (12 by default); +3@200: a peak of +3 dB at 200 Hz,\n"
-            "       /3 sets its Q; ls100:+2 and hs8k:-3 are shelves")
+def fx_text(item: dict) -> str:
+    eff = effect(item["kind"])
+    text = f"{item['kind']} {item['params'] or (eff.empty if eff else '')}".rstrip()
+    if not item["on"]:
+        text += " (off)"
+    if eff is None:
+        text += " (not installed)"
+    return text
 
 
-def eq_line(t: dict) -> str:
-    text = t["eq"] or "flat"
-    if t["eq"] and not t["eq_on"]:
-        text += "  (off: bypassed, eq TRACK on brings it back)"
-    return f"eq    {t['n']:>2}  {t['name']:<16} {text}"
+def chain_owner(project: Project, spec: str) -> dict:
+    """A track, or the master bus in the shape of one."""
+    return master_track(project) if is_master(spec) else project.track(spec)
 
 
-def cmd_eq(project: Project, args: Args) -> None:
-    pos = args.positionals(EQ_USAGE, 1)
-    if pos[0].lower() in ("presets", "preset", "list"):
-        print("presets  a name stands for these bands; use it alone or with bands of your own, eq 3 voice +1@5k")
-        for name, (bands, what) in EQ_PRESETS.items():
-            print(f"  {name:<8} {bands or 'flat':<38} {what}")
-        return
-    master = is_master(pos[0])
-    t = master_track(project) if master else project.track(pos[0])
-    words = pos[1:]
-    if master and words:
-        key, value = parse_setting("eq", " ".join(words) if words not in (["on"],) else t["eq"])
-        project.record(f"set eq {value}")
-        project.set("eq", value)
-        print(eq_line(master_track(project)))
-        autorender(project, args)
-        return
-    if not words:
-        print(eq_line(t))
-        width = min(100, shutil.get_terminal_size((100, 24)).columns)
-        path = project.master if master else project.tracks_dir / t["file"]
-        spectrum = (project.spectrum(t["file"], path) if path.exists() else b"") or None
-        for text, _, kind in render_eq(project, t, width - 6, spectrum=spectrum)[1:]:
-            print("      " + text)
-        if spectrum:
-            print("      ░ the track's own spectrum, loudest band at the top")
-        return
-    if words == ["off"]:
-        project.record(f"eq {t['name']} off")
-        project.update(t["n"], eq_on=0)
-    elif words == ["on"]:
-        project.record(f"eq {t['name']} on")
-        project.update(t["n"], eq_on=1)
-    elif words == ["clear"]:
-        project.record(f"eq {t['name']} clear")
-        project.update(t["n"], eq="", eq_on=1)
-    else:
-        try:
-            bands = parse_eq(" ".join(words))
-        except ValueError as exc:
-            die(f"{exc}\n{EQ_USAGE}")
-        project.record(f"eq {t['name']} {' '.join(words)}")
-        project.update(t["n"], eq=fmt_eq(bands), eq_on=1)
-    print(eq_line(project.track(str(t["n"]))))
-    autorender(project, args)
+def owner_label(t: dict) -> str:
+    return "master" if t["owner"] == MASTER_OWNER else t["name"]
 
 
-COMP_USAGE = (f"gout comp TRACK [SETTINGS... | PRESET | on | off | clear]\n       settings: {COMP_SYNTAX}\n"
-              f"       presets: {' '.join(COMP_PRESETS)}   (comp presets explains them)")
+def owner_spec(t: dict) -> str:
+    return "master" if t["owner"] == MASTER_OWNER else str(t["n"])
 
 
-def comp_line(t: dict) -> str:
-    text = t["comp"] or "none"
-    if t["comp"] and not t["comp_on"]:
-        text += "  (off: bypassed, comp TRACK on brings it back)"
-    return f"comp  {t['n']:>2}  {t['name']:<16} {text}"
+def refresh(project: Project, t: dict) -> dict:
+    return chain_owner(project, owner_spec(t))
 
 
-def cmd_comp(project: Project, args: Args) -> None:
-    pos = args.positionals(COMP_USAGE, 1)
-    if pos[0].lower() in ("presets", "preset", "list"):
-        print("presets  a name stands for these settings; add your own after it, comp 3 vocal a10")
-        for name, (line, what) in COMP_PRESETS.items():
-            print(f"  {name:<8} {line or 'none':<26} {what}")
-        return
-    master = is_master(pos[0])
-    t = master_track(project) if master else project.track(pos[0])
-    words = pos[1:]
-    if master and words:
-        key, value = parse_setting("comp", " ".join(words) if words != ["on"] else t["comp"])
-        project.record(f"set comp {value}")
-        project.set("comp", value)
-        print(comp_line(master_track(project)))
-        autorender(project, args)
-        return
-    if not words:
-        print(comp_line(t))
-        width = min(100, shutil.get_terminal_size((100, 24)).columns)
-        path = project.master if master else project.tracks_dir / t["file"]
-        peaks = (project.envelope(t["file"], path) if path.exists() else b"") or None
-        for text, _, kind in render_comp(t, min(width - 6, 64), peaks=peaks):
-            print("      " + text)
-        print("      · output = input   █ the compressor   ░ how often this track's peaks sit at that level")
-        return
-    if words == ["off"]:
-        project.record(f"comp {t['name']} off")
-        project.update(t["n"], comp_on=0)
-    elif words == ["on"]:
-        project.record(f"comp {t['name']} on")
-        project.update(t["n"], comp_on=1)
-    elif words in (["clear"], ["none"]):
-        project.record(f"comp {t['name']} clear")
-        project.update(t["n"], comp="", comp_on=1)
-    else:
-        try:
-            c = parse_comp(" ".join(words))
-        except ValueError as exc:
-            die(f"{exc}\n{COMP_USAGE}")
-        project.record(f"comp {t['name']} {' '.join(words)}")
-        project.update(t["n"], comp=fmt_comp(c), comp_on=1)
-    print(comp_line(project.track(str(t["n"]))))
-    autorender(project, args)
+def effect_usage(eff: Effect) -> str:
+    text = (f"gout {eff.name} TRACK|master [SETTINGS... | PRESET | on | off | clear]\n"
+            f"       e.g. gout {eff.name} 3 {eff.syntax}")
+    if eff.presets:
+        text += f"\n       presets: {' '.join(eff.presets)}   (gout {eff.name} presets explains them)"
+    return text
 
 
-DELAY_USAGE = (f"gout delay TRACK [SETTINGS... | PRESET | on | off | clear]\n       settings: {DELAY_SYNTAX}\n"
-               f"       presets: {' '.join(DELAY_PRESETS)}   (delay presets explains them)")
-
-
-def delay_line(t: dict) -> str:
-    text = t["delay"] or "none"
-    if t["delay"] and not t["delay_on"]:
-        text += "  (off: bypassed, delay TRACK on brings it back)"
-    return f"delay {t['n']:>2}  {t['name']:<16} {text}"
-
-
-def cmd_delay(project: Project, args: Args) -> None:
-    pos = args.positionals(DELAY_USAGE, 1)
-    if pos[0].lower() in ("presets", "preset", "list"):
-        print("presets  a name stands for these settings; add your own after it, delay 3 slap w40")
-        for name, (line, what) in DELAY_PRESETS.items():
-            print(f"  {name:<8} {line or 'none':<20} {what}")
-        return
-    master = is_master(pos[0])
-    t = master_track(project) if master else project.track(pos[0])
-    words = pos[1:]
-    if master and words:
-        key, value = parse_setting("delay", " ".join(words) if words != ["on"] else t["delay"])
-        project.record(f"set delay {value}")
-        project.set("delay", value)
-        print(delay_line(master_track(project)))
-        autorender(project, args)
-        return
-    if not words:
-        print(delay_line(t))
-        width = min(100, shutil.get_terminal_size((100, 24)).columns)
-        for text, _, kind in render_delay(t, project_bpm(project), min(width - 6, 70)):
-            print("      " + text)
-        return
-    if words == ["off"]:
-        project.record(f"delay {t['name']} off")
-        project.update(t["n"], delay_on=0)
-    elif words == ["on"]:
-        project.record(f"delay {t['name']} on")
-        project.update(t["n"], delay_on=1)
-    elif words in (["clear"], ["none"]):
-        project.record(f"delay {t['name']} clear")
-        project.update(t["n"], delay="", delay_on=1)
-    else:
-        try:
-            d = parse_delay(" ".join(words))
-        except ValueError as exc:
-            die(f"{exc}\n{DELAY_USAGE}")
-        if not d["time"].endswith("ms") and project_bpm(project) is None:
-            die(f"{d['time']} is a note value: set bpm 120 first, or give the time in ms")
-        project.record(f"delay {t['name']} {' '.join(words)}")
-        project.update(t["n"], delay=fmt_delay(d), delay_on=1)
-    print(delay_line(project.track(str(t["n"]))))
-    autorender(project, args)
-
-
-REVERB_USAGE = (f"gout reverb TRACK [SETTINGS... | PRESET | on | off | clear]\n       settings: {REVERB_SYNTAX}\n"
-                f"       presets: {' '.join(REVERB_PRESETS)}   (reverb presets explains them)")
-
-
-def reverb_line(t: dict) -> str:
-    text = t["reverb"] or "none"
-    if t["reverb"] and not t["reverb_on"]:
-        text += "  (off: bypassed, reverb TRACK on brings it back)"
-    return f"reverb {t['n']:>1}  {t['name']:<16} {text}"
-
-
-def cmd_reverb(project: Project, args: Args) -> None:
-    pos = args.positionals(REVERB_USAGE, 1)
-    if pos[0].lower() in ("presets", "preset", "list"):
-        print("presets  a name stands for these settings; add your own after it, reverb 3 hall w15")
-        for name, (line, what) in REVERB_PRESETS.items():
-            print(f"  {name:<10} {line or 'none':<18} {what}")
-        return
-    master = is_master(pos[0])
-    t = master_track(project) if master else project.track(pos[0])
-    words = pos[1:]
-    if master and words:
-        key, value = parse_setting("reverb", " ".join(words) if words != ["on"] else t["reverb"])
-        project.record(f"set reverb {value}")
-        project.set("reverb", value)
-        print(reverb_line(master_track(project)))
-        autorender(project, args)
-        return
-    if not words:
-        print(reverb_line(t))
-        width = min(100, shutil.get_terminal_size((100, 24)).columns)
-        for text, _, kind in render_reverb(project, t, min(width - 6, 70)):
-            print("      " + text)
-        return
-    if words == ["off"]:
-        project.record(f"reverb {t['name']} off")
-        project.update(t["n"], reverb_on=0)
-    elif words == ["on"]:
-        project.record(f"reverb {t['name']} on")
-        project.update(t["n"], reverb_on=1)
-    elif words in (["clear"], ["none"]):
-        project.record(f"reverb {t['name']} clear")
-        project.update(t["n"], reverb="", reverb_on=1)
-    else:
-        try:
-            r = parse_reverb(" ".join(words))
-        except ValueError as exc:
-            die(f"{exc}\n{REVERB_USAGE}")
-        project.record(f"reverb {t['name']} {' '.join(words)}")
-        project.update(t["n"], reverb=fmt_reverb(r), reverb_on=1)
-        impulse_path(project, r)  # synthesise now, so the mix does not pause on it
-    print(reverb_line(project.track(str(t["n"]))))
-    autorender(project, args)
-
-
-def _cut(project: Project, args: Args, kind: str) -> None:
-    pos = args.positionals(f"gout {kind} TRACK HZ [SLOPE] | off     e.g. {kind} 3 {'80' if kind == 'hp' else '12k'}"
-                           f"  ({kind} 3 80 24 for 24 dB per octave)", 2, 3)
-    t = project.track(pos[0])
+def checked_line(project: Project, t: dict, eff: Effect, text: str) -> str:
+    """The canonical settings line, after the effect has read and checked it."""
     try:
-        bands = [b for b in parse_eq(t["eq"]) if b["type"] != kind]
-        if pos[1].lower() != "off":
-            slope = int(pos[2]) if len(pos) > 2 else 12
-            if slope not in EQ_SLOPES:
-                raise ValueError(f"slope {pos[2]}: use 6, 12, 18, 24, 36 or 48 dB per octave")
-            bands.append({"type": kind, "f": parse_hz(pos[1]), "slope": slope})
-        bands = parse_eq(fmt_eq(bands))  # canonical order
+        params = eff.read(text)
     except ValueError as exc:
-        die(str(exc))
-    project.record(f"{kind} {t['name']} {' '.join(pos[1:])}")
-    project.update(t["n"], eq=fmt_eq(bands), eq_on=1)
-    print(eq_line(project.track(str(t["n"]))))
+        die(f"{exc}\n{effect_usage(eff)}")
+    eff.check(FxContext(project, t), params)
+    return eff.format(params)
+
+
+def default_position(t: dict, eff: Effect) -> int:
+    """Where an effect goes in a chain by its order: before the first one that comes later."""
+    for pos, item in enumerate(t["fx"], 1):
+        other = effect(item["kind"])
+        if (other.order if other else 50) > eff.order:
+            return pos
+    return len(t["fx"]) + 1
+
+
+def first_of(t: dict, kind: str) -> dict | None:
+    return next((item for item in t["fx"] if item["kind"] == kind), None)
+
+
+def effect_line(eff: Effect, t: dict, item: dict | None) -> str:
+    n = 0 if t["owner"] == MASTER_OWNER else t["n"]
+    text = "none" if item is None else (item["params"] or eff.empty)
+    if item is not None and not item["on"]:
+        text += f"  (off: bypassed, gout {eff.name} {owner_spec(t)} on brings it back)"
+    return f"{eff.name:<5} {n:>2}  {owner_label(t):<16} {text}"
+
+
+def show_effect(project: Project, t: dict, eff: Effect, item: dict | None) -> None:
+    width = min(100, shutil.get_terminal_size((100, 24)).columns) - 6
+    rows = effect_picture(project, t, eff, item, min(width, eff.picture_width[1]), eff.picture_height)
+    for text, _, _ in rows:
+        if text.strip():
+            print("      " + text)
+    if eff.legend:
+        print("      " + eff.legend)
+
+
+def print_presets(eff: Effect) -> None:
+    print(f"presets  a name stands for these settings; add your own after it: gout {eff.name} 3 "
+          f"{next(iter(eff.presets), '')} ...")
+    width = max((len(line) for line, _ in eff.presets.values()), default=4)
+    for name, (line, what) in eff.presets.items():
+        print(f"  {name:<10} {line or eff.empty:<{width}}  {what}")
+
+
+def make_effect_command(eff: Effect):
+    """gout NAME TRACK [SETTINGS | PRESET | on | off | clear]: the first effect of this kind."""
+
+    def command(project: Project, args: Args) -> None:
+        pos = args.positionals(effect_usage(eff), 1)
+        if pos[0].lower() in ("presets", "preset"):
+            print_presets(eff)
+            return
+        t = chain_owner(project, pos[0])
+        item = first_of(t, eff.name)
+        words = pos[1:]
+        if not words:
+            print(effect_line(eff, t, item))
+            show_effect(project, t, eff, item)
+            return
+        low = [w.lower() for w in words]
+        who = owner_label(t)
+        if low in (["on"], ["off"]):
+            if item is None:
+                die(f"{who} has no {eff.name} to switch {low[0]}: gout {eff.name} {pos[0]} SETTINGS adds one")
+            project.record(f"{eff.name} {who} {low[0]}")
+            project.fx_set(item["id"], on=low[0] == "on")
+        elif low in (["clear"], ["rm"], ["none"], ["remove"]):
+            if item is not None:
+                project.record(f"{eff.name} {who} clear")
+                project.fx_remove(item["id"])
+        else:
+            line = checked_line(project, t, eff, " ".join(words))
+            project.record(f"{eff.name} {who} {' '.join(words)}")
+            if item is None:
+                project.fx_insert(t["owner"], eff.name, line, default_position(t, eff))
+            else:
+                project.fx_set(item["id"], params=line, on=True)
+        t = refresh(project, t)
+        print(effect_line(eff, t, first_of(t, eff.name)))
+        autorender(project, args)
+
+    command.__doc__ = eff.summary
+    return command
+
+
+def make_shortcut_command(eff: Effect, name: str, usage: str, apply):
+    """A command like `hp TRACK 80` that edits the first effect of a kind through a function."""
+
+    def command(project: Project, args: Args) -> None:
+        pos = args.positionals(f"gout {name} TRACK|master {usage}", 2)
+        t = chain_owner(project, pos[0])
+        item = first_of(t, eff.name)
+        try:
+            line = apply(item["params"] if item else "", pos[1:])
+        except ValueError as exc:
+            die(str(exc))
+        line = checked_line(project, t, eff, line)
+        project.record(f"{name} {owner_label(t)} {' '.join(pos[1:])}")
+        if item is None:
+            project.fx_insert(t["owner"], eff.name, line, default_position(t, eff))
+        else:
+            project.fx_set(item["id"], params=line, on=True)
+        t = refresh(project, t)
+        print(effect_line(eff, t, first_of(t, eff.name)))
+        autorender(project, args)
+
+    return command
+
+
+def effect_commands() -> dict:
+    """A command per effect and per shortcut, from the registry."""
+    table = {}
+    for eff in effects().values():
+        table[eff.name] = make_effect_command(eff)
+        for name, (usage, _summary, apply) in eff.shortcuts.items():
+            table[name] = make_shortcut_command(eff, name, usage, apply)
+    return table
+
+
+FX_USAGE = """gout fx TRACK|master                          the effects in order, numbered
+       gout fx TRACK add KIND [SETTINGS...]          add one at the end
+       gout fx TRACK N SETTINGS... | on | off | rm   change, bypass or remove slot N
+       gout fx TRACK N move M                        move slot N to position M
+       gout fx TRACK clear                           remove them all
+       gout fx kinds                                 every effect there is"""
+
+
+def print_chain(t: dict) -> None:
+    items = t["fx"]
+    print(f"fx    {owner_spec(t):>2}  {owner_label(t):<16} {len(items)} effect{'' if len(items) == 1 else 's'}"
+          + ("" if items else f"  (gout fx {owner_spec(t)} add KIND, or gout eq {owner_spec(t)} hp80)"))
+    for pos, item in enumerate(items, 1):
+        print(f"      {pos:>2}  {fx_text(item)}")
+
+
+def slot_of(t: dict, spec: str) -> dict:
+    """Slot N (1-based) or #ID (as the parameter sheet uses) in a chain."""
+    items = t["fx"]
+    if spec.startswith("#") and spec[1:].isdigit():
+        item = next((i for i in items if i["id"] == int(spec[1:])), None)
+        if item is None:
+            die(f"{owner_label(t)} has no effect {spec} (the chain changed?)")
+        return item
+    if spec.isdigit() and 1 <= int(spec) <= len(items):
+        return items[int(spec) - 1]
+    die(f"{owner_label(t)} has {len(items)} effect{'' if len(items) == 1 else 's'}; no slot {spec!r}\n{FX_USAGE}")
+
+
+def cmd_fx(project: Project, args: Args) -> None:
+    pos = args.positionals(FX_USAGE, 1)
+    if pos[0].lower() in ("kinds", "effects"):
+        for eff in effects().values():
+            names = "/".join((eff.name, *eff.aliases))
+            origin = "" if eff.source == "built-in" else f"  [addon {eff.source}]"
+            print(f"  {names:<14} {eff.summary}{origin}")
+        return
+    t = chain_owner(project, pos[0])
+    words = pos[1:]
+    who = owner_label(t)
+    if not words:
+        print_chain(t)
+        return
+    low = [w.lower() for w in words]
+    if low[0] == "add":
+        if len(words) < 2:
+            die(FX_USAGE)
+        eff = resolve(words[1])
+        if eff is None:
+            die(f"no effect called {words[1]!r}; gout fx kinds lists them")
+        line = checked_line(project, t, eff, " ".join(words[2:]))
+        project.record(f"fx {who} add {' '.join(words[1:])}")
+        project.fx_insert(t["owner"], eff.name, line)
+    elif low == ["clear"]:
+        project.record(f"fx {who} clear")
+        project.fx_clear(t["owner"])
+    else:
+        item = slot_of(t, words[0])
+        rest, low_rest = words[1:], low[1:]
+        if not rest:
+            die(FX_USAGE)
+        if low_rest[0] == "move":
+            if len(rest) != 2 or not rest[1].isdigit():
+                die(f"move needs a position: gout fx {owner_spec(t)} {words[0]} move 1")
+            project.record(f"fx {who} {words[0]} move {rest[1]}")
+            project.fx_move(item["id"], int(rest[1]))
+        elif low_rest in (["on"], ["off"]):
+            project.record(f"fx {who} {words[0]} {low_rest[0]}")
+            project.fx_set(item["id"], on=low_rest[0] == "on")
+        elif low_rest in (["rm"], ["remove"], ["clear"], ["none"]):
+            project.record(f"fx {who} {words[0]} rm")
+            project.fx_remove(item["id"])
+        else:
+            eff = effect(item["kind"])
+            if eff is None:
+                die(f"{item['kind']} is not installed, so its settings cannot be checked")
+            line = checked_line(project, t, eff, " ".join(rest))
+            project.record(f"fx {who} {words[0]} {' '.join(rest)}")
+            project.fx_set(item["id"], params=line, on=True)
+    print_chain(refresh(project, t))
     autorender(project, args)
 
 
-def cmd_hp(project: Project, args: Args) -> None:
-    _cut(project, args, "hp")
-
-
-def cmd_lp(project: Project, args: Args) -> None:
-    _cut(project, args, "lp")
+def apply_chain(project: Project, owner: str, who: str, items: list, warnings: list[str]) -> None:
+    """Replace a chain with items from a document; unknown kinds are kept as they are."""
+    project.fx_clear(owner)
+    for item in items:
+        if not isinstance(item, dict) or not item.get("kind"):
+            continue
+        kind, params, on = str(item["kind"]), str(item.get("params") or ""), bool(item.get("on", True))
+        eff = effect(kind)
+        if eff is None:
+            warnings.append(f"{who}: {kind} is not installed; kept, but left out of the mix until it is")
+        else:
+            try:
+                params = eff.canonical(params)
+            except ValueError as exc:
+                warnings.append(f"{who}: {kind} ignored ({exc})")
+                continue
+        project.fx_insert(owner, kind, params, on=on)
 
 
 def cmd_set(project: Project, args: Args) -> None:
@@ -662,10 +652,6 @@ def cmd_set(project: Project, args: Args) -> None:
             "autorender": "render master.wav after every change",
             "lufs": "loudness target: -14 (streaming) -16 (Apple) -23 (broadcast) or off",
             "ceiling": "true-peak ceiling in dBTP for the loudness step",
-            "eq": "master eq, same syntax as a track's: hp30 hs10k:+1, or a preset",
-            "comp": "master compressor: -16 2:1 a30 r300 k8, or a preset like glue",
-            "delay": "master delay: 1/8 w20 f30 n3, or a preset like slap",
-            "reverb": "master reverb: 2.5s p20 d50 w15, or a preset like hall",
             "bpm": "tempo, so delays can be note values like 1/8",
             "gain": "master gain in dB, before the loudness step",
             "fadein": "e.g. 500ms", "fadeout": "e.g. 3s", "head": "silence before, e.g. 500ms",
@@ -681,20 +667,34 @@ def cmd_set(project: Project, args: Args) -> None:
                 value = fmt_ms(int(value))
             elif key in TAG_KEYS:
                 value = value or "-"
-            elif key in ("eq", "comp", "delay", "reverb"):
-                value = value or "none"
             elif key == "bpm":
                 value = value or "-"
             print(f"{key:<11} {value:<14} {hints.get(key, '')}")
+        chain = master_track(project)["fx"]
+        print(f"{'effects':<11} {' | '.join(fx_text(i) for i in chain) or 'none':<14} "
+              f"{'' if chain else 'the master chain: gout fx master add KIND'}")
         return
-    if len(pos) < 2 or (len(pos) > 2 and pos[0].lower() not in ("eq", "comp", "delay", "reverb") + TAG_KEYS):
+    eff = resolve(pos[0]) if pos[0].lower() in effects() else None
+    if eff is not None:  # set eq hp30: the master's eq, as gout eq master hp30
+        effect_commands()[eff.name](project, Args(["master", *pos[1:]] + (["-N"] if args.no_mix else [])))
+        return
+    if len(pos) < 2 or (len(pos) > 2 and pos[0].lower() not in TAG_KEYS):
         die(SET_USAGE)
-    key, value = parse_setting(pos[0].lower(), " ".join(pos[1:]))  # eq, comp and tags may span words
+    key, value = parse_setting(pos[0].lower(), " ".join(pos[1:]))  # tags may span words
     if key == "bpm" and not value:
-        users = [t["name"] for t in project.tracks() + [master_track(project)]
-                 if t["delay"] and not t["delay"].split()[0].endswith("ms")]
+        users = []
+        for t in project.tracks() + [master_track(project)]:
+            ctx = FxContext(project, t)
+            ctx.bpm = None
+            for item in t["fx"]:
+                eff = effect(item["kind"])
+                try:
+                    if eff is not None:
+                        eff.check(ctx, eff.read(item["params"]))
+                except (GoutError, ValueError):
+                    users.append(f"the {item['kind']} on {owner_label(t)}")
         if users:
-            die(f"cannot clear bpm: the delay on {', '.join(users)} uses a note value; give it a time in ms first")
+            die(f"cannot clear bpm: {', '.join(users)} uses the tempo; give it a time in ms first")
     project.record(f"set {key} {value}")
     project.set(key, value)
     shown = fmt_ms(int(value)) if key in ("fadein", "fadeout", "head", "tail") and value != "0" else value
@@ -744,21 +744,21 @@ def cmd_stems(project: Project, args: Args) -> None:
     for t in tracks:
         if audible_only and not is_heard(t, any_solo):
             continue
-        steps = track_steps(project, t)
-        if steps:
-            plans.append((t, steps))
+        if track_head(project, t) is not None:
+            plans.append((t, None))
     if not plans:
         die("nothing to export: no track has audible material" + (" the mix hears" if audible_only else ""))
     out_dir = Path(pos[0]).expanduser() if pos else project.root / STEMS_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
     end_ms = max(1, max(sounding_end(project, t) for t, _ in plans))
     bits = setting(project, "bits")
+    warnings: set[str] = set()
     print(f"stems {out_dir}  {len(plans)} track{'' if len(plans) == 1 else 's'}, {fmt_ms(end_ms)} each"
           f"  ({bits}, {project.rate} Hz, stereo)")
     for t, steps in plans:
         name = f"{t['n']:02d}-{t['name']}.wav"
         inputs = [project.tracks_dir / t["file"]]
-        graph = track_chain(project, t, steps, "[0:a]", "s", inputs) + f";[s]apad=whole_dur={end_ms / 1000:.3f}[out]"
+        graph = track_chain(project, t, "[0:a]", "s", inputs, warnings) + f";[s]apad=whole_dur={end_ms / 1000:.3f}[out]"
         cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"]
         for path in inputs:
             cmd += ["-i", str(path)]
@@ -769,8 +769,11 @@ def cmd_stems(project: Project, args: Args) -> None:
         run_quiet(cmd, args.verbose)
         state = "" if is_heard(t, any_solo) else "  (muted or not soloed in the mix)"
         print(f"      {name:<26} {fmt_size((out_dir / name).stat().st_size):>10}{state}")
-    master_bits = [k for k in ("eq", "comp", "delay", "reverb", "gain", "fadein", "fadeout", "head", "tail")
-                   if setting(project, k) not in ("0", "")]
+    for warning in sorted(warnings):
+        print(f"      {warning}")
+    master_bits = [k for k in ("gain", "fadein", "fadeout", "head", "tail") if setting(project, k) not in ("0", "")]
+    if any(item["on"] for item in master_track(project)["fx"]):
+        master_bits.insert(0, "effects")
     lufs = setting(project, "lufs")
     if master_bits or lufs != "off":
         what = ", ".join(master_bits + (["the loudness target"] if lufs != "off" else []))
@@ -785,6 +788,12 @@ def apply_document(project: Project, data: dict, settings: bool = True, tracks: 
     warnings: list[str] = []
     n_settings = 0
     if settings:
+        master = (data.get("master") or {}).get("fx")
+        if master is None:
+            master = legacy_chain(data.get("project") or {}) or None
+        if master is not None:
+            apply_chain(project, MASTER_OWNER, "master", master, warnings)
+            n_settings += 1
         for key, value in (data.get("project") or {}).items():
             if key in ("name", "created") or key.startswith(("master_", "ui_")):
                 continue
@@ -829,29 +838,9 @@ def apply_document(project: Project, data: dict, settings: bool = True, tracks: 
                     fields["gain_db"] = max(-60.0, min(24.0, float(item["gain_db"])))
                 if item.get("pan") is not None:
                     fields["pan"] = max(-1.0, min(1.0, float(item["pan"])))
-                for flag in ("mute", "solo", "eq_on", "comp_on", "delay_on", "reverb_on"):
+                for flag in ("mute", "solo"):
                     if item.get(flag) is not None:
                         fields[flag] = 1 if item[flag] else 0
-                if item.get("eq") is not None:
-                    try:
-                        fields["eq"] = fmt_eq(parse_eq(str(item["eq"])))
-                    except ValueError as exc:
-                        warnings.append(f"{t['name']}: eq ignored ({exc})")
-                if item.get("comp") is not None:
-                    try:
-                        fields["comp"] = fmt_comp(parse_comp(str(item["comp"]))) if str(item["comp"]) else ""
-                    except ValueError as exc:
-                        warnings.append(f"{t['name']}: comp ignored ({exc})")
-                if item.get("delay") is not None:
-                    try:
-                        fields["delay"] = fmt_delay(parse_delay(str(item["delay"]))) if str(item["delay"]) else ""
-                    except ValueError as exc:
-                        warnings.append(f"{t['name']}: delay ignored ({exc})")
-                if item.get("reverb") is not None:
-                    try:
-                        fields["reverb"] = fmt_reverb(parse_reverb(str(item["reverb"]))) if str(item["reverb"]) else ""
-                    except ValueError as exc:
-                        warnings.append(f"{t['name']}: reverb ignored ({exc})")
             except (TypeError, ValueError) as exc:
                 warnings.append(f"{t['name']}: bad value ({exc}), skipped")
                 continue
@@ -861,6 +850,10 @@ def apply_document(project: Project, data: dict, settings: bool = True, tracks: 
                 fields["out_ms"] = None
             if fields:
                 project.update(t["n"], **fields)
+            if isinstance(item.get("fx"), list):
+                apply_chain(project, t["file"], t["name"], item["fx"], warnings)
+            elif any(item.get(kind) is not None for kind in ("eq", "comp", "delay", "reverb")):
+                apply_chain(project, t["file"], t["name"], legacy_chain(item), warnings)
             order.append(t["file"])
             n_tracks += 1
         if order:
