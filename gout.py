@@ -915,6 +915,20 @@ EQ_SLOPES = {6: (1,), 12: (2,), 18: (2, 1), 24: (2, 2), 36: (2, 2, 2), 48: (2, 2
 EQ_SHELF_Q = 0.707
 EQ_MAX_BANDS = 16
 EQ_SYNTAX = "hp80  lp12k  hp80/24  +3@200  -4@2.5k/3  ls100:+2  hs8k:-3"
+EQ_PRESETS = {  # a preset name stands for these bands; they can be mixed with bands of your own
+    "voice":   ("hp80 -3@250/1.5 +2@3k/1.2 hs10k:+1", "spoken word: no rumble, less box, more presence"),
+    "podcast": ("hp80 -2@300/1.5 +2@2.5k/1.2 lp16k", "voice, a touch softer, nothing above 16 kHz"),
+    "warm":    ("ls200:+2 hs6k:-2", "a little more low end, a little less top"),
+    "air":     ("hs10k:+3", "sheen above 10 kHz"),
+    "bright":  ("hs4k:+3", "more top from 4 kHz up"),
+    "mud":     ("-4@250/1.2", "takes the mud out around 250 Hz"),
+    "clean":   ("hp40", "just the rumble under 40 Hz gone"),
+    "phone":   ("hp300 lp3.4k", "the telephone effect"),
+    "bass":    ("hp30 ls100:+3", "bass instruments: subsonics gone, body up"),
+    "kick":    ("hp40 +3@60/1.5 -3@400/1.5 +2@4k/1.5", "kick drum: thump, less cardboard, click"),
+    "guitar":  ("hp100 -2@300/1.5 +2@2.5k/1.5", "guitars sit better: less low mud, more bite"),
+    "flat":    ("", "no eq at all"),
+}
 
 
 def parse_hz(text: str) -> float:
@@ -953,7 +967,7 @@ def parse_band(token: str) -> dict:
         if not -24 <= g <= 24:
             raise ValueError(f"gain {g:+g} in {token!r}: keep it within ±24 dB")
         return {"type": m.group(1), "f": parse_hz(m.group(2)), "g": g}
-    raise ValueError(f"bad band {token!r}; bands look like  {EQ_SYNTAX}")
+    raise ValueError(f"bad band {token!r}; bands look like  {EQ_SYNTAX}  (or a preset: eq presets)")
 
 
 def fmt_band(b: dict) -> str:
@@ -965,8 +979,15 @@ def fmt_band(b: dict) -> str:
 
 
 def parse_eq(text: str) -> list[dict]:
-    """Bands from a line of tokens, in a fixed order: hp, lp, then the rest as written."""
-    bands = [parse_band(tok) for tok in text.split()]
+    """Bands from a line of tokens, in a fixed order: hp, lp, then the rest as written.
+    A preset name in the line stands for its bands."""
+    tokens: list[str] = []
+    for tok in text.split():
+        if tok.lower() in EQ_PRESETS:
+            tokens += EQ_PRESETS[tok.lower()][0].split()
+        else:
+            tokens.append(tok)
+    bands = [parse_band(tok) for tok in tokens]
     cuts = {}
     rest = []
     for b in bands:
@@ -1722,7 +1743,8 @@ def cmd_pan(project: Project, args: Args) -> None:
 SET_USAGE = "gout set KEY VALUE   (gout set alone lists the keys and their values)"
 
 
-EQ_USAGE = (f"gout eq TRACK [BANDS... | on | off | clear]\n       bands: {EQ_SYNTAX}\n"
+EQ_USAGE = (f"gout eq TRACK [BANDS... | PRESET | on | off | clear]\n       bands: {EQ_SYNTAX}\n"
+            f"       presets: {' '.join(EQ_PRESETS)}   (eq presets explains them)\n"
             "       hp/lp: cut with a slope in dB per octave (12 by default); +3@200: a peak of +3 dB at 200 Hz,\n"
             "       /3 sets its Q; ls100:+2 and hs8k:-3 are shelves")
 
@@ -1736,6 +1758,11 @@ def eq_line(t: dict) -> str:
 
 def cmd_eq(project: Project, args: Args) -> None:
     pos = args.positionals(EQ_USAGE, 1)
+    if pos[0].lower() in ("presets", "preset", "list"):
+        print("presets  a name stands for these bands; use it alone or with bands of your own, eq 3 voice +1@5k")
+        for name, (bands, what) in EQ_PRESETS.items():
+            print(f"  {name:<8} {bands or 'flat':<38} {what}")
+        return
     t = project.track(pos[0])
     words = pos[1:]
     if not words:
@@ -2209,6 +2236,7 @@ MIXER
  hp/lp    TRACK 80 [24] | off         cuts, slope dB/oct
  eq    e  TRACK hp80 +3@200 hs8k:-2   peaks gain@hz/q
  eq    e  TRACK on | off | clear      shelves ls100:+2
+ eq    e  TRACK voice|warm|air|mud..  presets (eq presets)
  mix   x  [-3] [-v]                   -3 also master.mp3
 PROJECT
  undo  u                              not hard trim / rm -D
@@ -2582,7 +2610,7 @@ class Tui:
             row(f"t{n}:mute", "mute", "on" if t["mute"] else "off", lambda v, n=n: ["mute", n, v], "on | off")
             row(f"t{n}:solo", "solo", "on" if t["solo"] else "off", lambda v, n=n: ["solo", n, v], "on | off")
             row(f"t{n}:eq", "eq", (t["eq"] or "flat") + ("" if t["eq_on"] else " (off)"),
-                lambda v, n=n: ["eq", n, *v.split()], "hp80 +3@200 hs8k:-2 | off | clear")
+                lambda v, n=n: ["eq", n, *v.split()], "hp80 +3@200 hs8k:-2 | voice | off | clear")
         return rows
 
     def sheet_open(self) -> None:
@@ -2974,7 +3002,8 @@ TRACKS   (TRACK is the number shown by ls, or the track name)
   gout lp       TRACK HZ [SLOPE] | off       low-pass cut, e.g. lp 3 12k
   gout eq    e  TRACK BANDS...               the whole eq in one line, before the fader:
                                              {EQ_SYNTAX}
-  gout eq    e  TRACK on | off | clear       bypass, bring back, or remove
+  gout eq    e  TRACK PRESET [BANDS...]      a named start: {' '.join(EQ_PRESETS)}
+  gout eq    e  TRACK on | off | clear       bypass, bring back, or remove;  eq presets lists them
   gout eq    e  TRACK                        show the bands and draw the curve, 20 Hz to 20 kHz; in
                                              the ui the curve panel follows the track you eq (ctrl-g)
   -N (--no-mix) on any of these skips the automatic re-mix; -p DIR before a command picks

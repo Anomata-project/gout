@@ -78,6 +78,8 @@ name (a unique prefix will do). `-N` / `--no-mix` on any change skips the automa
 | `solo` | `s` | `TRACK [on\|off]` | toggle; `solo all off` |
 | `gain` | `g` | `TRACK DB` | `gain 2 -6` |
 | `pan` | `p` | `TRACK L30 \| R30 \| C` | every track starts centred |
+| `hp`, `lp` | | `TRACK HZ [SLOPE] \| off` | high-pass or low-pass cut, slope in dB per octave (12 by default) |
+| `eq` | `e` | `TRACK BANDS... \| PRESET \| on \| off \| clear` | the whole eq in one line; `eq TRACK` shows it with the curve |
 | `mix` | `x` | `[-3] [-v]` | render `master.wav`; `-3` / `--mp3` also writes `master.mp3` |
 | `undo` | `u` | | undo the last change (not a hard trim or `rm -D`) |
 | `stems` | `sm` | `[DIR] [-A]` | one wav per track, processed as in the mix and all the same length, into `stems/`; `-A` only what the mix hears |
@@ -172,6 +174,35 @@ the file. Under three seconds of material the loudness step is a plain gain, sin
 cannot measure that reliably. `gout stats` shows integrated LUFS, loudness range and true peak
 for every track file (and what it comes to after the track's gain), so you can balance tracks
 by numbers before touching the master.
+
+## EQ
+
+Every track has an eq, applied before its fader, written as one line of bands:
+
+```
+gout hp 3 80                    # high-pass at 80 Hz, 12 dB per octave
+gout hp 3 80 24                 # steeper
+gout lp 3 12k                   # low-pass
+gout eq 3 hp80 +3@200 -4@2.5k/3 hs8k:-2     # the whole eq at once
+gout eq 3 voice                 # a preset, or   eq 3 voice +1@5k   to build on one
+gout eq 3 off | on | clear      # bypass, bring back, remove
+gout eq 3                       # show the bands and draw the curve
+gout eq presets                 # the preset list
+```
+
+Bands: `hp80` and `lp12k` are cuts, with `/24` for the slope in dB per octave (6 to 48). `+3@200`
+is a peak of +3 dB at 200 Hz; `/3` after it sets the Q (1 by default). `ls100:+2` and `hs8k:-3`
+are low and high shelves. Frequencies take `k`, gains are dB. The mix and the stems use ffmpeg's
+highpass, lowpass, equalizer, lowshelf and highshelf filters.
+
+`gout eq 3` draws the frequency response from 20 Hz to 20 kHz on a log axis, with the track's own
+average spectrum dimmed behind it, so you see what you are cutting. In the ui the same picture
+sits in the right panel and follows whichever track you last touched with `eq`, `hp` or `lp`;
+`ctrl-g` or `eq` alone hides and shows it.
+
+Presets: `voice`, `podcast`, `warm`, `air`, `bright`, `mud`, `clean`, `phone`, `bass`, `kick`,
+`guitar`, `flat`. A preset expands to ordinary bands, so what you see in `ls` and the sheet is
+always the real eq.
 
 ## Stems
 
