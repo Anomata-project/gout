@@ -79,8 +79,9 @@ Long flags exist for every short one: `--at --name --hard --clear --reencode --d
 ## The terminal ui
 
 `gout` inside a project (or `gout ui`) opens a split screen. The left side is a prompt that
-takes the same commands without the leading `gout`, with a scrolling log above it. The right
-side is the timeline, one row per track: `█` is the audible part, `░` is material that is
+takes the same commands without the leading `gout`. It behaves like a terminal: the prompt sits
+right under the last output line and walks down the screen, then stays on the bottom row while
+the log scrolls (`pgup` / `pgdn` look back, typing snaps back down). The right side is the timeline, one row per track: `█` is the audible part, `░` is material that is
 soft-trimmed away, `▒` a track that is muted or not soloed. Below the tracks sits the cheat
 sheet; `tab` and `shift-tab` flip its pages, `ctrl-n` / `ctrl-p` move it a line. It is a
 picture, not a mouse target: the keyboard drives everything.
@@ -102,6 +103,11 @@ picture, not a mouse target: the keyboard drives everything.
 
 `ctrl-u` or `view` hides and shows the right side, `help` or `cheat` prints the sheet into the
 log, `help all` the whole instruction page, `quit` / `ctrl-d` / `ctrl-c` leave.
+
+`ctrl-←` / `ctrl-→` move the split between the panes (shift or alt with the arrows work too),
+or type `split 50`, `split +5`, `split -5`. The width is remembered per project. There is no
+mouse dragging on purpose: turning on mouse reporting would stop ordinary text selection in
+the terminal.
 
 ## How the mix works
 

@@ -13,6 +13,7 @@ import contextlib
 import datetime as dt
 import io
 import math
+import os
 import json
 import re
 import shlex
@@ -562,7 +563,8 @@ class Project:
     # ---- history
 
     def snapshot(self) -> dict:
-        settings = {r["key"]: r["value"] for r in self.conn.execute("SELECT key, value FROM project")}
+        settings = {r["key"]: r["value"] for r in self.conn.execute("SELECT key, value FROM project")
+                    if not r["key"].startswith("ui_")}  # ui_ keys are preferences, not state
         return {"project": settings, "tracks": self.tracks()}
 
     def record(self, command: str, undoable: bool = True) -> None:
@@ -582,7 +584,7 @@ class Project:
                     f"INSERT INTO tracks ({', '.join(cols)}) VALUES ({', '.join('?' for _ in cols)})",
                     tuple(t[c] for c in cols),
                 )
-            self.conn.execute("DELETE FROM project")
+            self.conn.execute("DELETE FROM project WHERE key NOT LIKE 'ui_%'")
             for k, v in snap["project"].items():
                 self.conn.execute("INSERT INTO project (key, value) VALUES (?, ?)", (k, v))
 
@@ -1234,6 +1236,7 @@ PROJECT
  new   n  NAME [-R HZ]                48000 Hz by default
  cheat c  this sheet   help h         help all: whole page
  quit  q  leave the ui  clear cl      empty the log
+ split sp 50 | +5 | -5                left pane width (ui)
 FLAGS  -N --no-mix skip the re-mix    -p DIR the project
        -a --at  -n --name  -H --hard  -c --clear
        -r --reencode  -D --delete  -3 --mp3  -R --rate
@@ -1244,6 +1247,7 @@ TRACK  number from ls, or the name (unique prefix ok)
 KEYS   ctrl-u  timeline on/off   tab shift-tab  flip sheet
        ctrl-n ctrl-p  sheet line  pgup pgdn      scroll log
        up down  earlier commands  ctrl-l  clear the log
+       ctrl-← ctrl-→  move the split  (shift/alt too)
        ctrl-d  ctrl-c  quit
 """
 
@@ -1272,7 +1276,7 @@ COMMANDS = {
     "rm": ("r", "remove", "del"), "mute": ("mu",), "solo": ("s",), "gain": ("g",), "pan": ("p",),
     "mix": ("x", "render", "bounce"), "undo": ("u",), "dump": ("dp",), "rebuild": ("rb",),
     "set": ("se",), "new": ("n",), "cheat": ("c",), "help": ("h", "?"), "ui": ("tui",), "cut": (),
-    "quit": ("q", "exit"), "clear": ("cl",),
+    "quit": ("q", "exit"), "clear": ("cl",), "split": ("sp",),
 }
 ALIASES = {alias: name for name, aliases in COMMANDS.items() for alias in aliases}
 
@@ -1291,6 +1295,8 @@ class Tui:
         self.history: list[str] = []
         self.hist_i: int | None = None
         self.show_view = True
+        split = project.get("ui_split") or "40"
+        self.split = int(split) if split.isdigit() else 40  # left pane, percent of the width
         self.scroll = 0
         self.cheat_scroll = 0
         self.sheet_h = 10
@@ -1316,7 +1322,7 @@ class Tui:
     def layout(self) -> tuple[int, int, int, int | None, int]:
         h, w = self.scr.getmaxyx()
         if self.show_view and w >= 60:
-            left = max(30, w * 2 // 5)
+            left = max(30, min(w - 30, w * max(20, min(80, self.split)) // 100))
             return h, w, left, left + 1, w - left - 1
         return h, w, w, None, 0
 
@@ -1328,8 +1334,11 @@ class Tui:
         p = self.project
         tracks = p.tracks()
         title = (f" gout {p.get('name')}  {p.rate} Hz  {len(tracks)} track{'' if len(tracks) == 1 else 's'}"
-                 f"  automix {'on' if p.automix else 'off'}")
-        self.put(0, 0, title.ljust(left_w), curses.A_REVERSE)
+                 f"  automix {'on' if p.automix else 'off'}").ljust(left_w)
+        if self.scroll:
+            tag = " ↑ scrolled, pgdn "
+            title = title[:max(0, left_w - len(tag))] + tag
+        self.put(0, 0, title, curses.A_REVERSE)
 
         wrapped: list[str] = []
         for line in self.log:
@@ -1337,15 +1346,19 @@ class Tui:
                                          drop_whitespace=False, replace_whitespace=False) or [""])
         avail = max(0, h - 2)
         self.scroll = max(0, min(self.scroll, max(0, len(wrapped) - avail)))
-        end = len(wrapped) - self.scroll
-        for i, line in enumerate(wrapped[max(0, end - avail):end]):
+        if self.scroll == 0 and len(wrapped) <= avail:  # like a terminal: the prompt sits under the output
+            visible, prompt_y = wrapped, 1 + len(wrapped)
+        else:  # the screen is full (or scrolled back): the prompt stays on the last row
+            end = len(wrapped) - self.scroll
+            visible, prompt_y = wrapped[max(0, end - avail):end], h - 1
+        for i, line in enumerate(visible):
             attr = curses.A_BOLD if line.startswith("> ") else (curses.A_DIM if line.startswith("error") else 0)
             self.put(1 + i, 0, line, attr, left_w - 1)
 
         prompt = "… " if self.busy else "> "
         room = max(1, left_w - len(prompt) - 1)
         shown = self.input[-room:]
-        self.put(h - 1, 0, prompt + shown, curses.A_DIM if self.busy else curses.A_BOLD)
+        self.put(prompt_y, 0, prompt + shown, curses.A_DIM if self.busy else curses.A_BOLD)
 
         if right_x is not None:
             for y in range(h):
@@ -1377,7 +1390,7 @@ class Tui:
                 header = line[:1].isupper() and not line.startswith(" ")
                 self.put(top + 1 + i, right_x + 1, line, curses.A_BOLD if header else 0, right_w - 1)
         try:
-            scr.move(h - 1, min(len(prompt) + len(shown), w - 1))
+            scr.move(prompt_y, min(len(prompt) + len(shown), w - 1))
         except curses.error:
             pass
         scr.refresh()
@@ -1434,7 +1447,16 @@ class Tui:
             self.input = self.input.rstrip()
             self.input = self.input[:self.input.rfind(" ") + 1] if " " in self.input else ""
         elif key == "\x1b":
-            self.input = ""
+            seq = self.read_escape()
+            arrow = re.fullmatch(r"\[1;([235])([CD])", seq)  # shift/alt/ctrl + right/left
+            if arrow:
+                self.resize(5 if arrow.group(2) == "C" else -5)
+            elif not seq:
+                self.input = ""
+        elif key in (curses.KEY_SLEFT, curses.KEY_SRIGHT):
+            self.resize(5 if key == curses.KEY_SRIGHT else -5)
+        elif isinstance(key, int) and self.keyname(key)[:4] in (b"kLFT", b"kRIT"):  # ctrl/alt + arrows
+            self.resize(5 if self.keyname(key)[:4] == b"kRIT" else -5)
         elif key == curses.KEY_UP:
             if self.history:
                 self.hist_i = len(self.history) - 1 if self.hist_i is None else max(0, self.hist_i - 1)
@@ -1461,6 +1483,40 @@ class Tui:
                 self.cheat_scroll = last if at_top and key == curses.KEY_BTAB else max(0, self.cheat_scroll - step)
         elif isinstance(key, str) and key.isprintable():
             self.input += key
+            self.scroll = 0
+
+    @staticmethod
+    def keyname(key: int) -> bytes:
+        import curses
+        try:
+            return curses.keyname(key)
+        except (curses.error, ValueError):
+            return b""
+
+    def read_escape(self) -> str:
+        """The rest of an escape sequence curses did not recognise, or '' for a bare Esc."""
+        import curses
+        seq = ""
+        self.scr.nodelay(True)
+        try:
+            for _ in range(8):
+                try:
+                    ch = self.scr.get_wch()
+                except curses.error:
+                    break
+                if not isinstance(ch, str):
+                    break
+                seq += ch
+                if ch.isalpha() or ch == "~":
+                    break
+        finally:
+            self.scr.nodelay(False)
+        return seq
+
+    def resize(self, delta: int, absolute: int | None = None) -> None:
+        self.split = max(20, min(80, self.split + delta if absolute is None else absolute))
+        self.project.set("ui_split", str(self.split))
+        self.show_view = True
 
     def submit(self) -> None:
         line = self.input.strip()
@@ -1482,6 +1538,15 @@ class Tui:
             self.show_view = not self.show_view
         elif head == "clear":
             self.log.clear()
+        elif head == "split":
+            arg = argv[1] if len(argv) > 1 else ""
+            if re.fullmatch(r"[+-]\d+", arg):
+                self.resize(int(arg))
+            elif arg.isdigit():
+                self.resize(0, int(arg))
+            elif arg:
+                self.log.append("split takes a percentage (split 50) or a step (split +5, split -5)")
+            self.log.append(f"split  left pane {self.split}% of the width  (ctrl-← ctrl-→ move it)")
         elif head in ("help", "-h", "--help", "cheat"):
             full = head != "cheat" and argv[1:] == ["all"]
             self.log.extend(HELP.rstrip().splitlines() if full else render_cheat(max(40, self.layout()[2] - 2)))
@@ -1508,6 +1573,7 @@ def run_tui(project: Project) -> None:
     import curses
     import locale
     locale.setlocale(locale.LC_ALL, "")
+    os.environ.setdefault("ESCDELAY", "25")  # a bare Esc should not wait a second
     curses.wrapper(lambda scr: Tui(project, scr).loop())
 
 
@@ -1756,7 +1822,7 @@ def run(argv: list[str], project: Project | None = None) -> int:
     if head in ("-V", "--version", "version"):
         print(f"gout {__version__}")
         return 0
-    if head in ("quit", "clear") and project is None:
+    if head in ("quit", "clear", "split") and project is None:
         die(f"{head} only means something inside the ui (gout, in a project)")
 
     need_tools()
