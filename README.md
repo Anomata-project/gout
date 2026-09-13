@@ -73,7 +73,8 @@ name (a unique prefix will do). `-N` / `--no-mix` on any change skips the automa
 | `undo` | `u` | | undo the last change (not a hard trim or `rm -D`) |
 | `dump` | `dp` | | the state as JSON |
 | `rebuild` | `rb` | `[-f]` | recreate `gout.db` from `master/` |
-| `set` | `se` | `autorender on\|off`, `rate HZ` | project settings |
+| `set` | `se` | `KEY VALUE` | settings; `set` alone lists them all (see the master bus below) |
+| `stats` | `st` | | integrated LUFS, loudness range and true peak per track file, and for `master.wav` |
 | `cheat` | `c` | | the cheat sheet |
 | `cut` | | `INPUT ...` | the 1.x cutter, see below |
 
@@ -118,13 +119,40 @@ or type `split 50`, `split +5`, `split -5`. The width is remembered per project.
 mouse dragging on purpose: turning on mouse reporting would stop ordinary text selection in
 the terminal.
 
+## The master bus
+
+Everything on the master is a setting: `gout set KEY VALUE`, `gout set` alone lists them, and
+every change re-renders `master.wav` (unless autorender is off) and reports the result:
+
+```
+mix   master.wav  00:03:12.500  -14.0 LUFS  LRA 6.2  peak -1.0 dBTP
+      linear gain +3.4 dB
+```
+
+| setting | meaning |
+| --- | --- |
+| `lufs -14` / `off` | loudness target. Two passes of ffmpeg's `loudnorm`: a plain gain change whenever the ceiling allows, otherwise dynamic, and the mix line says which. -14 for Spotify and YouTube, -16 for Apple Music and podcasts, -23 for EBU broadcast. Default off |
+| `ceiling -1` | true-peak ceiling in dBTP for the loudness step |
+| `gain -3` | master gain in dB, before the loudness step |
+| `fadein 500ms`, `fadeout 3s` | fades on the sum |
+| `head 500ms`, `tail 2s` | silence padded before and after |
+| `bits 32f` / `24` / `16` | `master.wav` format; 16 is dithered |
+| `mp3 320k` / `192k` / `v0` | quality of the `mix --mp3` bounce |
+| `title`, `artist`, `album`, `year`, `comment` | tags written into `master.wav` and `master.mp3` |
+
+The chain is: sum of the tracks, master gain, fades, loudness step, head and tail padding, then
+the file. Under three seconds of material the loudness step is a plain gain, since `loudnorm`
+cannot measure that reliably. `gout stats` shows integrated LUFS, loudness range and true peak
+for every track file (and what it comes to after the track's gain), so you can balance tracks
+by numbers before touching the master.
+
 ## How the mix works
 
 Every track is decoded, trimmed to its in/out points, delayed to its position, panned to
 stereo (mono goes equally to L and R) and summed with ffmpeg's `amix` with normalisation off,
-so adding a track never turns the others down. `master.wav` is 32-bit float, so a hot sum
-cannot clip in the file; the peak is reported after every mix, and gain per track is there to
-bring it down before an mp3 bounce.
+so adding a track never turns the others down. `master.wav` is 32-bit float by default, so a
+hot sum cannot clip in the file; loudness and true peak are reported after every mix, and a
+loudness target or the gains bring it down before an mp3 bounce.
 
 A soft trim is applied after decoding, so it is sample-exact for wav and mp3 alike, and the
 sound stays where it is on the timeline when you change the in point: the offset is where

@@ -480,7 +480,10 @@ CREATE TABLE IF NOT EXISTS envelopes (
     size  INTEGER NOT NULL,
     mtime REAL NOT NULL,
     rate  INTEGER NOT NULL,
-    peaks BLOB NOT NULL
+    peaks BLOB NOT NULL,
+    lufs  REAL,
+    tp    REAL,
+    lra   REAL
 );
 CREATE TABLE IF NOT EXISTS history (
     id       INTEGER PRIMARY KEY,
@@ -510,6 +513,10 @@ class Project:
         if "created" not in {r[1] for r in self.conn.execute("PRAGMA table_info(history)")}:
             with self.conn:  # databases from before the column existed
                 self.conn.execute("ALTER TABLE history ADD COLUMN created TEXT NOT NULL DEFAULT '[]'")
+        if "lufs" not in {r[1] for r in self.conn.execute("PRAGMA table_info(envelopes)")}:
+            with self.conn:
+                for col in ("lufs", "tp", "lra"):
+                    self.conn.execute(f"ALTER TABLE envelopes ADD COLUMN {col} REAL")
         old = self.get("automix")  # the setting was called automix before 2.0.0 final
         if old is not None:
             if self.get("autorender") is None:
@@ -632,6 +639,22 @@ class Project:
                               " VALUES (?, ?, ?, ?, ?)", (name, st.st_size, st.st_mtime, ENV_RATE, peaks))
         return peaks
 
+    def loudness(self, name: str, path: Path) -> dict | None:
+        """Cached integrated loudness, true peak and LRA of a file; measured on first use."""
+        self.envelope(name, path)  # makes sure the row exists and is fresh
+        row = self.conn.execute("SELECT lufs, tp, lra FROM envelopes WHERE file = ?", (name,)).fetchone()
+        if row is None:
+            return None
+        if row["lufs"] is not None:
+            return {"i": row["lufs"], "tp": row["tp"], "lra": row["lra"]}
+        m = measure_loudness(path)
+        if m is None:
+            return None
+        with self.conn:
+            self.conn.execute("UPDATE envelopes SET lufs = ?, tp = ?, lra = ? WHERE file = ?",
+                              (m["i"], m["tp"], m["lra"], name))
+        return m
+
     def forget_envelope(self, name: str) -> None:
         with self.conn:
             self.conn.execute("DELETE FROM envelopes WHERE file = ?", (name,))
@@ -687,6 +710,74 @@ class Project:
         with self.conn:
             self.conn.execute("DELETE FROM history WHERE id = ?", (row["id"],))
         return row["command"]
+
+
+# --------------------------------------------------------------------------- master settings
+
+MASTER_DEFAULTS = {
+    "lufs": "off", "ceiling": "-1", "gain": "0", "fadein": "0", "fadeout": "0", "head": "0", "tail": "0",
+    "bits": "32f", "mp3": "320k", "title": "", "artist": "", "album": "", "year": "", "comment": "",
+}
+TAG_KEYS = ("title", "artist", "album", "year", "comment")
+BITS_CODEC = {"32f": "pcm_f32le", "24": "pcm_s24le", "16": "pcm_s16le"}
+
+
+def setting(project: "Project", key: str) -> str:
+    return project.get(key) or MASTER_DEFAULTS.get(key, "")
+
+
+def parse_setting(key: str, value: str) -> tuple[str, str]:
+    """Validate a `set` value; returns (canonical key, stored string)."""
+    v = value.strip()
+    if key in ("autorender", "automix"):
+        return "autorender", "on" if on_off(v, 0) else "off"
+    if key == "rate":
+        if not v.isdigit() or not 8000 <= int(v) <= 384000:
+            die(f"bad sample rate {value!r}")
+        return key, v
+    if key == "lufs":
+        if v.lower() in ("off", "no", "none", "0"):
+            return key, "off"
+        try:
+            target = float(v)
+        except ValueError:
+            die(f"bad loudness target {value!r}: -14, -16, -23 or off")
+        if not -40 <= target <= -5:
+            die("the loudness target must be between -40 and -5 LUFS")
+        return key, f"{target:g}"
+    if key in ("ceiling", "gain"):
+        try:
+            x = float(v.lower().removesuffix("dbtp").removesuffix("db"))
+        except ValueError:
+            die(f"bad {key} {value!r}")
+        lo, hi = (-20, 0) if key == "ceiling" else (-60, 24)
+        if not lo <= x <= hi:
+            die(f"{key} must be between {lo} and {hi} dB")
+        return key, f"{x:g}"
+    if key in ("fadein", "fadeout", "head", "tail"):
+        if v.lower() in ("off", "0", "none"):
+            return key, "0"
+        return key, str(parse_ms(v))
+    if key == "bits":
+        if v.lower() not in BITS_CODEC:
+            die("bits must be 32f, 24 or 16")
+        return key, v.lower()
+    if key == "mp3":
+        if not re.fullmatch(r"\d{2,3}k|v[0-9]", v.lower()):
+            die("mp3 quality is a bitrate like 320k or 192k, or v0 .. v9 (VBR, v0 is best)")
+        return key, v.lower()
+    if key in TAG_KEYS:
+        return key, value
+    die(f"unknown setting {key!r} — gout set (with nothing after it) lists them")
+
+
+def tag_args(project: "Project") -> list[str]:
+    out: list[str] = []
+    for key in TAG_KEYS:
+        value = setting(project, key)
+        if value:
+            out += ["-metadata", f"{'date' if key == 'year' else key}={value}"]
+    return out
 
 
 # --------------------------------------------------------------------------- timeline maths
@@ -763,16 +854,25 @@ def build_graph(project: Project, tracks: list[dict]) -> tuple[list[Path], str, 
     return inputs, ";".join(chains), used
 
 
-def peak_dbfs(path: Path) -> float | None:
+def measure_loudness(path: Path, target: float = -23.0, ceiling: float = -1.0) -> dict | None:
+    """Integrated loudness, true peak, LRA and threshold as loudnorm's first pass sees them."""
     result = subprocess.run(
         ["ffmpeg", "-hide_banner", "-nostats", "-i", str(path),
-         "-af", "astats=measure_overall=Peak_level:measure_perchannel=none", "-f", "null", "-"],
+         "-af", f"loudnorm=I={target}:TP={ceiling}:LRA=11:print_format=json", "-f", "null", "-"],
         capture_output=True, text=True,
     )
-    match = re.search(r"Peak level dB:\s*(-?[\d.]+|-inf)", result.stderr)
-    if not match:
+    match = re.search(r"\{\s*\"input_i\".*?\}", result.stderr, re.S)
+    if result.returncode != 0 or not match:
         return None
-    return float("-inf") if match.group(1) == "-inf" else float(match.group(1))
+    data = json.loads(match.group(0))
+    return {"i": float(data["input_i"]), "tp": float(data["input_tp"]), "lra": float(data["input_lra"]),
+            "thresh": float(data["input_thresh"]), "offset": float(data.get("target_offset", 0))}
+
+
+def fmt_lufs(m: dict | None) -> str:
+    if not m or m["i"] == float("-inf") or m["i"] < -70:
+        return "silent"
+    return f"{m['i']:.1f} LUFS  LRA {m['lra']:.1f}  peak {m['tp']:+.1f} dBTP"
 
 
 def mix(project: Project, verbose: bool = False, mp3: bool = False) -> None:
@@ -781,42 +881,112 @@ def mix(project: Project, verbose: bool = False, mp3: bool = False) -> None:
     if not inputs:
         if project.master.exists():
             project.master.unlink()
-        for key in ("master_ms", "master_peak"):
+        for key in ("master_ms", "master_lufs", "master_tp", "master_lra"):
             project.unset(key)
         print("mix   nothing audible" + (" — master.wav removed" if tracks else "")
               + ("" if tracks else " (no tracks yet)"))
         return
 
-    tmp = project.root / (MASTER_WAV + ".part.wav")
+    # pass 1: the sum, master gain and fades, float at the project rate
+    post: list[str] = []
+    gain = float(setting(project, "gain"))
+    if gain:
+        post.append(f"volume={gain:.2f}dB")
+    fade_in, fade_out = int(setting(project, "fadein")), int(setting(project, "fadeout"))
+    end_ms = max(timeline(t)[1] for t in used)
+    if fade_in > 0:
+        post.append(f"afade=t=in:d={fade_in / 1000:.3f}")
+    if fade_out > 0:
+        post.append(f"afade=t=out:st={max(0, end_ms - fade_out) / 1000:.3f}:d={fade_out / 1000:.3f}")
+    if post:
+        graph = graph[:-len("[mix]")] + "[sum];[sum]" + ",".join(post) + "[mix]"
+    raw = project.root / "master.raw.part.wav"
+    final = project.root / "master.part.wav"
     cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"]
     for path in inputs:
         cmd += ["-i", str(path)]
-    cmd += ["-filter_complex", graph, "-map", "[mix]", "-ar", str(project.rate),
-            "-c:a", "pcm_f32le", str(tmp)]
+    cmd += ["-filter_complex", graph, "-map", "[mix]", "-ar", str(project.rate), "-c:a", "pcm_f32le", str(raw)]
+    how = ""
+    target = None
     try:
         run_quiet(cmd, verbose)
-        tmp.replace(project.master)
+
+        # pass 2: loudness, padding, format and tags
+        lufs = setting(project, "lufs")
+        target = None if lufs == "off" else float(lufs)
+        ceiling = float(setting(project, "ceiling"))
+        measured = measure_loudness(raw, target if target is not None else -23.0, ceiling)
+        duration = probe(raw)["duration"]
+        chain: list[str] = []
+        if target is not None and measured is None:
+            how = "loudness could not be measured, left as is"
+        elif target is not None:
+            if measured["i"] < -70:
+                how = "silent, nothing to normalise"
+            elif duration < 3:
+                g = min(target - measured["i"], ceiling - measured["tp"])
+                chain.append(f"volume={g:.2f}dB")
+                how = f"gain {g:+.1f} dB (plain gain: under 3 s)"
+            else:
+                lra = max(7, min(50, math.ceil(measured["lra"]) + 1))
+                # loudnorm reads a measured LRA of exactly 0 as "unknown" and refuses linear mode
+                chain.append(f"loudnorm=I={target}:TP={ceiling}:LRA={lra}:measured_I={measured['i']}"
+                             f":measured_TP={measured['tp']}:measured_LRA={max(measured['lra'], 0.01)}"
+                             f":measured_thresh={measured['thresh']}:offset={measured['offset']}"
+                             f":linear=true:print_format=json")
+                how = "loudnorm"
+        head, tail = int(setting(project, "head")), int(setting(project, "tail"))
+        if head > 0:
+            chain.append(f"adelay={head}:all=1")
+        if tail > 0:
+            chain.append(f"apad=pad_dur={tail / 1000:.3f}")
+        bits = setting(project, "bits")
+        cmd = ["ffmpeg", "-hide_banner", "-nostats", "-loglevel", "info", "-y", "-i", str(raw)]
+        if chain:
+            cmd += ["-af", ",".join(chain)]
+        cmd += ["-ar", str(project.rate)]
+        if bits == "16":
+            cmd += ["-dither_method", "triangular"]
+        cmd += ["-c:a", BITS_CODEC[bits], *tag_args(project), str(final)]
+        if verbose:
+            print("  $ " + " ".join(cmd), file=sys.stderr)
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            problems = [l for l in result.stderr.splitlines() if "rror" in l or "nvalid" in l]
+            die("ffmpeg failed:\n" + "\n".join(problems[-12:]))
+        if how == "loudnorm":
+            match = re.search(r"\{\s*\"input_i\".*?\}", result.stderr, re.S)
+            info = json.loads(match.group(0)) if match else {}
+            mode = info.get("normalization_type", "?")
+            delta = float(info.get("output_i", 0)) - float(info.get("input_i", 0))
+            how = (f"linear gain {delta:+.1f} dB" if mode == "linear"
+                   else f"dynamic: the ceiling stopped a plain gain of {target - measured['i']:+.1f} dB")
+        final.replace(project.master)
     finally:
-        if tmp.exists():
-            tmp.unlink()
+        for tmp in (raw, final):
+            if tmp.exists():
+                tmp.unlink()
 
     length_ms = round(probe(project.master)["duration"] * 1000)
-    peak = peak_dbfs(project.master)
+    got = measure_loudness(project.master)
     project.set("master_ms", str(length_ms))
-    project.set("master_peak", "" if peak is None else f"{peak:.2f}")
+    for key, field in (("master_lufs", "i"), ("master_tp", "tp"), ("master_lra", "lra")):
+        project.set(key, "" if got is None else f"{got[field]:.2f}")
     project.envelope(MASTER_WAV, project.master)
     skipped = len(tracks) - len(used)
     note = f"  ({len(used)} of {len(tracks)} tracks)" if skipped else ""
-    peak_txt = "" if peak is None else f"  peak {peak:+.1f} dBFS"
-    print(f"mix   {MASTER_WAV}  {fmt_ms(length_ms)}{peak_txt}{note}")
-    if peak is not None and peak > 0:
-        print("      peak is above 0 dBFS: the float wav is fine, but lower some gain before"
-              " exporting or playing it back loud")
+    print(f"mix   {MASTER_WAV}  {fmt_ms(length_ms)}  {fmt_lufs(got)}{note}")
+    if how:
+        print(f"      {how}")
+    if got and target is None and got["tp"] > 0:
+        print("      true peak above 0 dBTP: it will clip on export — set lufs -14, or lower a gain")
     if mp3:
         out = project.root / MASTER_MP3
+        quality = setting(project, "mp3")
+        q = ["-q:a", quality[1:]] if quality.startswith("v") else ["-b:a", quality]
         run_quiet(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(project.master),
-                   "-c:a", "libmp3lame", "-b:a", "320k", str(out)], verbose)
-        print(f"      {MASTER_MP3}  {fmt_size(out.stat().st_size)}")
+                   "-c:a", "libmp3lame", *q, "-id3v2_version", "3", *tag_args(project), str(out)], verbose)
+        print(f"      {MASTER_MP3}  {fmt_size(out.stat().st_size)}  ({quality})")
 
 
 def autorender(project: Project, args: "Args") -> None:
@@ -1006,8 +1176,9 @@ def cmd_ls(project: Project, args: Args) -> None:
               f"{fmt_db(t['gain_db']):<7} {fmt_pan(t['pan']):<4} {flags}")
     master_ms = project.get("master_ms")
     if master_ms and project.master.exists():
-        peak = project.get("master_peak")
-        print(f"      {MASTER_WAV}  {fmt_ms(int(master_ms))}" + (f"  peak {float(peak):+.1f} dBFS" if peak else ""))
+        lufs, tp = project.get("master_lufs"), project.get("master_tp")
+        loud = f"  {float(lufs):.1f} LUFS  peak {float(tp):+.1f} dBTP" if lufs and tp else ""
+        print(f"      {MASTER_WAV}  {fmt_ms(int(master_ms))}{loud}")
     else:
         print(f"      {MASTER_WAV} not rendered — gout mix")
 
@@ -1183,27 +1354,64 @@ def cmd_pan(project: Project, args: Args) -> None:
     autorender(project, args)
 
 
+SET_USAGE = "gout set KEY VALUE   (gout set alone lists the keys and their values)"
+
+
 def cmd_set(project: Project, args: Args) -> None:
-    pos = args.positionals("gout set autorender on|off  |  gout set rate HZ", 0, 2)
+    pos = args.positionals(SET_USAGE, 0, 2)
     if not pos:
-        for key in ("name", "rate", "autorender", "created"):
-            print(f"{key:<8} {project.get(key)}")
+        hints = {
+            "autorender": "render master.wav after every change",
+            "lufs": "loudness target: -14 (streaming) -16 (Apple) -23 (broadcast) or off",
+            "ceiling": "true-peak ceiling in dBTP for the loudness step",
+            "gain": "master gain in dB, before the loudness step",
+            "fadein": "e.g. 500ms", "fadeout": "e.g. 3s", "head": "silence before, e.g. 500ms",
+            "tail": "silence after, e.g. 2s", "bits": "32f | 24 | 16 (dithered)",
+            "mp3": "bounce quality: 320k, 192k, v0 .. v9",
+        }
+        print(f"{'name':<11} {project.get('name')}")
+        print(f"{'rate':<11} {project.rate}")
+        print(f"{'autorender':<11} {'on' if project.autorender else 'off':<14} {hints['autorender']}")
+        for key in MASTER_DEFAULTS:
+            value = setting(project, key)
+            if key in ("fadein", "fadeout", "head", "tail") and value != "0":
+                value = fmt_ms(int(value))
+            elif key in TAG_KEYS:
+                value = value or "-"
+            print(f"{key:<11} {value:<14} {hints.get(key, '')}")
         return
     if len(pos) != 2:
-        die("usage: gout set KEY VALUE")
-    key, value = pos
-    if key in ("autorender", "automix"):
-        key, value = "autorender", "on" if on_off(value, 0) else "off"
-    elif key == "rate":
-        if not value.isdigit() or not 8000 <= int(value) <= 384000:
-            die(f"bad sample rate {value!r}")
-    else:
-        die(f"unknown setting {key!r} (autorender, rate)")
+        die(SET_USAGE)
+    key, value = parse_setting(pos[0].lower(), pos[1])
     project.record(f"set {key} {value}")
     project.set(key, value)
-    print(f"set   {key} {value}")
-    if key == "rate":
+    shown = fmt_ms(int(value)) if key in ("fadein", "fadeout", "head", "tail") and value != "0" else value
+    print(f"set   {key} {shown or '(cleared)'}")
+    if key != "autorender":
         autorender(project, args)
+
+
+def cmd_stats(project: Project, args: Args) -> None:
+    args.positionals("gout stats")
+    tracks = project.tracks()
+    if not tracks:
+        die("the project has no tracks yet — gout add FILE")
+    print(f"stats {'n':>2}  {'name':<16} {'file LUFS':>9} {'LRA':>5} {'peak dBTP':>9} {'gain':>7} {'-> LUFS':>8}  flags")
+    for t in tracks:
+        m = project.loudness(t["file"], project.tracks_dir / t["file"])
+        flags = ("M" if t["mute"] else "-") + ("S" if t["solo"] else "-")
+        if m is None or m["i"] < -70:
+            print(f"{t['n']:>8}  {t['name']:<16} {'silent':>9} {'':>5} {'':>9} {fmt_db(t['gain_db']):>7} {'':>8}  {flags}")
+            continue
+        print(f"{t['n']:>8}  {t['name']:<16} {m['i']:>9.1f} {m['lra']:>5.1f} {m['tp']:>+9.1f} "
+              f"{fmt_db(t['gain_db']):>7} {m['i'] + t['gain_db']:>8.1f}  {flags}")
+    lufs, tp, lra = (project.get(k) for k in ("master_lufs", "master_tp", "master_lra"))
+    target, ceiling = setting(project, "lufs"), setting(project, "ceiling")
+    goal = f"target {target} LUFS under {ceiling} dBTP" if target != "off" else "no loudness target (set lufs -14)"
+    if lufs and tp and lra and project.master.exists():
+        print(f"{'':>8}  {MASTER_WAV:<16} {float(lufs):>9.1f} {float(lra):>5.1f} {float(tp):>+9.1f} {'':>7} {'':>8}  {goal}")
+    else:
+        print(f"{'':>8}  {MASTER_WAV:<16} not rendered — gout mix   ({goal})")
 
 
 def cmd_mix(project: Project, args: Args) -> None:
@@ -1375,11 +1583,16 @@ PROJECT
  view  v  [-w COLS]                   print the timeline
  dump  dp                             the state as json
  rebuild rb [-f]                      gout.db from master/
- set   se autorender on|off | rate HZ
+ set   se KEY VALUE                   alone: list settings
+ stats st                             LUFS / dBTP per track
  new   n  NAME [-R HZ]                48000 Hz by default
  cheat c  sheet on/off  help h        help all: whole page
  quit  q  leave the ui  clear cl      empty the log
  split sp 50 | +5 | -5                left pane width (ui)
+MASTER set KEY VALUE
+ lufs -14|off  ceiling -1  gain -3    loudness, dBTP, gain
+ fadein 1s  fadeout 3s  head 1s  tail 2s
+ bits 32f|24|16  mp3 320k|v0  title artist album year
 FLAGS  -N --no-mix skip the re-mix    -p DIR the project
        -a --at  -n --name  -H --hard  -c --clear
        -r --reencode  -D --delete  -3 --mp3  -R --rate
@@ -1419,7 +1632,7 @@ COMMANDS = {
     "add": ("a",), "scan": ("sc",), "ls": ("l", "list"), "view": ("v",), "move": ("m", "mv"), "trim": ("t",),
     "rm": ("r", "remove", "del"), "mute": ("mu",), "solo": ("s",), "gain": ("g",), "pan": ("p",),
     "mix": ("x", "render", "bounce"), "undo": ("u",), "dump": ("dp",), "rebuild": ("rb",),
-    "set": ("se",), "new": ("n",), "cheat": ("c", "sheet"), "help": ("h", "?"), "ui": ("tui",), "cut": (),
+    "set": ("se",), "stats": ("st",), "new": ("n",), "cheat": ("c", "sheet"), "help": ("h", "?"), "ui": ("tui",), "cut": (),
     "quit": ("q", "exit"), "clear": ("cl",), "split": ("sp",),
 }
 ALIASES = {alias: name for name, aliases in COMMANDS.items() for alias in aliases}
@@ -1768,7 +1981,20 @@ PROJECT
   gout undo  u                    undo the last change (not a hard trim or rm -D)
   gout dump  dp                   print the project state as JSON
   gout rebuild rb [-f]            recreate {DB_NAME} from the files in {TRACK_DIR}/, every track at 0
-  gout set   se autorender on|off render {MASTER_WAV} after every change (default on); set rate HZ
+  gout set   se KEY VALUE         settings; gout set alone lists them:  autorender on|off,  rate HZ
+  gout stats st                   integrated LUFS, LRA and true peak per track file, and for {MASTER_WAV}
+
+MASTER   (gout set KEY VALUE)
+  lufs -14 | off        loudness target. Two passes of ffmpeg's loudnorm: a plain gain change
+                        whenever the ceiling allows, otherwise dynamic, and the mix line says which.
+                        -14 streaming (Spotify, YouTube), -16 Apple Music and podcasts, -23 broadcast
+  ceiling -1            true-peak ceiling in dBTP for that step (default -1)
+  gain -3               master gain in dB before the loudness step
+  fadein 500ms          fades on the sum;  fadeout 3s
+  head 500ms  tail 2s   silence padded before and after
+  bits 32f | 24 | 16    {MASTER_WAV} format (16 is dithered);  mp3 320k | 192k | v0  bounce quality
+  title artist album year comment   tags written into {MASTER_WAV} and {MASTER_MP3}
+  Every mix line reports the result:  mix   master.wav  03:12.500  -14.0 LUFS  LRA 6.2  peak -1.0 dBTP
 
 TRACKS   (TRACK is the number shown by ls, or the track name)
   gout add   a  FILE... [-n NAME] [-a TIME]  copy wav/mp3 into {TRACK_DIR}/ (other formats become wav)
@@ -1949,7 +2175,7 @@ def cmd_cut(argv: list[str]) -> None:
 PROJECT_COMMANDS = {
     "add": cmd_add, "scan": cmd_scan, "ls": cmd_ls, "move": cmd_move, "trim": cmd_trim, "rm": cmd_rm,
     "mute": cmd_mute, "solo": cmd_solo, "gain": cmd_gain, "pan": cmd_pan,
-    "set": cmd_set, "mix": cmd_mix, "undo": cmd_undo, "dump": cmd_dump,
+    "set": cmd_set, "stats": cmd_stats, "mix": cmd_mix, "undo": cmd_undo, "dump": cmd_dump,
     "view": cmd_view, "ui": cmd_ui,
 }
 FREE_COMMANDS = {"new": cmd_new, "rebuild": cmd_rebuild, "cheat": cmd_cheat}
