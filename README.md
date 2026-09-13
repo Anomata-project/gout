@@ -302,7 +302,7 @@ chain, is marked `(not installed)`, and is left out of the mix with a warning on
 
 ## Addons
 
-An addon is a Python file that adds effects. Put it in `~/.config/gout/addons/` (or
+An addon is a Python file that adds effects or full-screen views. Put it in `~/.config/gout/addons/` (or
 `$XDG_CONFIG_HOME/gout/addons/`, or the folder `$GOUT_ADDONS` names) and its effects behave like
 the built-in ones: a command with presets and a picture, a place in `gout fx` chains, rows in the
 parameter sheet, entries in `gout.json`, help and the cheat sheet.
@@ -313,7 +313,7 @@ cp examples/addons/*.py ~/.config/gout/addons/
 gout addons                      # the folder, what loaded, and effects this project lacks
 ```
 
-Four examples ship in `examples/addons/`:
+Five examples ship in `examples/addons/`:
 
 | addon | command | what it does |
 | --- | --- | --- |
@@ -321,6 +321,7 @@ Four examples ship in `examples/addons/`:
 | `saturation.py` | `saturation` / `sat` | a soft curve for warmth, grit or fuzz: `tanh d12 m70 t8k` is curve, drive dB, mix % (parallel blend), tone low-pass. Curves `tanh atan cubic exp alg quintic sin erf hard`. Output follows the drive by default so quiet passages keep their level; `o-6` sets it by hand. It runs at four times the project rate to keep aliasing down. Presets `warm tape tube crunch fuzz`. Its picture is the curve itself and says how many of the track's peaks it bends. |
 | `distortion.py` | `distortion` / `dist` | a pedal in a line: `hard d36 a10 h300 t4k` is clipper (`soft`, `hard` or `crush`), drive dB, asymmetry % (even harmonics), tight high-pass before the clipper, tone low-pass after. `crush` takes `b6` bits and `s8` sample-rate reduction. The output is matched to the track's loudness by running part of the track through the same stage once (cached); `o-6` sets it by hand. Presets `overdrive crunch highgain fuzz bitcrush lofi broken`. |
 | `tremolo.py` | `tremolo` / `trem` | the volume rises and falls: `5hz d50`. Presets `slow fast chop`. |
+| `fractal.py` | `ctrl-space`, or `fractal` / `fz` in the ui | full-screen play: the song as a Newton fractal of w = z³ + 7, moving with the music. See below. |
 
 `examples/addons/tremolo.py` is the simplest template: a subclass of `gout.fx.Effect` that says how to read
 and write its settings line and which ffmpeg filters it becomes, and a `register(gout)` function
@@ -328,6 +329,27 @@ that calls `gout.add_effect(...)`. Effects that need more than a filter list (th
 convolves with a generated file; the chorus treats left and right apart; the saturation blends a
 clean path back in) override `graph` instead of `filters`. The base class in
 `gout/fx.py` documents every hook.
+
+### Screens
+
+A screen is a full-screen view an addon adds to the ui. `examples/addons/fractal.py` is one:
+`ctrl-space` fills the terminal with it and plays from the playhead, `esc` goes back to gout with
+the song still playing. Space plays and stops, the left and right arrows move 5 s, up and down
+change the power (z² to z⁸), `+` and `-` the constant, `c` turns colours off.
+
+Every character is a starting point z on the complex plane that Newton's method walks towards a
+root of w = z³ + 7: the character says how many steps it took, the colour which root it reached,
+and where the basins meet the steps pile up into the fractal. The music moves it. The bass bends
+the method and pushes the rotation, the overall level zooms in, hits and highs make it denser, and
+the mids trade the basins' colours. gout listens to the song once (about 1.5 s for four minutes,
+cached in `.gout/analysis/`): from `master.wav` when it is up to date, otherwise from the track
+files as the timeline places them, without their effects.
+
+A screen is a subclass of `gout.screens.Screen` with a `frame(ctx, width, height)` that returns
+rows of text and colour classes, registered with `gout.add_screen(...)`. `ctx.band("low")` gives
+how loud a band is now (`low`, `mid`, `high`, `level`, `onset`, 0 to 1) and `ctx.travel("low")`
+how much of it has gone by, for motion that pushes with the music. A screen takes one of the keys
+nothing else uses: `ctrl-space`, `ctrl-b`, `ctrl-o`, `ctrl-q`, `ctrl-r`, `ctrl-v`, `ctrl-y`.
 
 An addon that fails to load, or wants a name that is taken, is reported on every command and
 skipped; gout keeps working. Addons are ordinary Python running with your permissions, so gout

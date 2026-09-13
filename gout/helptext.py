@@ -87,6 +87,8 @@ ADDONS
                         The folder is ~/.config/gout/addons ($XDG_CONFIG_HOME, or $GOUT_ADDONS). An addon
                         is a .py file with an Effect class and register(gout); it becomes a command, a
                         row in the sheet and an entry in gout fx kinds. examples/addons/tremolo.py is one.
+                        An addon can also add a full-screen view to the ui: examples/addons/fractal.py
+                        opens with ctrl-space (esc goes back) and moves with the music.
                         Addons are plain Python with your permissions; gout never loads them from projects.
 
 CUT   (any file, no project needed; `gout INPUT ...` still works as in 1.x)

@@ -1,4 +1,4 @@
-"""Addons: Python files in the user's addon folder that register effects.
+"""Addons: Python files in the user's addon folder that register effects and screens.
 
 The folder is $GOUT_ADDONS when set, otherwise $XDG_CONFIG_HOME/gout/addons, otherwise
 ~/.config/gout/addons. Only that folder is read, never a project folder: an addon is ordinary
@@ -15,6 +15,8 @@ An addon file defines register(gout) and calls gout.add_effect(SomeEffect()) for
     def register(gout):
         gout.add_effect(Tremolo())
 
+gout.add_screen(SomeScreen()) adds a full-screen view to the ui (see gout/screens.py).
+
 A file that fails to load is reported and skipped; gout keeps working without it.
 """
 from __future__ import annotations
@@ -26,7 +28,7 @@ from pathlib import Path
 
 from .fx import register
 
-REPORT: list[dict] = []  # one entry per file tried: file, effects, error
+REPORT: list[dict] = []  # one entry per file tried: file, effects, screens, error
 
 
 def addon_dir() -> Path:
@@ -43,10 +45,16 @@ class AddonApi:
     def __init__(self, source: str):
         self.source = source
         self.added: list[str] = []
+        self.screens: list[str] = []
 
     def add_effect(self, effect) -> None:
         register(effect, self.source)
         self.added.append(effect.name)
+
+    def add_screen(self, screen) -> None:
+        from .screens import register_screen
+        register_screen(screen, self.source)
+        self.screens.append(screen.name)
 
 
 def load_addons() -> None:
@@ -57,7 +65,7 @@ def load_addons() -> None:
     for path in sorted(folder.glob("*.py")):
         if path.name.startswith(("_", ".")):
             continue
-        entry = {"file": path, "effects": [], "error": None}
+        entry = {"file": path, "effects": [], "screens": [], "error": None}
         api = AddonApi(path.name)
         try:
             spec = importlib.util.spec_from_file_location(f"gout_addon_{path.stem}", path)
@@ -71,4 +79,5 @@ def load_addons() -> None:
             entry["error"] = f"{type(exc).__name__}: {exc}" if not isinstance(exc, ValueError) else str(exc)
             print(f"gout: addon {path.name} not loaded: {entry['error']}", file=sys.stderr)
         entry["effects"] = api.added
+        entry["screens"] = api.screens
         REPORT.append(entry)

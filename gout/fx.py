@@ -160,7 +160,8 @@ def taken_names() -> set[str]:
     names = set(BASE_COMMANDS) | {a for al in BASE_COMMANDS.values() for a in al} | RESERVED
     for eff in _REGISTRY.values():
         names |= {eff.name, *eff.aliases, *eff.shortcuts}
-    return names
+    from .screens import taken_words
+    return names | taken_words()
 
 
 def register(effect: Effect, source: str = "built-in") -> None:

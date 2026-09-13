@@ -432,7 +432,7 @@ KEY_SECTIONS = [
     ]),
 ]
 
-CHEAT_HEADINGS = {name for name, _, _ in COMMAND_SECTIONS + KEY_SECTIONS} | {"CHEAT"}
+CHEAT_HEADINGS = {name for name, _, _ in COMMAND_SECTIONS + KEY_SECTIONS} | {"CHEAT", "SCREENS"}
 
 
 def cheat_sections() -> list[tuple[str, str, str, list[tuple]]]:
@@ -445,6 +445,16 @@ def cheat_sections() -> list[tuple[str, str, str, list[tuple]]]:
                 rows += eff.cheat_entries()
         out.append((heading, note, "commands", rows))
     out += [(heading, note, "keys", rows) for heading, note, rows in KEY_SECTIONS]
+    from .screens import screens
+    found = list(screens().values())
+    if found:
+        rows = []
+        for screen in found:
+            opens = " or ".join(filter(None, (screen.key, screen.name)))
+            rows.append((opens, screen.summary + ("" if screen.source == "built-in" else " (addon)")))
+        rows += [("esc", "back to gout; the song keeps playing"), ("space  ← →", "play and stop, move 5 s")]
+        rows += [tuple(pair) for screen in found for pair in screen.help]
+        out.append(("SCREENS", "full screen, from addons", "keys", rows))
     return out
 
 

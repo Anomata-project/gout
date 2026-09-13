@@ -1107,7 +1107,10 @@ def cmd_addons(root_hint: Path | None, args: Args) -> None:
         if entry["error"]:
             print(f"  {entry['file'].name:<24} not loaded: {entry['error']}")
         else:
-            print(f"  {entry['file'].name:<24} {', '.join(entry['effects']) or 'registered nothing'}")
+            from .screens import screens
+            added = entry["effects"] + [f"{name} (screen{', ' + screens()[name].key if screens()[name].key else ''})"
+                                        for name in entry.get("screens", [])]
+            print(f"  {entry['file'].name:<24} {', '.join(added) or 'registered nothing'}")
     project = Project.find(root_hint)
     if project is not None:
         used = {item["kind"] for t in project.tracks() + [master_track(project)] for item in t["fx"]}

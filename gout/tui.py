@@ -10,10 +10,12 @@ import shlex
 import subprocess
 import sys
 import textwrap
+import threading
 import time
 from pathlib import Path
 
 from .core import __version__, fmt_ms, fmt_pan, GoutError, is_master, MASTER_N, MASTER_WAV, parse_time
+from . import analysis
 from .model import audible, timeline
 from .fx import effect, effects, GUTTER, resolve
 from .settings import MASTER_DEFAULTS, master_track, setting
@@ -23,6 +25,7 @@ from .commands import save_as, slot_of
 from .cli import aliases, command_table, run
 from .lineedit import LineEditor, path_candidates
 from .player import Player
+from .screens import screen_for_key, screen_named, ScreenContext, screens
 from .theme import load_theme, Palette
 from .commands import head_seconds, player_for
 
@@ -72,7 +75,9 @@ class Tui:
         self.line = LineEditor(self.complete_words)
         self.line.history = self.load_history()
         self.log += [f"error: color.json: {problem}" for problem in theme_problems]
-        self.mode = "prompt"  # or "sheet": the parameter table
+        self.mode = "prompt"  # or "sheet": the parameter table, or "screen": an addon's full-screen view
+        self.screen = None     # the open Screen
+        self.screen_ctx: ScreenContext | None = None
         self.sheet_rows: list[dict] = []
         self.sheet_cur = 0
         self.sheet_top = 0
@@ -126,7 +131,7 @@ class Tui:
     def complete_words(self, before: list[str], value: str) -> list[str]:
         """What the word under the cursor can become: a command, a track, a preset, or a file."""
         if not before:
-            names = sorted(set(command_table()) | set(UI_WORDS))
+            names = sorted(set(command_table()) | set(UI_WORDS) | set(screens()))
             return [n for n in names if n.startswith(value)]
         head = aliases().get(before[0], before[0])
         eff = resolve(head)
@@ -174,6 +179,9 @@ class Tui:
         scr.erase()
         if self.mode == "sheet":
             self.draw_sheet()
+            return
+        if self.mode == "screen":
+            self.draw_screen()
             return
         h, w, left_w, right_x, right_w = self.layout()
         p = self.project
@@ -318,10 +326,15 @@ class Tui:
         try:
             while self.running:
                 self.check_player()
+                began = time.monotonic()
                 self.draw()
+                spent_ms = (time.monotonic() - began) * 1000
                 self.background_render()
                 waiting = self.render_proc is not None or self.project.render_mode == "idle"
-                self.scr.timeout(100 if self.player else (250 if waiting else -1))  # playhead, renders
+                if self.mode == "screen":  # frames at the screen's rate while the song plays
+                    self.scr.timeout(max(5, round(1000 / max(1, self.screen.fps) - spent_ms)) if self.player else 250)
+                else:
+                    self.scr.timeout(100 if self.player else (250 if waiting else -1))  # playhead, renders
                 try:
                     key = self.scr.get_wch()
                 except KeyboardInterrupt:
@@ -462,6 +475,12 @@ class Tui:
             return
         if self.mode == "sheet":
             self.handle_sheet(key)
+            return
+        if self.mode == "screen":
+            self.handle_screen(key)
+            return
+        if screen_for_key(key) is not None:  # a key an addon's screen took: ctrl-space for the fractal
+            self.open_screen(screen_for_key(key))
             return
         if key == "\x05":  # ctrl-e
             self.sheet_open()
@@ -838,6 +857,101 @@ class Tui:
         self.show_panel = not self.show_panel  # the pictures only: the name line stays
         self.project.set("ui_fx_pictures", "on" if self.show_panel else "off")
 
+    # ---- screens: an addon's full-screen view
+
+    SCREEN_KEY_NAMES = {"KEY_UP": "up", "KEY_DOWN": "down", "KEY_PPAGE": "pgup", "KEY_NPAGE": "pgdn",
+                        "KEY_HOME": "home", "KEY_END": "end", "KEY_ENTER": "enter", "KEY_BACKSPACE": "backspace"}
+
+    def open_screen(self, screen) -> None:
+        import curses
+        tracks = self.project.tracks()
+        if not tracks:
+            self.log.append(f"{screen.name}: no tracks yet, nothing to play")
+            return
+        ctx = ScreenContext(self.project)
+        ctx.length_ms = max((timeline(t)[1] for t in tracks), default=0)
+        ctx.note = "listening to the song…"
+        self.screen, self.screen_ctx, self.mode = screen, ctx, "screen"
+        plan = analysis.plan(self.project)  # the database here; the files in the background
+
+        def listen() -> None:
+            try:
+                ctx.features = analysis.compute(plan)
+                ctx.note = ""
+            except Exception as exc:  # the screen still moves with time
+                ctx.note = f"could not listen: {exc}"
+        threading.Thread(target=listen, daemon=True).start()
+        if screen.play_on_open and self.player is None:
+            self.start_playing()
+        try:
+            curses.curs_set(0)
+        except Exception:
+            pass
+
+    def close_screen(self) -> None:
+        import curses
+        self.mode, self.screen, self.screen_ctx = "prompt", None, None
+        try:
+            curses.curs_set(1)
+        except Exception:
+            pass
+
+    def draw_screen(self) -> None:
+        h, w = self.scr.getmaxyx()
+        ctx, screen = self.screen_ctx, self.screen
+        ctx.position_ms = float(self.play_position_ms())
+        ctx.playing = self.player is not None
+        try:
+            rows = screen.frame(ctx, w, max(1, h - 1))
+        except Exception as exc:  # an addon must never take the ui down with it
+            self.log.append(f"error: {screen.name} screen: {type(exc).__name__}: {exc}")
+            self.close_screen()
+            self.draw()
+            return
+        for y, (text, classes) in enumerate(rows[:max(0, h - 1)]):
+            self.draw_cells(y, 0, text[:w], "screen", classes[:w])
+        state = "▶" if ctx.playing else "■"
+        left = f" {screen.status(ctx)}   {state} {fmt_ms(round(ctx.position_ms))} / {fmt_ms(ctx.length_ms)}"
+        if ctx.note:
+            left += f"   {ctx.note}"
+        hint = f"space {'stops' if ctx.playing else 'plays'}  ← → 5 s  esc back to gout "
+        self.put(h - 1, 0, header_line(left, hint, w), self.palette.attr("header"))
+
+    def handle_screen(self, key) -> None:
+        import curses
+        screen = self.screen
+        if key == "\x1b":
+            seq = self.read_escape()
+            if not seq:
+                self.close_screen()
+                return
+            if seq not in ESCAPE_KEYS:
+                return
+            key = getattr(curses, ESCAPE_KEYS[seq])
+        if screen_for_key(key) is screen:
+            self.close_screen()
+        elif key == " ":
+            if self.player:
+                self.stop_playing()
+            else:
+                self.start_playing()
+        elif key in (curses.KEY_LEFT, curses.KEY_RIGHT):
+            self.seek(-5000 if key == curses.KEY_LEFT else 5000)
+        elif key == curses.KEY_RESIZE:
+            return
+        else:
+            if isinstance(key, int):
+                name = next((n for code, n in self.SCREEN_KEY_NAMES.items() if getattr(curses, code, None) == key), None)
+            else:
+                name = {"\n": "enter", "\r": "enter", "\t": "tab", "\x7f": "backspace"}.get(key, key)
+            if name is None:
+                return
+            try:
+                screen.key_pressed(self.screen_ctx, name)
+            except Exception as exc:
+                self.log.append(f"error: {screen.name} screen: {type(exc).__name__}: {exc}")
+                self.close_screen()
+
     def chain_kinds(self) -> dict[int, list[str]]:
         """The effect kinds on every track and the master, by track number (master: MASTER_N)."""
         chains = {t["n"]: [i["kind"] for i in t["fx"]] for t in self.project.tracks()}
@@ -926,6 +1040,8 @@ class Tui:
             self.stop_playing(keep=False)
             self.cancel_render()
             self.running = False
+        elif screen_named(head) is not None and len(argv) == 1:
+            self.open_screen(screen_named(head))
         elif head in ("view", "timeline"):
             self.toggle("timeline")
         elif head == "cheat":
