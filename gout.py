@@ -241,6 +241,44 @@ def probe(path: Path) -> dict:
     }
 
 
+ENV_RATE = 50    # peaks per second of audio
+ENV_SR = 8000    # decode rate for the envelope: 160 samples per peak
+LEVELS = "▁▂▃▄▅▆▇█"  # 6 dB per step, top step is -6 dBFS and up
+
+
+def compute_envelope(path: Path) -> bytes:
+    """Peak per 20 ms window, 0..128, from a mono 8-bit decode. Empty when ffmpeg fails."""
+    result = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", str(path), "-map", "0:a:0",
+         "-ac", "1", "-ar", str(ENV_SR), "-f", "u8", "-"],
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        return b""
+    data, n = result.stdout, ENV_SR // ENV_RATE
+    peaks = bytearray()
+    for i in range(0, len(data), n):
+        chunk = data[i:i + n]  # max/min on bytes run in C, so this is quick even for hours
+        peaks.append(max(max(chunk) - 128, 128 - min(chunk)))
+    return bytes(peaks)
+
+
+def level_char(peak: int) -> str:
+    if peak <= 0:
+        return LEVELS[0]
+    db = 20 * math.log10(min(peak, 128) / 128)
+    return LEVELS[max(0, min(7, 7 + math.ceil(db / 6)))]
+
+
+def envelope_char(env: bytes, lo_ms: float, hi_ms: float) -> str:
+    """The block for the loudest peak between two file times; █ when no envelope exists."""
+    if not env:
+        return CELL_AUDIBLE
+    i0 = max(0, min(len(env) - 1, int(lo_ms * ENV_RATE / 1000)))
+    i1 = max(i0 + 1, min(len(env), math.ceil(hi_ms * ENV_RATE / 1000)))
+    return level_char(max(env[i0:i1]))
+
+
 def cut(src: Path, dst: Path, start: float, duration: float | None,
         reencode: bool, bitrate: float, verbose: bool, codec: str = "mp3") -> None:
     """Write [start, start+duration) of src to dst.
@@ -437,6 +475,13 @@ CREATE TABLE IF NOT EXISTS tracks (
     mute        INTEGER NOT NULL DEFAULT 0,
     solo        INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS envelopes (
+    file  TEXT PRIMARY KEY,
+    size  INTEGER NOT NULL,
+    mtime REAL NOT NULL,
+    rate  INTEGER NOT NULL,
+    peaks BLOB NOT NULL
+);
 CREATE TABLE IF NOT EXISTS history (
     id       INTEGER PRIMARY KEY,
     ts       TEXT NOT NULL,
@@ -568,6 +613,28 @@ class Project:
         while name in taken:
             name, i = f"{base}-{i}", i + 1
         return name
+
+    # ---- envelopes
+
+    def envelope(self, name: str, path: Path) -> bytes:
+        """Cached peaks for a file in master/ (or master.wav); recomputed when the file changed."""
+        try:
+            st = path.stat()
+        except OSError:
+            return b""
+        row = self.conn.execute("SELECT size, mtime, rate, peaks FROM envelopes WHERE file = ?",
+                                (name,)).fetchone()
+        if row and row["size"] == st.st_size and row["mtime"] == st.st_mtime and row["rate"] == ENV_RATE:
+            return row["peaks"]
+        peaks = compute_envelope(path)
+        with self.conn:
+            self.conn.execute("INSERT OR REPLACE INTO envelopes (file, size, mtime, rate, peaks)"
+                              " VALUES (?, ?, ?, ?, ?)", (name, st.st_size, st.st_mtime, ENV_RATE, peaks))
+        return peaks
+
+    def forget_envelope(self, name: str) -> None:
+        with self.conn:
+            self.conn.execute("DELETE FROM envelopes WHERE file = ?", (name,))
 
     # ---- history
 
@@ -737,6 +804,7 @@ def mix(project: Project, verbose: bool = False, mp3: bool = False) -> None:
     peak = peak_dbfs(project.master)
     project.set("master_ms", str(length_ms))
     project.set("master_peak", "" if peak is None else f"{peak:.2f}")
+    project.envelope(MASTER_WAV, project.master)
     skipped = len(tracks) - len(used)
     note = f"  ({len(used)} of {len(tracks)} tracks)" if skipped else ""
     peak_txt = "" if peak is None else f"  peak {peak:+.1f} dBFS"
@@ -865,6 +933,7 @@ def ingest(project: Project, src: Path, name: str | None, at_ms: int, verbose: b
         length_ms=round(info["duration"] * 1000), channels=info["channels"] or 2,
         sample_rate=info["sample_rate"] or project.rate, offset_ms=at_ms,
     )
+    project.envelope(dst.name, dst)  # so the timeline can draw it without a pause later
     how = "kept in" if dst == src else ("copied to" if ext == suffix else "converted to")
     print(f"add   {track['n']:>2}  {track['name']:<16} {kind}  {info['channels']}ch  {info['sample_rate']} Hz"
           f"  {fmt_ms(track['length_ms'])}  at {fmt_ms(at_ms)}  ({how} {TRACK_DIR}/{dst.name})")
@@ -1026,6 +1095,7 @@ def cmd_trim(project: Project, args: Args) -> None:
     finally:
         tmp.unlink(missing_ok=True)
     new_len = round(probe(src)["duration"] * 1000)
+    project.envelope(src.name, src)
     offset = t["offset_ms"] + head
     project.update(t["n"], offset_ms=offset, in_ms=0, out_ms=None, length_ms=new_len)
     start, end = timeline({**t, "offset_ms": offset, "in_ms": 0, "out_ms": None, "length_ms": new_len})
@@ -1044,6 +1114,7 @@ def cmd_rm(project: Project, args: Args) -> None:
     path = project.tracks_dir / t["file"]
     if delete and path.exists():
         path.unlink()
+        project.forget_envelope(t["file"])
         print(f"rm    {t['name']}  (deleted {TRACK_DIR}/{t['file']})")
     else:
         print(f"rm    {t['name']}  ({TRACK_DIR}/{t['file']} kept; gout add {TRACK_DIR}/{t['file']} brings it back)")
@@ -1182,17 +1253,20 @@ TICK_STEPS = (100, 250, 500, 1000, 2000, 5000, 10000, 15000, 30000, 60000, 12000
 CELL_AUDIBLE, CELL_SILENT, CELL_TRIMMED, CELL_ZERO, CELL_MASTER = "█", "▒", "░", "│", "━"
 
 
-def render_timeline(project: Project, width: int) -> list[tuple[str, str, str]]:
-    """Rows of (label, cells, kind) for a timeline `width` columns wide.
+def render_timeline(project: Project, width: int, styled: bool = False) -> list[tuple[str, str, str, str]]:
+    """Rows of (label, cells, kind, classes) for a timeline `width` columns wide.
 
-    kind is axis, ruler, track, master or note. Cells use █ for the audible part,
-    ░ for material soft-trimmed away, ▒ for a track that is muted or not soloed.
+    kind is axis, ruler, track, master or note. Every column of a track shows the
+    peak level of that slice of audio as a block ▁▂▃▄▅▆▇█ (6 dB per step). classes
+    marks each cell: a audible, s audible but muted or not soloed, t soft-trimmed
+    away, z the zero line, m master. Plain output draws trimmed material as ░;
+    `styled` (the ui) draws its envelope too and dims it.
     """
     tracks = project.tracks()
     tw = max(10, width - LABEL_W - 1)
     master_ms = int(project.get("master_ms") or 0) if project.master.exists() else 0
     if not tracks:
-        return [("", "no tracks yet — add FILE", "note")]
+        return [("", "no tracks yet — add FILE", "note", "")]
 
     t0 = min(0, min(t["offset_ms"] for t in tracks))
     t1 = max(max(t["offset_ms"] + t["length_ms"] for t in tracks), master_ms, t0 + 1000)
@@ -1205,6 +1279,15 @@ def render_timeline(project: Project, width: int) -> list[tuple[str, str, str]]:
         start = max(0, min(tw - 1, col(a)))
         end = max(start + 1, min(tw, math.ceil((b - t0) * scale)))
         return start, end
+
+    def paint(cells: list[str], classes: list[str], env: bytes, offset: int, lo: int, hi: int,
+              first: int, last: int, cls: str) -> None:
+        """Envelope blocks for columns first..last-1, clipped to file time lo..hi."""
+        for c in range(first, last):
+            lo_ms = max(lo, t0 + c / scale - offset)
+            hi_ms = min(hi, t0 + (c + 1) / scale - offset)
+            cells[c] = envelope_char(env, lo_ms, hi_ms)
+            classes[c] = cls
 
     step = next((s for s in TICK_STEPS if s * scale >= 9), TICK_STEPS[-1])
     decimals = 0 if step >= 1000 else (2 if step == 250 else 1)
@@ -1221,31 +1304,36 @@ def render_timeline(project: Project, width: int) -> list[tuple[str, str, str]]:
                 last_end = c + len(text)
         tick += step
     zero = col(0) if t0 < 0 else -1
-    rows = [("", "".join(labels), "axis"), ("", "".join(ruler), "ruler")]
+    rows = [("", "".join(labels), "axis", ""), ("", "".join(ruler), "ruler", "")]
 
     any_solo = any(t["solo"] for t in tracks)
     for t in tracks:
-        cells = [" "] * tw
+        cells, classes = [" "] * tw, [" "] * tw
         if 0 <= zero < tw:
-            cells[zero] = CELL_ZERO
-        fs, fe = cols(t["offset_ms"], t["offset_ms"] + t["length_ms"])
-        cells[fs:fe] = [CELL_TRIMMED] * (fe - fs)
+            cells[zero], classes[zero] = CELL_ZERO, "z"
+        env = project.envelope(t["file"], project.tracks_dir / t["file"])
+        off, length = t["offset_ms"], t["length_ms"]
+        fs, fe = cols(off, off + length)
+        if styled:
+            paint(cells, classes, env, off, 0, length, fs, fe, "t")
+        else:
+            cells[fs:fe], classes[fs:fe] = [CELL_TRIMMED] * (fe - fs), ["t"] * (fe - fs)
         a, b = audible(t)
         if b > a:
-            s_, e_ = cols(t["offset_ms"] + a, t["offset_ms"] + b)
-            ch = CELL_AUDIBLE if is_heard(t, any_solo) else CELL_SILENT
-            cells[s_:e_] = [ch] * (e_ - s_)
+            s_, e_ = cols(off + a, off + b)
+            paint(cells, classes, env, off, a, b, s_, e_, "a" if is_heard(t, any_solo) else "s")
         flags = ("M" if t["mute"] else " ") + ("S" if t["solo"] else " ")
-        rows.append((f"{t['n']:>2} {t['name'][:9]:<9} {flags}", "".join(cells), "track"))
+        rows.append((f"{t['n']:>2} {t['name'][:9]:<9} {flags}", "".join(cells), "track", "".join(classes)))
 
     label = f"   {MASTER_WAV}"[:LABEL_W].ljust(LABEL_W)
     if master_ms:
-        cells = [" "] * tw
+        cells, classes = [" "] * tw, [" "] * tw
+        env = project.envelope(MASTER_WAV, project.master)
         s_, e_ = cols(0, master_ms)
-        cells[s_:e_] = [CELL_MASTER] * (e_ - s_)
-        rows.append((label, "".join(cells), "master"))
+        paint(cells, classes, env, 0, 0, master_ms, s_, e_, "m")
+        rows.append((label, "".join(cells), "master", "".join(classes)))
     else:
-        rows.append((label, "not rendered — mix", "note"))
+        rows.append((label, "not rendered — mix", "note", ""))
     return rows
 
 
@@ -1259,7 +1347,7 @@ def cmd_view(project: Project, args: Args) -> None:
              else f"{MASTER_WAV} not rendered")
     print(f"proj  {project.get('name')}  {project.rate} Hz  {len(tracks)} track"
           f"{'' if len(tracks) == 1 else 's'}  {state}")
-    for label, cells, _ in render_timeline(project, width):
+    for label, cells, _, _ in render_timeline(project, width):
         print(f"{label:<{LABEL_W}} {cells}".rstrip())
 
 
@@ -1423,19 +1511,19 @@ class Tui:
             top = 0
             if self.show_timeline:
                 self.put(0, right_x, " timeline".ljust(right_w), curses.A_REVERSE)
-                rows = render_timeline(p, right_w)
+                rows = render_timeline(p, right_w, styled=True)
                 room = max(3, h - 2 - 6) if self.show_cheat else max(3, h - 1)  # sheet keeps six lines
                 if len(rows) > room:
                     heads = [r for r in rows if r[2] in ("axis", "ruler")]
                     tail = [r for r in rows if r[2] in ("master", "note") and r not in heads]
                     tracks = [r for r in rows if r[2] == "track"]
                     keep = max(1, room - len(heads) - len(tail) - 1)
-                    rows = heads + tracks[:keep] + [("", f"+{len(tracks) - keep} more tracks — ls", "note")] + tail
-                for y, (label, cells, kind) in enumerate(rows, 1):
+                    rows = heads + tracks[:keep] + [("", f"+{len(tracks) - keep} more tracks — ls", "note", "")] + tail
+                for y, (label, cells, kind, classes) in enumerate(rows, 1):
                     if y >= h:
                         break
                     self.put(y, right_x, label, curses.A_DIM if kind in ("axis", "ruler", "note") else 0)
-                    self.draw_cells(y, right_x + LABEL_W + 1, cells, kind)
+                    self.draw_cells(y, right_x + LABEL_W + 1, cells, kind, classes)
                 top = 1 + len(rows)
 
         if right_x is not None and self.show_cheat:
@@ -1455,19 +1543,19 @@ class Tui:
             pass
         scr.refresh()
 
-    def draw_cells(self, y: int, x: int, cells: str, kind: str) -> None:
+    def draw_cells(self, y: int, x: int, cells: str, kind: str, classes: str = "") -> None:
         import curses
-        if kind in ("note", "axis"):
+        if kind in ("note", "axis", "ruler"):
             self.put(y, x, cells, curses.A_DIM)
             return
-        attrs = {CELL_AUDIBLE: curses.A_BOLD, CELL_SILENT: curses.A_DIM, CELL_TRIMMED: curses.A_DIM,
-                 CELL_ZERO: curses.A_DIM, CELL_MASTER: curses.A_BOLD, "─": curses.A_DIM, "┼": curses.A_DIM}
+        attrs = {"a": curses.A_BOLD, "s": curses.A_DIM, "t": curses.A_DIM, "z": curses.A_DIM, "m": curses.A_BOLD}
+        classes = classes.ljust(len(cells))
         i = 0
         while i < len(cells):
             j = i
-            while j < len(cells) and cells[j] == cells[i]:
+            while j < len(cells) and classes[j] == classes[i]:
                 j += 1
-            self.put(y, x + i, cells[i:j], attrs.get(cells[i], 0))
+            self.put(y, x + i, cells[i:j], attrs.get(classes[i], 0))
             i = j
 
     # ---- input
@@ -1672,7 +1760,8 @@ PROJECT
   gout new   n  NAME [-R HZ]      create NAME/ with {TRACK_DIR}/ and {DB_NAME} (default {DEFAULT_RATE} Hz)
   gout                            inside a project: open the terminal ui (prompt left; timeline and
                                   cheat sheet right, ctrl-u / ctrl-k hide each); elsewhere: this page
-  gout view  v                    print the timeline once and exit
+  gout view  v                    print the timeline once: one row per track, each column a
+                                  block ▁▂▃▄▅▆▇█ as tall as the peak there (6 dB per step)
   gout cheat c                    print the cheat sheet
   gout ls    l                    list the tracks and the state of {MASTER_WAV}
   gout mix   x  [-3] [-v]         render {MASTER_WAV} (32-bit float stereo); -3 also writes {MASTER_MP3}

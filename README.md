@@ -59,7 +59,7 @@ name (a unique prefix will do). `-N` / `--no-mix` on any change skips the automa
 | `add` | `a` | `FILE... [-a TIME] [-n NAME]` | add tracks at `TIME` (default 0) |
 | `scan` | `sc` | | register wav/mp3 files you copied into `master/` yourself; reports missing ones |
 | `ls` | `l` | | list tracks, positions, trims, flags |
-| `view` | `v` | `[-w COLS]` | print the timeline once |
+| `view` | `v` | `[-w COLS]` | print the timeline once, envelopes included (`░` marks soft-trimmed material there) |
 | `move` | `m` | `TRACK +TIME \| -TIME \| TIME` | nudge later, nudge earlier, place at a time |
 | `trim` | `t` | `TRACK [-st T] [-et T \| -el T]` | soft trim, times count from the start of the track's file |
 | `trim` | `t` | `TRACK -c` | soft trim off (`--clear`) |
@@ -85,8 +85,11 @@ Long flags exist for every short one: `--at --name --hard --clear --reencode --d
 `gout` inside a project (or `gout ui`) opens a split screen. The left side is a prompt that
 takes the same commands without the leading `gout`. It behaves like a terminal: the prompt sits
 right under the last output line and walks down the screen, then stays on the bottom row while
-the log scrolls (`pgup` / `pgdn` look back, typing snaps back down). The right side is the timeline, one row per track: `█` is the audible part, `░` is material that is
-soft-trimmed away, `▒` a track that is muted or not soloed. Below the tracks sits the cheat
+the log scrolls (`pgup` / `pgdn` look back, typing snaps back down). The right side is the timeline, one row per track, drawn as a waveform envelope: each column is a block
+`▁▂▃▄▅▆▇█` as tall as the loudest peak in that slice of time, six dB per step, so a full block
+is louder than -6 dBFS and the flat bottom line is silence. Soft-trimmed material is dimmed,
+a muted or un-soloed track is dimmed all over, and `master.wav` gets a row of its own so you
+see the sum. Below the tracks sits the cheat
 sheet; `tab` and `shift-tab` flip its pages, `ctrl-n` / `ctrl-p` move it a line. It is a
 picture, not a mouse target: the keyboard drives everything.
 
@@ -94,11 +97,11 @@ picture, not a mouse target: the keyboard drives everything.
  gout song  48000 Hz  4 tracks  autorender on │ timeline
  > add vocals.mp3                          │                0:00        0:30        1:00
  add    4  vocals  mp3  2ch ...            │                ┼───────────┼───────────┼──────
- mix   master.wav  00:02:01.000  peak -3.1 │  1 drums       ████████████████████████████
- > move 4 +1.5s                            │  2 bass        ████████████████████████████
- move   4  vocals  at 00:00:01.500 -> ...  │  3 gtr      M     ░░▒▒▒▒▒▒▒▒▒▒▒▒░░
- mix   master.wav  00:02:01.000  peak -3.1 │  4 vocals              ████████████████████
- > _                                       │    master.wav  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ mix   master.wav  00:02:01.000  peak -3.1 │  1 drums       ▆█▆█▆█▆█▆█▆█▆█▆█▆█▆█▆█▆█▆█▆█
+ > move 4 +1.5s                            │  2 bass        ▅▅▆▅▅▆▅▅▆▅▅▆▅▅▆▅▅▆▅▅▆▅▅▆▅▅▆▅
+ move   4  vocals  at 00:00:01.500 -> ...  │  3 gtr      M     ▁▂▄▅▆▅▄▆▇▆▅▄▃▂▁
+ mix   master.wav  00:02:01.000  peak -3.1 │  4 vocals              ▃▅▇▆▅▇█▇▅▆▇▆▄▅▇▆▅▃▂▁
+ > _                                       │    master.wav  ▇█▇█▇█▇█▇█▇█▇█▇█▇█▇█▇█▇█▇█▇█
                                            │ cheat sheet  1/3  tab
                                            │ TRACKS
                                            │  add   a  FILE.. [-a TIME] [-n NAME]  copy into master/
