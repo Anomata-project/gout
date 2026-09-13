@@ -45,36 +45,45 @@ from whatever is in `master/`, every track at 0.
 
 ## Commands
 
-Run them inside the project, or pass `-p DIR` first. `TRACK` is the number shown by `ls` or
-the track name. `--no-mix` on any change skips the automatic re-mix; `gout set automix off`
-turns it off for good.
+Every command has a long and a short name; `gout add` and `gout a` are the same. Run them
+inside the project, or pass `-p DIR` first. `TRACK` is the number shown by `ls` or the track
+name (a unique prefix will do). `-N` / `--no-mix` on any change skips the automatic re-mix;
+`gout set automix off` turns it off for good. `gout cheat` prints the whole sheet.
 
-| command | meaning |
-| --- | --- |
-| `new NAME [--rate HZ]` | create a project |
-| `add FILE... [--name N] [--at TIME]` | add tracks at `TIME` (default 0) |
-| `ls` | list tracks, positions, trims, flags |
-| `view` | print the timeline once |
-| `move TRACK +TIME \| -TIME \| TIME` | nudge later, nudge earlier, place at a time |
-| `trim TRACK [-st T] [-et T \| -el T]` | soft trim, times count from the start of the track's file |
-| `trim TRACK --clear` | soft trim off |
-| `trim TRACK --hard [-st ..] [-et ..] [-r]` | rewrite the file; bakes the soft trim when no times given |
-| `rm TRACK [-D]` | drop a track; `-D` also deletes its file |
-| `mute TRACK [on\|off]`, `solo TRACK [on\|off]` | toggle; `mute all off`, `solo all off` |
-| `gain TRACK DB`, `pan TRACK L30\|R30\|C` | mixer strip; every track starts at 0 dB, centred |
-| `mix [--mp3] [-v]` | render `master.wav`; `--mp3` also writes `master.mp3` |
-| `undo` | undo the last change (not a hard trim or `rm -D`) |
-| `dump`, `rebuild [-f]` | state as JSON; recreate `gout.db` from `master/` |
-| `set automix on\|off`, `set rate HZ` | project settings |
-| `cut INPUT ...` | the 1.x cutter, see below |
+| long | short | arguments | meaning |
+| --- | --- | --- | --- |
+| `new` | `n` | `NAME [-R HZ]` | create a project (48 kHz by default) |
+| `add` | `a` | `FILE... [-a TIME] [-n NAME]` | add tracks at `TIME` (default 0) |
+| `ls` | `l` | | list tracks, positions, trims, flags |
+| `view` | `v` | `[-w COLS]` | print the timeline once |
+| `move` | `m` | `TRACK +TIME \| -TIME \| TIME` | nudge later, nudge earlier, place at a time |
+| `trim` | `t` | `TRACK [-st T] [-et T \| -el T]` | soft trim, times count from the start of the track's file |
+| `trim` | `t` | `TRACK -c` | soft trim off (`--clear`) |
+| `trim` | `t` | `TRACK -H [-st ..] [-et ..] [-r]` | hard trim, rewrites the file; bakes the soft trim when no times given (`--hard`) |
+| `rm` | `r` | `TRACK [-D]` | drop a track; `-D` also deletes its file (`--delete`) |
+| `mute` | `mu` | `TRACK [on\|off]` | toggle; `mute all off` |
+| `solo` | `s` | `TRACK [on\|off]` | toggle; `solo all off` |
+| `gain` | `g` | `TRACK DB` | `gain 2 -6` |
+| `pan` | `p` | `TRACK L30 \| R30 \| C` | every track starts centred |
+| `mix` | `x` | `[-3] [-v]` | render `master.wav`; `-3` / `--mp3` also writes `master.mp3` |
+| `undo` | `u` | | undo the last change (not a hard trim or `rm -D`) |
+| `dump` | `dp` | | the state as JSON |
+| `rebuild` | `rb` | `[-f]` | recreate `gout.db` from `master/` |
+| `set` | `se` | `automix on\|off`, `rate HZ` | project settings |
+| `cheat` | `c` | | the cheat sheet |
+| `cut` | | `INPUT ...` | the 1.x cutter, see below |
+
+Long flags exist for every short one: `--at --name --hard --clear --reencode --delete --mp3
+--rate --width --verbose --no-mix`.
 
 ## The terminal ui
 
 `gout` inside a project (or `gout ui`) opens a split screen. The left side is a prompt that
 takes the same commands without the leading `gout`, with a scrolling log above it. The right
 side is the timeline, one row per track: `█` is the audible part, `░` is material that is
-soft-trimmed away, `▒` a track that is muted or not soloed. It is a picture, not a mouse
-target: the keyboard drives everything.
+soft-trimmed away, `▒` a track that is muted or not soloed. Below the tracks sits the cheat
+sheet; `tab` and `shift-tab` flip its pages, `ctrl-n` / `ctrl-p` move it a line. It is a
+picture, not a mouse target: the keyboard drives everything.
 
 ```
  gout song  48000 Hz  4 tracks  automix on │ timeline
@@ -85,10 +94,14 @@ target: the keyboard drives everything.
  move   4  vocals  at 00:00:01.500 -> ...  │  3 gtr      M     ░░▒▒▒▒▒▒▒▒▒▒▒▒░░
  mix   master.wav  00:02:01.000  peak -3.1 │  4 vocals              ████████████████████
  > _                                       │    master.wav  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                                           │ cheat sheet  1/3  tab
+                                           │ TRACKS
+                                           │  add   a  FILE.. [-a TIME] [-n NAME]  copy into master/
+                                           │  move  m  TRACK +1s | -500ms | 1:30   later|earlier|place
 ```
 
-`ctrl-u` or `view` hides and shows the timeline, `help` lists the commands, `help all` prints
-the whole instruction page, `quit` / `ctrl-d` / `ctrl-c` leave.
+`ctrl-u` or `view` hides and shows the right side, `help` or `cheat` prints the sheet into the
+log, `help all` the whole instruction page, `quit` / `ctrl-d` / `ctrl-c` leave.
 
 ## How the mix works
 

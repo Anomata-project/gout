@@ -749,7 +749,7 @@ class Args:
 
     def __init__(self, argv: list[str]):
         self.argv = list(argv)
-        self.no_mix = self.flag("--no-mix")
+        self.no_mix = self.flag("--no-mix", "-N")
         self.verbose = self.flag("-v", "--verbose")
 
     def flag(self, *names: str) -> bool:
@@ -797,8 +797,8 @@ def on_off(text: str | None, current: int) -> int:
 
 
 def cmd_new(root_hint: Path | None, args: Args) -> None:
-    rate_txt = args.value("--rate", default=str(DEFAULT_RATE))
-    (name,) = args.positionals("gout new NAME [--rate HZ]", 1, 1)
+    rate_txt = args.value("--rate", "-R", default=str(DEFAULT_RATE))
+    (name,) = args.positionals("gout new NAME [-R HZ]", 1, 1)
     if not rate_txt.isdigit() or not 8000 <= int(rate_txt) <= 384000:
         die(f"bad sample rate {rate_txt!r}")
     root = Path.cwd() if name == "." else Path(name)
@@ -845,9 +845,9 @@ def ingest(project: Project, src: Path, name: str | None, at_ms: int, verbose: b
 
 
 def cmd_add(project: Project, args: Args) -> None:
-    name = args.value("--name")
-    at = args.value("--at")
-    files = args.positionals("gout add FILE... [--name NAME] [--at TIME] [--no-mix]", 1)
+    name = args.value("--name", "-n")
+    at = args.value("--at", "-a")
+    files = args.positionals("gout add FILE... [-n NAME] [-a TIME] [-N]", 1)
     if name and len(files) > 1:
         die("--name works with a single file")
     at_ms = parse_ms(at) if at else 0
@@ -906,14 +906,14 @@ def cmd_move(project: Project, args: Args) -> None:
     automix(project, args)
 
 
-TRIM_USAGE = ("gout trim TRACK [-st TIME] [-et TIME | -el TIME] [--clear]     soft: file untouched\n"
-              "       gout trim TRACK --hard [-st ..] [-et ..|-el ..] [-r]       hard: rewrite the file\n"
+TRIM_USAGE = ("gout trim TRACK [-st TIME] [-et TIME | -el TIME] [-c]          soft: file untouched\n"
+              "       gout trim TRACK -H [-st ..] [-et ..|-el ..] [-r]           hard: rewrite the file\n"
               "       times are measured from the start of the track's own file")
 
 
 def cmd_trim(project: Project, args: Args) -> None:
     hard = args.flag("--hard", "-H")
-    clear = args.flag("--clear")
+    clear = args.flag("--clear", "-c")
     reencode = args.flag("-r", "--reencode")
     st, et, el = args.value("-st", "--start"), args.value("-et", "--end"), args.value("-el", "--length")
     (spec,) = args.positionals(TRIM_USAGE, 1, 1)
@@ -1080,8 +1080,8 @@ def cmd_set(project: Project, args: Args) -> None:
 
 
 def cmd_mix(project: Project, args: Args) -> None:
-    mp3 = args.flag("--mp3")
-    args.positionals("gout mix [--mp3] [-v]")
+    mp3 = args.flag("--mp3", "-3")
+    args.positionals("gout mix [-3] [-v]")
     mix(project, args.verbose, mp3)
 
 
@@ -1207,18 +1207,77 @@ def cmd_view(project: Project, args: Args) -> None:
         print(f"{label:<{LABEL_W}} {cells}".rstrip())
 
 
-# --------------------------------------------------------------------------- terminal ui
+# --------------------------------------------------------------------------- cheat sheet
 
-UI_HELP = """\
-the same commands as on the shell, without the leading gout:
-  add FILE...          move TRACK +1s | -500ms | 1:30      trim TRACK -st 2s -et 1:40
-  trim TRACK --hard    rm TRACK [-D]     mute | solo TRACK      gain TRACK -6     pan TRACK L30
-  mix [--mp3]          undo              ls      dump           set automix off
-keys:
-  ctrl-u or view       hide / show the timeline         ctrl-l or clear   empty this log
-  up / down            earlier commands                 pgup / pgdn       scroll this log
-  quit, ctrl-d, ctrl-c leave                            help all          the full instruction page
+CHEAT = """\
+CHEAT SHEET          long short        tab flips the pages
+TRACKS
+ add   a  FILE.. [-a TIME] [-n NAME]  copy into master/
+ ls    l                              list the tracks
+ move  m  TRACK +1s | -500ms | 1:30   later|earlier|place
+ trim  t  TRACK -st 2s -et 1:40       soft: file untouched
+ trim  t  TRACK -H [-st ..] [-r]      hard: rewrite the file
+ trim  t  TRACK -c                    soft trim off
+ rm    r  TRACK [-D]                  drop; -D deletes file
+MIXER
+ mute  mu TRACK [on|off]              mute all off
+ solo  s  TRACK [on|off]              solo all off
+ gain  g  TRACK -6                    dB, -60 .. +24
+ pan   p  TRACK L30 | R30 | C         all start at C
+ mix   x  [-3] [-v]                   -3 also master.mp3
+PROJECT
+ undo  u                              not hard trim / rm -D
+ view  v  [-w COLS]                   print the timeline
+ dump  dp                             the state as json
+ rebuild rb [-f]                      gout.db from master/
+ set   se automix on|off | rate HZ
+ new   n  NAME [-R HZ]                48000 Hz by default
+ cheat c  this sheet   help h         help all: whole page
+ quit  q  leave the ui  clear cl      empty the log
+FLAGS  -N --no-mix skip the re-mix    -p DIR the project
+       -a --at  -n --name  -H --hard  -c --clear
+       -r --reencode  -D --delete  -3 --mp3  -R --rate
+       -w --width  -v --verbose
+TIMES  2s  500ms  1:30  00:01:30.250  bare number = MINUTES
+       trim times count from the track file's start
+TRACK  number from ls, or the name (unique prefix ok)
+KEYS   ctrl-u  timeline on/off   tab shift-tab  flip sheet
+       ctrl-n ctrl-p  sheet line  pgup pgdn      scroll log
+       up down  earlier commands  ctrl-l  clear the log
+       ctrl-d  ctrl-c  quit
 """
+
+
+def render_cheat(width: int) -> list[str]:
+    lines: list[str] = []
+    for line in CHEAT.rstrip("\n").splitlines():
+        if len(line) <= width:
+            lines.append(line)
+        else:
+            lines.extend(part.rstrip() for part in textwrap.wrap(
+                line, max(20, width), subsequent_indent="           ", replace_whitespace=False))
+    return lines
+
+
+def cmd_cheat(root_hint: Path | None, args: Args) -> None:
+    width_txt = args.value("-w", "--width")
+    args.positionals("gout cheat [-w COLUMNS]")
+    width = int(width_txt) if width_txt and width_txt.isdigit() else shutil.get_terminal_size((100, 24)).columns
+    print("\n".join(render_cheat(width)))
+
+
+# long name -> the short form and the other spellings; every command works under all of them
+COMMANDS = {
+    "add": ("a",), "ls": ("l", "list"), "view": ("v",), "move": ("m", "mv"), "trim": ("t",),
+    "rm": ("r", "remove", "del"), "mute": ("mu",), "solo": ("s",), "gain": ("g",), "pan": ("p",),
+    "mix": ("x", "render", "bounce"), "undo": ("u",), "dump": ("dp",), "rebuild": ("rb",),
+    "set": ("se",), "new": ("n",), "cheat": ("c",), "help": ("h", "?"), "ui": ("tui",), "cut": (),
+    "quit": ("q", "exit"), "clear": ("cl",),
+}
+ALIASES = {alias: name for name, aliases in COMMANDS.items() for alias in aliases}
+
+
+# --------------------------------------------------------------------------- terminal ui
 
 
 class Tui:
@@ -1227,12 +1286,15 @@ class Tui:
     def __init__(self, project: Project, scr):
         self.project, self.scr = project, scr
         self.log: list[str] = [f"gout {__version__}  {project.root}",
-                               "type help for the commands; ctrl-u hides the timeline"]
+                               "the cheat sheet is on the right, tab flips it; ctrl-u hides the timeline"]
         self.input = ""
         self.history: list[str] = []
         self.hist_i: int | None = None
         self.show_view = True
         self.scroll = 0
+        self.cheat_scroll = 0
+        self.sheet_h = 10
+        self.sheet_len = 0
         self.busy = False
         self.running = True
 
@@ -1290,11 +1352,30 @@ class Tui:
                 self.put(y, right_x - 1, "│", curses.A_DIM)
             self.put(0, right_x, " timeline".ljust(right_w), curses.A_REVERSE)
             rows = render_timeline(p, right_w)
+            room = max(3, h - 2 - 6)  # leave the cheat sheet at least six lines
+            if len(rows) > room:
+                heads = [r for r in rows if r[2] in ("axis", "ruler")]
+                tail = [r for r in rows if r[2] in ("master", "note") and r not in heads]
+                tracks = [r for r in rows if r[2] == "track"]
+                keep = max(1, room - len(heads) - len(tail) - 1)
+                rows = heads + tracks[:keep] + [("", f"+{len(tracks) - keep} more tracks — ls", "note")] + tail
             for y, (label, cells, kind) in enumerate(rows, 1):
                 if y >= h:
                     break
                 self.put(y, right_x, label, curses.A_DIM if kind in ("axis", "ruler", "note") else 0)
                 self.draw_cells(y, right_x + LABEL_W + 1, cells, kind)
+
+            sheet = render_cheat(right_w - 1)
+            top = 1 + len(rows)
+            self.sheet_h = max(1, h - top - 1)
+            self.sheet_len = len(sheet)
+            self.cheat_scroll = max(0, min(self.cheat_scroll, max(0, len(sheet) - self.sheet_h)))
+            pages = max(1, math.ceil(len(sheet) / self.sheet_h))
+            page = min(pages, math.ceil((self.cheat_scroll + self.sheet_h) / self.sheet_h))
+            self.put(top, right_x, f" cheat sheet  {page}/{pages}  tab".ljust(right_w), curses.A_REVERSE)
+            for i, line in enumerate(sheet[self.cheat_scroll:self.cheat_scroll + self.sheet_h]):
+                header = line[:1].isupper() and not line.startswith(" ")
+                self.put(top + 1 + i, right_x + 1, line, curses.A_BOLD if header else 0, right_w - 1)
         try:
             scr.move(h - 1, min(len(prompt) + len(shown), w - 1))
         except curses.error:
@@ -1369,6 +1450,15 @@ class Tui:
             self.scroll += 10
         elif key == curses.KEY_NPAGE:
             self.scroll = max(0, self.scroll - 10)
+        elif key in ("\t", curses.KEY_BTAB, "\x0e", "\x10"):  # tab, shift-tab, ctrl-n, ctrl-p
+            last = max(0, self.sheet_len - self.sheet_h)
+            step = self.sheet_h if key in ("\t", curses.KEY_BTAB) else 1
+            if key in ("\t", "\x0e"):
+                at_end = self.cheat_scroll >= last
+                self.cheat_scroll = 0 if at_end and key == "\t" else min(last, self.cheat_scroll + step)
+            else:
+                at_top = self.cheat_scroll <= 0
+                self.cheat_scroll = last if at_top and key == curses.KEY_BTAB else max(0, self.cheat_scroll - step)
         elif isinstance(key, str) and key.isprintable():
             self.input += key
 
@@ -1392,8 +1482,9 @@ class Tui:
             self.show_view = not self.show_view
         elif head == "clear":
             self.log.clear()
-        elif head in ("help", "?", "-h", "--help"):
-            self.log.extend((HELP if argv[1:] == ["all"] else UI_HELP).rstrip().splitlines())
+        elif head in ("help", "-h", "--help", "cheat"):
+            full = head != "cheat" and argv[1:] == ["all"]
+            self.log.extend(HELP.rstrip().splitlines() if full else render_cheat(max(40, self.layout()[2] - 2)))
         elif head in ("ui", "tui", "rebuild", "new"):
             self.log.append(f"{head}: run that from the shell")
         else:
@@ -1432,30 +1523,34 @@ def cmd_ui(project: Project, args: Args) -> None:
 HELP = f"""\
 gout {__version__} — a command-line DAW. Stack wav/mp3 tracks on a timeline, mix to master.wav.
 
+Every command has a long and a short name (gout add / gout a). gout cheat prints the sheet.
+
 PROJECT
-  gout new NAME [--rate HZ]    create NAME/ with {TRACK_DIR}/ and {DB_NAME} (default {DEFAULT_RATE} Hz)
-  gout                         inside a project: open the terminal ui (prompt left, tracks right,
-                               ctrl-u hides the tracks); anywhere else: this page.  Also: gout ui
-  gout view                    print the timeline once and exit
-  gout ls                      list the tracks and the state of {MASTER_WAV}
-  gout mix [--mp3] [-v]        render {MASTER_WAV} (32-bit float stereo); --mp3 also writes {MASTER_MP3}
-  gout undo                    undo the last change (not a hard trim or rm -D)
-  gout dump                    print the project state as JSON
-  gout rebuild [-f]            recreate {DB_NAME} from the files in {TRACK_DIR}/, every track at 0
-  gout set automix on|off      re-mix after every change (default on);  gout set rate HZ
+  gout new   n  NAME [-R HZ]      create NAME/ with {TRACK_DIR}/ and {DB_NAME} (default {DEFAULT_RATE} Hz)
+  gout                            inside a project: open the terminal ui (prompt left, tracks and
+                                  the cheat sheet right, ctrl-u hides them); elsewhere: this page
+  gout view  v                    print the timeline once and exit
+  gout cheat c                    print the cheat sheet
+  gout ls    l                    list the tracks and the state of {MASTER_WAV}
+  gout mix   x  [-3] [-v]         render {MASTER_WAV} (32-bit float stereo); -3 also writes {MASTER_MP3}
+  gout undo  u                    undo the last change (not a hard trim or rm -D)
+  gout dump  dp                   print the project state as JSON
+  gout rebuild rb [-f]            recreate {DB_NAME} from the files in {TRACK_DIR}/, every track at 0
+  gout set   se automix on|off    re-mix after every change (default on);  set rate HZ
 
 TRACKS   (TRACK is the number shown by ls, or the track name)
-  gout add FILE... [--name N] [--at TIME]   copy wav/mp3 into {TRACK_DIR}/ (other formats become wav)
-  gout move TRACK +TIME | -TIME | TIME      nudge later, nudge earlier, or place at a time
-  gout trim TRACK [-st T] [-et T | -el T]   soft trim: in/out points, the file is untouched
-  gout trim TRACK --clear                   soft trim off again
-  gout trim TRACK --hard [-st ..] [-et ..]  hard trim: rewrite the file (bakes the soft trim)
-  gout rm TRACK [-D]                        drop a track; -D also deletes its file
-  gout mute TRACK [on|off]                  toggle mute        (mute all off)
-  gout solo TRACK [on|off]                  toggle solo        (solo all off)
-  gout gain TRACK DB                        gain 2 -6
-  gout pan TRACK C | L30 | R30              balance; every track starts centred, 50/50
-  --no-mix on any of these skips the automatic re-mix; -p DIR before a command picks the project.
+  gout add   a  FILE... [-n NAME] [-a TIME]  copy wav/mp3 into {TRACK_DIR}/ (other formats become wav)
+  gout move  m  TRACK +TIME | -TIME | TIME   nudge later, nudge earlier, or place at a time
+  gout trim  t  TRACK [-st T] [-et T|-el T]  soft trim: in/out points, the file is untouched
+  gout trim  t  TRACK -c                     soft trim off again (--clear)
+  gout trim  t  TRACK -H [-st ..] [-et ..]   hard trim: rewrite the file, bakes the soft trim (--hard)
+  gout rm    r  TRACK [-D]                   drop a track; -D also deletes its file (--delete)
+  gout mute  mu TRACK [on|off]               toggle mute        (mute all off)
+  gout solo  s  TRACK [on|off]               toggle solo        (solo all off)
+  gout gain  g  TRACK DB                     gain 2 -6
+  gout pan   p  TRACK C | L30 | R30          balance; every track starts centred, 50/50
+  -N (--no-mix) on any of these skips the automatic re-mix; -p DIR before a command picks
+  the project. Long flags: --at --name --hard --clear --reencode --delete --mp3 --rate --width
 
 CUT   (any file, no project needed; `gout INPUT ...` still works as in 1.x)
   gout cut INPUT [-o OUT] [-st TIME] [-et TIME | -el TIME | -fs SIZE] [-r] [-f] [-n] [-v]
@@ -1623,8 +1718,7 @@ PROJECT_COMMANDS = {
     "set": cmd_set, "mix": cmd_mix, "undo": cmd_undo, "dump": cmd_dump,
     "view": cmd_view, "ui": cmd_ui,
 }
-FREE_COMMANDS = {"new": cmd_new, "rebuild": cmd_rebuild}
-ALIASES = {"list": "ls", "mv": "move", "remove": "rm", "render": "mix", "bounce": "mix", "tui": "ui"}
+FREE_COMMANDS = {"new": cmd_new, "rebuild": cmd_rebuild, "cheat": cmd_cheat}
 
 
 def run(argv: list[str], project: Project | None = None) -> int:
@@ -1662,6 +1756,8 @@ def run(argv: list[str], project: Project | None = None) -> int:
     if head in ("-V", "--version", "version"):
         print(f"gout {__version__}")
         return 0
+    if head in ("quit", "clear") and project is None:
+        die(f"{head} only means something inside the ui (gout, in a project)")
 
     need_tools()
     if head in FREE_COMMANDS:
