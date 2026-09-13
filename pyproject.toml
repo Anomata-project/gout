@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gout"
-version = "1.0.0"
-description = "Cut a piece out of an .mp3 by time or by target file size."
+version = "2.0.0"
+description = "A command-line DAW: stack wav/mp3 tracks on a timeline, mix to master.wav; also cuts mp3s by time or size."
 readme = "README.md"
 requires-python = ">=3.9"
 classifiers = [

@@ -9,14 +9,18 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as dt
+import io
 import math
 import json
 import re
+import shlex
 import shutil
 import sqlite3
 import subprocess
 import sys
+import textwrap
 from array import array
 from pathlib import Path
 
@@ -1114,6 +1118,315 @@ def cmd_rebuild(root_hint: Path | None, args: Args) -> None:
         mix(project)
 
 
+# --------------------------------------------------------------------------- timeline view
+
+LABEL_W = 15  # " n name      MS"
+TICK_STEPS = (100, 250, 500, 1000, 2000, 5000, 10000, 15000, 30000, 60000, 120000, 300000,
+              600000, 900000, 1800000, 3600000, 7200000, 18000000)
+CELL_AUDIBLE, CELL_SILENT, CELL_TRIMMED, CELL_ZERO, CELL_MASTER = "█", "▒", "░", "│", "━"
+
+
+def render_timeline(project: Project, width: int) -> list[tuple[str, str, str]]:
+    """Rows of (label, cells, kind) for a timeline `width` columns wide.
+
+    kind is axis, ruler, track, master or note. Cells use █ for the audible part,
+    ░ for material soft-trimmed away, ▒ for a track that is muted or not soloed.
+    """
+    tracks = project.tracks()
+    tw = max(10, width - LABEL_W - 1)
+    master_ms = int(project.get("master_ms") or 0) if project.master.exists() else 0
+    if not tracks:
+        return [("", "no tracks yet — add FILE", "note")]
+
+    t0 = min(0, min(t["offset_ms"] for t in tracks))
+    t1 = max(max(t["offset_ms"] + t["length_ms"] for t in tracks), master_ms, t0 + 1000)
+    scale = tw / (t1 - t0)  # columns per millisecond
+
+    def col(ms: int) -> int:
+        return int((ms - t0) * scale)
+
+    def cols(a: int, b: int) -> tuple[int, int]:
+        start = max(0, min(tw - 1, col(a)))
+        end = max(start + 1, min(tw, math.ceil((b - t0) * scale)))
+        return start, end
+
+    step = next((s for s in TICK_STEPS if s * scale >= 9), TICK_STEPS[-1])
+    decimals = 0 if step >= 1000 else (2 if step == 250 else 1)
+    labels, ruler = [" "] * tw, ["─"] * tw
+    last_end = -1
+    tick = math.ceil(t0 / step) * step
+    while tick <= t1:
+        c = col(tick)
+        if 0 <= c < tw:
+            ruler[c] = "┼"
+            text = fmt_short(tick, decimals)
+            if c > last_end and c + len(text) <= tw:
+                labels[c:c + len(text)] = list(text)
+                last_end = c + len(text)
+        tick += step
+    zero = col(0) if t0 < 0 else -1
+    rows = [("", "".join(labels), "axis"), ("", "".join(ruler), "ruler")]
+
+    any_solo = any(t["solo"] for t in tracks)
+    for t in tracks:
+        cells = [" "] * tw
+        if 0 <= zero < tw:
+            cells[zero] = CELL_ZERO
+        fs, fe = cols(t["offset_ms"], t["offset_ms"] + t["length_ms"])
+        cells[fs:fe] = [CELL_TRIMMED] * (fe - fs)
+        a, b = audible(t)
+        if b > a:
+            s_, e_ = cols(t["offset_ms"] + a, t["offset_ms"] + b)
+            ch = CELL_AUDIBLE if is_heard(t, any_solo) else CELL_SILENT
+            cells[s_:e_] = [ch] * (e_ - s_)
+        flags = ("M" if t["mute"] else " ") + ("S" if t["solo"] else " ")
+        rows.append((f"{t['n']:>2} {t['name'][:9]:<9} {flags}", "".join(cells), "track"))
+
+    label = f"   {MASTER_WAV}"[:LABEL_W].ljust(LABEL_W)
+    if master_ms:
+        cells = [" "] * tw
+        s_, e_ = cols(0, master_ms)
+        cells[s_:e_] = [CELL_MASTER] * (e_ - s_)
+        rows.append((label, "".join(cells), "master"))
+    else:
+        rows.append((label, "not rendered — mix", "note"))
+    return rows
+
+
+def cmd_view(project: Project, args: Args) -> None:
+    width_txt = args.value("-w", "--width")
+    args.positionals("gout view [-w COLUMNS]")
+    width = int(width_txt) if width_txt and width_txt.isdigit() else shutil.get_terminal_size((100, 24)).columns
+    tracks = project.tracks()
+    master = project.get("master_ms")
+    state = (f"{MASTER_WAV} {fmt_ms(int(master))}" if master and project.master.exists()
+             else f"{MASTER_WAV} not rendered")
+    print(f"proj  {project.get('name')}  {project.rate} Hz  {len(tracks)} track"
+          f"{'' if len(tracks) == 1 else 's'}  {state}")
+    for label, cells, _ in render_timeline(project, width):
+        print(f"{label:<{LABEL_W}} {cells}".rstrip())
+
+
+# --------------------------------------------------------------------------- terminal ui
+
+UI_HELP = """\
+the same commands as on the shell, without the leading gout:
+  add FILE...          move TRACK +1s | -500ms | 1:30      trim TRACK -st 2s -et 1:40
+  trim TRACK --hard    rm TRACK [-D]     mute | solo TRACK      gain TRACK -6     pan TRACK L30
+  mix [--mp3]          undo              ls      dump           set automix off
+keys:
+  ctrl-u or view       hide / show the timeline         ctrl-l or clear   empty this log
+  up / down            earlier commands                 pgup / pgdn       scroll this log
+  quit, ctrl-d, ctrl-c leave                            help all          the full instruction page
+"""
+
+
+class Tui:
+    """Left: a prompt with a log, like the terminal. Right: the tracks, like a DAW."""
+
+    def __init__(self, project: Project, scr):
+        self.project, self.scr = project, scr
+        self.log: list[str] = [f"gout {__version__}  {project.root}",
+                               "type help for the commands; ctrl-u hides the timeline"]
+        self.input = ""
+        self.history: list[str] = []
+        self.hist_i: int | None = None
+        self.show_view = True
+        self.scroll = 0
+        self.busy = False
+        self.running = True
+
+    # ---- drawing
+
+    def put(self, y: int, x: int, text: str, attr: int = 0, maxw: int | None = None) -> None:
+        import curses
+        h, w = self.scr.getmaxyx()
+        if y < 0 or y >= h or x < 0 or x >= w:
+            return
+        if maxw is not None:
+            text = text[:maxw]
+        text = text[:w - x]
+        try:
+            self.scr.addstr(y, x, text, attr)
+        except curses.error:
+            pass  # the bottom-right cell always complains
+
+    def layout(self) -> tuple[int, int, int, int | None, int]:
+        h, w = self.scr.getmaxyx()
+        if self.show_view and w >= 60:
+            left = max(30, w * 2 // 5)
+            return h, w, left, left + 1, w - left - 1
+        return h, w, w, None, 0
+
+    def draw(self) -> None:
+        import curses
+        scr = self.scr
+        scr.erase()
+        h, w, left_w, right_x, right_w = self.layout()
+        p = self.project
+        tracks = p.tracks()
+        title = (f" gout {p.get('name')}  {p.rate} Hz  {len(tracks)} track{'' if len(tracks) == 1 else 's'}"
+                 f"  automix {'on' if p.automix else 'off'}")
+        self.put(0, 0, title.ljust(left_w), curses.A_REVERSE)
+
+        wrapped: list[str] = []
+        for line in self.log:
+            wrapped.extend(textwrap.wrap(line, max(10, left_w - 1), subsequent_indent="   ",
+                                         drop_whitespace=False, replace_whitespace=False) or [""])
+        avail = max(0, h - 2)
+        self.scroll = max(0, min(self.scroll, max(0, len(wrapped) - avail)))
+        end = len(wrapped) - self.scroll
+        for i, line in enumerate(wrapped[max(0, end - avail):end]):
+            attr = curses.A_BOLD if line.startswith("> ") else (curses.A_DIM if line.startswith("error") else 0)
+            self.put(1 + i, 0, line, attr, left_w - 1)
+
+        prompt = "… " if self.busy else "> "
+        room = max(1, left_w - len(prompt) - 1)
+        shown = self.input[-room:]
+        self.put(h - 1, 0, prompt + shown, curses.A_DIM if self.busy else curses.A_BOLD)
+
+        if right_x is not None:
+            for y in range(h):
+                self.put(y, right_x - 1, "│", curses.A_DIM)
+            self.put(0, right_x, " timeline".ljust(right_w), curses.A_REVERSE)
+            rows = render_timeline(p, right_w)
+            for y, (label, cells, kind) in enumerate(rows, 1):
+                if y >= h:
+                    break
+                self.put(y, right_x, label, curses.A_DIM if kind in ("axis", "ruler", "note") else 0)
+                self.draw_cells(y, right_x + LABEL_W + 1, cells, kind)
+        try:
+            scr.move(h - 1, min(len(prompt) + len(shown), w - 1))
+        except curses.error:
+            pass
+        scr.refresh()
+
+    def draw_cells(self, y: int, x: int, cells: str, kind: str) -> None:
+        import curses
+        if kind in ("note", "axis"):
+            self.put(y, x, cells, curses.A_DIM)
+            return
+        attrs = {CELL_AUDIBLE: curses.A_BOLD, CELL_SILENT: curses.A_DIM, CELL_TRIMMED: curses.A_DIM,
+                 CELL_ZERO: curses.A_DIM, CELL_MASTER: curses.A_BOLD, "─": curses.A_DIM, "┼": curses.A_DIM}
+        i = 0
+        while i < len(cells):
+            j = i
+            while j < len(cells) and cells[j] == cells[i]:
+                j += 1
+            self.put(y, x + i, cells[i:j], attrs.get(cells[i], 0))
+            i = j
+
+    # ---- input
+
+    def loop(self) -> None:
+        import curses
+        try:
+            curses.curs_set(1)
+        except curses.error:
+            pass
+        while self.running:
+            self.draw()
+            try:
+                key = self.scr.get_wch()
+            except KeyboardInterrupt:
+                break
+            except curses.error:
+                continue
+            self.handle(key)
+
+    def handle(self, key) -> None:
+        import curses
+        if key == curses.KEY_RESIZE:
+            return
+        if key == "\x15":  # ctrl-u
+            self.show_view = not self.show_view
+        elif key in ("\n", "\r", curses.KEY_ENTER):
+            self.submit()
+        elif key in (curses.KEY_BACKSPACE, "\x7f", "\x08"):
+            self.input = self.input[:-1]
+        elif key == "\x04":  # ctrl-d on an empty line leaves
+            if not self.input:
+                self.running = False
+        elif key == "\x0c":  # ctrl-l
+            self.log.clear()
+        elif key == "\x17":  # ctrl-w
+            self.input = self.input.rstrip()
+            self.input = self.input[:self.input.rfind(" ") + 1] if " " in self.input else ""
+        elif key == "\x1b":
+            self.input = ""
+        elif key == curses.KEY_UP:
+            if self.history:
+                self.hist_i = len(self.history) - 1 if self.hist_i is None else max(0, self.hist_i - 1)
+                self.input = self.history[self.hist_i]
+        elif key == curses.KEY_DOWN:
+            if self.hist_i is not None:
+                self.hist_i += 1
+                if self.hist_i >= len(self.history):
+                    self.hist_i, self.input = None, ""
+                else:
+                    self.input = self.history[self.hist_i]
+        elif key == curses.KEY_PPAGE:
+            self.scroll += 10
+        elif key == curses.KEY_NPAGE:
+            self.scroll = max(0, self.scroll - 10)
+        elif isinstance(key, str) and key.isprintable():
+            self.input += key
+
+    def submit(self) -> None:
+        line = self.input.strip()
+        self.input, self.scroll, self.hist_i = "", 0, None
+        if not line:
+            return
+        if not self.history or self.history[-1] != line:
+            self.history.append(line)
+        self.log.append("> " + line)
+        try:
+            argv = shlex.split(line)
+        except ValueError as exc:
+            self.log.append(f"error: {exc}")
+            return
+        head = ALIASES.get(argv[0], argv[0])
+        if head in ("q", "quit", "exit"):
+            self.running = False
+        elif head in ("view", "timeline"):
+            self.show_view = not self.show_view
+        elif head == "clear":
+            self.log.clear()
+        elif head in ("help", "?", "-h", "--help"):
+            self.log.extend((HELP if argv[1:] == ["all"] else UI_HELP).rstrip().splitlines())
+        elif head in ("ui", "tui", "rebuild", "new"):
+            self.log.append(f"{head}: run that from the shell")
+        else:
+            self.busy = True
+            self.draw()
+            buf = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+                    run(argv, self.project)
+            except GoutError as exc:
+                buf.write(f"error: {exc}\n")
+            except Exception as exc:  # keep the UI alive whatever happens
+                buf.write(f"error: {type(exc).__name__}: {exc}\n")
+            finally:
+                self.busy = False
+            self.log.extend(buf.getvalue().rstrip("\n").splitlines())
+        del self.log[:-2000]
+
+
+def run_tui(project: Project) -> None:
+    import curses
+    import locale
+    locale.setlocale(locale.LC_ALL, "")
+    curses.wrapper(lambda scr: Tui(project, scr).loop())
+
+
+def cmd_ui(project: Project, args: Args) -> None:
+    args.positionals("gout ui")
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        die("the ui needs a terminal")
+    run_tui(project)
+
+
 # --------------------------------------------------------------------------- cut (the 1.x command)
 
 HELP = f"""\
@@ -1121,6 +1434,9 @@ gout {__version__} — a command-line DAW. Stack wav/mp3 tracks on a timeline, m
 
 PROJECT
   gout new NAME [--rate HZ]    create NAME/ with {TRACK_DIR}/ and {DB_NAME} (default {DEFAULT_RATE} Hz)
+  gout                         inside a project: open the terminal ui (prompt left, tracks right,
+                               ctrl-u hides the tracks); anywhere else: this page.  Also: gout ui
+  gout view                    print the timeline once and exit
   gout ls                      list the tracks and the state of {MASTER_WAV}
   gout mix [--mp3] [-v]        render {MASTER_WAV} (32-bit float stereo); --mp3 also writes {MASTER_MP3}
   gout undo                    undo the last change (not a hard trim or rm -D)
@@ -1305,9 +1621,10 @@ PROJECT_COMMANDS = {
     "add": cmd_add, "ls": cmd_ls, "move": cmd_move, "trim": cmd_trim, "rm": cmd_rm,
     "mute": cmd_mute, "solo": cmd_solo, "gain": cmd_gain, "pan": cmd_pan,
     "set": cmd_set, "mix": cmd_mix, "undo": cmd_undo, "dump": cmd_dump,
+    "view": cmd_view, "ui": cmd_ui,
 }
 FREE_COMMANDS = {"new": cmd_new, "rebuild": cmd_rebuild}
-ALIASES = {"list": "ls", "mv": "move", "remove": "rm", "render": "mix", "bounce": "mix"}
+ALIASES = {"list": "ls", "mv": "move", "remove": "rm", "render": "mix", "bounce": "mix", "tui": "ui"}
 
 
 def run(argv: list[str], project: Project | None = None) -> int:
@@ -1322,13 +1639,19 @@ def run(argv: list[str], project: Project | None = None) -> int:
         if not root_hint.is_dir():
             die(f"no such directory: {root_hint}")
 
+    if project is not None and root_hint is None:
+        root_hint = project.root
+
     if not argv:
         found = project or Project.find(root_hint)
         if found is None:
             print(HELP, end="")
             return 0
         need_tools()
-        cmd_ls(found, Args([]))
+        if sys.stdin.isatty() and sys.stdout.isatty():
+            run_tui(found)
+        else:
+            cmd_ls(found, Args([]))
         return 0
 
     head, rest = argv[0], argv[1:]
