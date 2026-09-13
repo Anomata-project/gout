@@ -114,6 +114,22 @@ The two right-hand sections are independent: `ctrl-u` or `view` hides and shows 
 whole width. `help` prints the sheet into the log, `help all` the whole instruction page,
 `quit` / `ctrl-d` / `ctrl-c` leave. Both states are remembered per project.
 
+### The parameter sheet
+
+`ctrl-e` (or `sheet` at the prompt) replaces the screen with a table of every parameter in the
+database: the project and master settings first, then each track with its `at`, `in`, `out`,
+`gain`, `pan`, `mute` and `solo`. Three columns: name, value, new value. Move with the arrows,
+type into the third column, `ctrl-w` clears a cell. `ctrl-s` applies every edited row as the
+ordinary command it stands for, so each change is undoable, then renders once. `ctrl-x` applies
+and closes, `esc` closes and keeps unapplied edits for next time. A rejected value stays in the
+sheet marked `!` with the reason on the bottom line. The ui switches the terminal's flow control
+off for its own session so that `ctrl-s` reaches it.
+
+`saveas NAME` (`sa`, also `gout saveas` from the shell) copies the whole project, audio
+included, to a sibling directory with that name, or to a path when you give one, and the ui
+carries on in the copy the way a DAW's Save As does. In the sheet, `ctrl-shift-s` asks for the
+name in terminals that can send that key distinctly (kitty, foot, wezterm and friends).
+
 `ctrl-←` / `ctrl-→` move the split between the panes (shift or alt with the arrows work too),
 or type `split 50`, `split +5`, `split -5`. The width is remembered per project. There is no
 mouse dragging on purpose: turning on mouse reporting would stop ordinary text selection in

@@ -1427,6 +1427,40 @@ def cmd_undo(project: Project, args: Args) -> None:
     autorender(project, args)
 
 
+def save_as(project: Project, name: str) -> Project:
+    """Copy the whole project (database, master/, renders) to a new directory and open it.
+
+    A bare name lands next to the current project; a path with a slash goes where it says.
+    """
+    dst = Path(name).expanduser()
+    if not dst.is_absolute() and "/" not in name:
+        dst = project.root.parent / name
+    dst = dst.resolve()
+    if dst == project.root:
+        die("that is this project")
+    if dst.exists():
+        die(f"{dst} already exists")
+    if project.root in dst.parents:
+        die("the copy would end up inside this project — give a name for a sibling, or a path")
+    dst.mkdir(parents=True)
+    shutil.copy2(project.db_path, dst / DB_NAME)
+    shutil.copytree(project.tracks_dir, dst / TRACK_DIR)
+    for extra in (MASTER_WAV, MASTER_MP3):
+        if (project.root / extra).exists():
+            shutil.copy2(project.root / extra, dst / extra)
+    copy = Project(dst)
+    copy.set("name", dst.name)
+    copy.set("created", dt.datetime.now().isoformat(timespec="seconds"))
+    return copy
+
+
+def cmd_saveas(project: Project, args: Args) -> None:
+    (name,) = args.positionals("gout saveas NAME | PATH   (a bare name goes next to this project)", 1, 1)
+    copy = save_as(project, name)
+    files = sum(1 for _ in copy.tracks_dir.iterdir())
+    print(f"saved {copy.root}  ({files} track file{'' if files == 1 else 's'} copied; this project is untouched)")
+
+
 def cmd_dump(project: Project, args: Args) -> None:
     args.positionals("gout dump")
     print(json.dumps(project.snapshot(), indent=2))
@@ -1581,6 +1615,7 @@ MIXER
 PROJECT
  undo  u                              not hard trim / rm -D
  view  v  [-w COLS]                   print the timeline
+ saveas sa NAME|PATH                  copy the project
  dump  dp                             the state as json
  rebuild rb [-f]                      gout.db from master/
  set   se KEY VALUE                   alone: list settings
@@ -1589,6 +1624,7 @@ PROJECT
  cheat c  sheet on/off  help h        help all: whole page
  quit  q  leave the ui  clear cl      empty the log
  split sp 50 | +5 | -5                left pane width (ui)
+ sheet sh (or ctrl-e)                 parameters as a table
 MASTER set KEY VALUE
  lufs -14|off  ceiling -1  gain -3    loudness, dBTP, gain
  fadein 1s  fadeout 3s  head 1s  tail 2s
@@ -1606,6 +1642,9 @@ KEYS   ctrl-u  timeline on/off   ctrl-k  sheet on/off
        up down  earlier commands  ctrl-l  clear the log
        ctrl-← ctrl-→  move the split  (shift/alt too)
        ctrl-d  ctrl-c  quit
+SHEET  ↑↓ rows, type the new value, ctrl-s apply and stay
+       ctrl-x apply and close  esc close  ctrl-w clear cell
+       ctrl-shift-s save as (or: saveas NAME at the prompt)
 """
 
 
@@ -1632,13 +1671,19 @@ COMMANDS = {
     "add": ("a",), "scan": ("sc",), "ls": ("l", "list"), "view": ("v",), "move": ("m", "mv"), "trim": ("t",),
     "rm": ("r", "remove", "del"), "mute": ("mu",), "solo": ("s",), "gain": ("g",), "pan": ("p",),
     "mix": ("x", "render", "bounce"), "undo": ("u",), "dump": ("dp",), "rebuild": ("rb",),
-    "set": ("se",), "stats": ("st",), "new": ("n",), "cheat": ("c", "sheet"), "help": ("h", "?"), "ui": ("tui",), "cut": (),
-    "quit": ("q", "exit"), "clear": ("cl",), "split": ("sp",),
+    "set": ("se",), "stats": ("st",), "saveas": ("sa", "copy"), "new": ("n",), "cheat": ("c",), "help": ("h", "?"), "ui": ("tui",), "cut": (),
+    "quit": ("q", "exit"), "clear": ("cl",), "split": ("sp",), "sheet": ("sh",),
 }
 ALIASES = {alias: name for name, aliases in COMMANDS.items() for alias in aliases}
 
 
 # --------------------------------------------------------------------------- terminal ui
+
+
+# arrow and paging sequences as curses key names, for terminals that send the plain form
+ESCAPE_KEYS = {"[A": "KEY_UP", "OA": "KEY_UP", "[B": "KEY_DOWN", "OB": "KEY_DOWN",
+               "[C": "KEY_RIGHT", "OC": "KEY_RIGHT", "[D": "KEY_LEFT", "OD": "KEY_LEFT",
+               "[5~": "KEY_PPAGE", "[6~": "KEY_NPAGE", "[Z": "KEY_BTAB"}
 
 
 class Tui:
@@ -1647,10 +1692,19 @@ class Tui:
     def __init__(self, project: Project, scr):
         self.project, self.scr = project, scr
         self.log: list[str] = [f"gout {__version__}  {project.root}",
-                               "ctrl-u shows/hides the timeline, ctrl-k the cheat sheet, tab flips its pages"]
+                               "ctrl-u shows/hides the timeline, ctrl-k the cheat sheet, tab flips its pages,"
+                               " ctrl-e opens the parameter sheet"]
         self.input = ""
         self.history: list[str] = []
         self.hist_i: int | None = None
+        self.mode = "prompt"  # or "sheet": the parameter table
+        self.sheet_rows: list[dict] = []
+        self.sheet_cur = 0
+        self.sheet_top = 0
+        self.edits: dict[str, str] = {}
+        self.sheet_errors: dict[str, str] = {}
+        self.sheet_status = ""
+        self.saveas_name: str | None = None  # the "save as:" field in the sheet while it is open
         self.show_timeline = (project.get("ui_timeline") or "on") != "off"
         self.show_cheat = (project.get("ui_cheat") or "on") != "off"
         split = project.get("ui_split") or "40"
@@ -1688,6 +1742,9 @@ class Tui:
         import curses
         scr = self.scr
         scr.erase()
+        if self.mode == "sheet":
+            self.draw_sheet()
+            return
         h, w, left_w, right_x, right_w = self.layout()
         p = self.project
         tracks = p.tracks()
@@ -1793,7 +1850,12 @@ class Tui:
         import curses
         if key == curses.KEY_RESIZE:
             return
-        if key == "\x15":  # ctrl-u
+        if self.mode == "sheet":
+            self.handle_sheet(key)
+            return
+        if key == "\x05":  # ctrl-e
+            self.sheet_open()
+        elif key == "\x15":  # ctrl-u
             self.toggle("timeline")
         elif key == "\x0b":  # ctrl-k
             self.toggle("cheat")
@@ -1814,6 +1876,8 @@ class Tui:
             arrow = re.fullmatch(r"\[1;([235])([CD])", seq)  # shift/alt/ctrl + right/left
             if arrow:
                 self.resize(5 if arrow.group(2) == "C" else -5)
+            elif seq in ESCAPE_KEYS:  # a terminal that did not follow curses into application mode
+                self.handle(getattr(curses, ESCAPE_KEYS[seq]))
             elif not seq:
                 self.input = ""
         elif key in (curses.KEY_SLEFT, curses.KEY_SRIGHT):
@@ -1850,6 +1914,230 @@ class Tui:
         elif isinstance(key, str) and key.isprintable():
             self.input += key
             self.scroll = 0
+
+    # ---- parameter sheet: name | value | new value, ctrl-s applies
+
+    def sheet_build(self) -> list[dict]:
+        """Every parameter in the database as a row; edits map to ordinary commands."""
+        p = self.project
+        rows: list[dict] = []
+
+        def head(text: str) -> None:
+            rows.append({"id": None, "head": True, "name": text, "value": "", "hint": "", "cmd": None})
+
+        def row(rid: str, name: str, value: str, cmd, hint: str = "") -> None:
+            rows.append({"id": rid, "head": False, "name": name, "value": value, "hint": hint, "cmd": cmd})
+
+        hints = {
+            "rate": "Hz", "autorender": "on | off",
+            "lufs": "-14 | -16 | -23 | off", "ceiling": "dBTP", "gain": "dB",
+            "fadein": "500ms", "fadeout": "3s", "head": "500ms", "tail": "2s",
+            "bits": "32f | 24 | 16", "mp3": "320k | 192k | v0",
+        }
+        head(f"project  {p.get('name')}")
+        row("set:rate", "rate", str(p.rate), lambda v: ["set", "rate", v], hints["rate"])
+        row("set:autorender", "autorender", "on" if p.autorender else "off",
+            lambda v: ["set", "autorender", v], hints["autorender"])
+        for key in MASTER_DEFAULTS:
+            value = setting(p, key)
+            if key in ("fadein", "fadeout", "head", "tail") and value != "0":
+                value = fmt_ms(int(value))
+            row(f"set:{key}", key, value, (lambda k: lambda v: ["set", k, v])(key), hints.get(key, "text"))
+        for t in p.tracks():
+            n = str(t["n"])
+            a, b = audible(t)
+            start, _ = timeline(t)
+            head(f"track {n}  {t['name']}  {t['kind']}  {fmt_ms(t['length_ms'])}")
+            row(f"t{n}:at", "at", fmt_ms(start), lambda v, n=n: ["move", n, "=" + v], "timeline start: 1:30, 90s, -2s")
+            row(f"t{n}:in", "in", fmt_ms(a), lambda v, n=n: ["trim", n, "-st", v], "soft trim in, file time")
+            row(f"t{n}:out", "out", fmt_ms(b), lambda v, n=n: ["trim", n, "-et", v], "soft trim out, file time")
+            row(f"t{n}:gain", "gain", f"{t['gain_db']:g}", lambda v, n=n: ["gain", n, v], "dB")
+            row(f"t{n}:pan", "pan", fmt_pan(t["pan"]), lambda v, n=n: ["pan", n, v], "L30 | C | R30")
+            row(f"t{n}:mute", "mute", "on" if t["mute"] else "off", lambda v, n=n: ["mute", n, v], "on | off")
+            row(f"t{n}:solo", "solo", "on" if t["solo"] else "off", lambda v, n=n: ["solo", n, v], "on | off")
+        return rows
+
+    def sheet_open(self) -> None:
+        self.mode = "sheet"
+        self.sheet_rows = self.sheet_build()
+        if not self.sheet_rows[self.sheet_cur]["id"] if self.sheet_cur < len(self.sheet_rows) else True:
+            self.sheet_cur = next((i for i, r in enumerate(self.sheet_rows) if r["id"]), 0)
+        pending = len(self.edits)
+        self.sheet_status = f"{pending} unapplied change{'s' if pending != 1 else ''} kept from last time" if pending else ""
+
+    def sheet_close(self) -> None:
+        self.mode = "prompt"
+        self.saveas_name = None
+
+    def save_as(self, name: str) -> None:
+        """Copy the project and carry on in the copy, the way a DAW's Save As does."""
+        try:
+            copy = save_as(self.project, name)
+        except GoutError as exc:
+            self.log.append(f"error: {exc}")
+            self.sheet_status = str(exc)
+            return
+        self.project = copy
+        self.edits.clear()
+        self.sheet_errors.clear()
+        self.log.append(f"saved as {copy.root} — you are now working in the copy; the original is untouched")
+        self.sheet_status = f"now in {copy.root.name}"
+
+    def sheet_move(self, delta: int) -> None:
+        rows = self.sheet_rows
+        i = self.sheet_cur
+        step = 1 if delta > 0 else -1
+        for _ in range(abs(delta)):
+            j = i + step
+            while 0 <= j < len(rows) and not rows[j]["id"]:
+                j += step
+            if not 0 <= j < len(rows):
+                break
+            i = j
+        self.sheet_cur = i
+
+    def draw_sheet(self) -> None:
+        import curses
+        h, w = self.scr.getmaxyx()
+        rows = self.sheet_rows = self.sheet_build()
+        if not (0 <= self.sheet_cur < len(rows)) or not rows[self.sheet_cur]["id"]:
+            self.sheet_cur = next((i for i, r in enumerate(rows) if r["id"]), 0)
+        pending = len(self.edits)
+        title = (f" sheet  {pending} change{'s' if pending != 1 else ''}   ctrl-s apply   ctrl-x apply and close"
+                 f"   esc close   ↑ ↓ rows")
+        self.put(0, 0, title.ljust(w), curses.A_REVERSE)
+        name_w = 12
+        val_w = max(14, min(28, (w - name_w - 6) // 3))
+        new_x = 2 + name_w + 1 + val_w + 1
+        self.put(1, 0, f"  {'name':<{name_w}} {'value':<{val_w}} new value", curses.A_DIM)
+        avail = max(1, h - 3)
+        if self.sheet_cur < self.sheet_top:
+            self.sheet_top = self.sheet_cur
+        if self.sheet_cur >= self.sheet_top + avail:
+            self.sheet_top = self.sheet_cur - avail + 1
+        self.sheet_top = max(0, min(self.sheet_top, max(0, len(rows) - avail)))
+        cursor = (h - 1, 0)
+        for i, r in enumerate(rows[self.sheet_top:self.sheet_top + avail]):
+            y = 2 + i
+            if r["head"]:
+                self.put(y, 0, r["name"], curses.A_BOLD)
+                continue
+            current = self.sheet_top + i == self.sheet_cur
+            edit = self.edits.get(r["id"])
+            mark = "!" if r["id"] in self.sheet_errors else ("*" if edit is not None else " ")
+            self.put(y, 0, f"{mark} {r['name']:<{name_w}} {r['value'][:val_w]:<{val_w}} ".ljust(new_x),
+                     curses.A_REVERSE if current else 0)
+            if edit:
+                self.put(y, new_x, edit, curses.A_BOLD | (curses.A_REVERSE if current else 0))
+            else:
+                self.put(y, new_x, r["hint"], curses.A_DIM)
+            if current:
+                cursor = (y, min(w - 1, new_x + len(edit or "")))
+        if self.saveas_name is not None:
+            status = f"save as: {self.saveas_name}   (enter copies the whole project there, esc cancels)"
+            cursor = (h - 1, min(w - 1, 9 + len(self.saveas_name)))
+            self.put(h - 1, 0, status[:w - 1], curses.A_BOLD)
+        else:
+            status = self.sheet_errors.get(rows[self.sheet_cur]["id"] or "", "") or self.sheet_status \
+                or "type a new value on the highlighted row; enter or ↓ for the next"
+            self.put(h - 1, 0, status[:w - 1], curses.A_DIM if not self.sheet_errors else 0)
+        try:
+            self.scr.move(*cursor)
+        except curses.error:
+            pass
+        self.scr.refresh()
+
+    def sheet_apply(self, close: bool) -> None:
+        rows = self.sheet_rows
+        done = failed = 0
+        buf = io.StringIO()
+        for r in rows:
+            if not r["id"] or r["id"] not in self.edits:
+                continue
+            argv = r["cmd"](self.edits[r["id"]]) + ["-N"]
+            self.log.append("> " + " ".join(argv))
+            try:
+                with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+                    run(argv, self.project)
+                self.edits.pop(r["id"], None)
+                self.sheet_errors.pop(r["id"], None)
+                done += 1
+            except GoutError as exc:
+                self.sheet_errors[r["id"]] = str(exc).splitlines()[0]
+                buf.write(f"error: {exc}\n")
+                failed += 1
+        self.log.extend(buf.getvalue().rstrip("\n").splitlines())
+        if done and self.project.autorender:
+            self.sheet_status = "rendering…"
+            self.draw()
+            buf = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+                    run(["mix"], self.project)
+            except GoutError as exc:
+                buf.write(f"error: {exc}\n")
+            self.log.extend(buf.getvalue().rstrip("\n").splitlines())
+        self.sheet_status = f"applied {done}" + (f", {failed} failed — see the ! rows" if failed else "")
+        if close and not failed:
+            self.sheet_close()
+
+    def handle_sheet(self, key) -> None:
+        import curses
+        rows = self.sheet_rows
+        rid = rows[self.sheet_cur]["id"] if rows and 0 <= self.sheet_cur < len(rows) else None
+        if self.saveas_name is not None:  # typing the name for save as
+            if key in ("\n", "\r", curses.KEY_ENTER):
+                name, self.saveas_name = self.saveas_name.strip(), None
+                if name:
+                    if self.edits:
+                        self.sheet_apply(close=False)
+                    if not self.sheet_errors:
+                        self.save_as(name)
+            elif key == "\x1b" and not self.read_escape():
+                self.saveas_name = None
+            elif key in (curses.KEY_BACKSPACE, "\x7f", "\x08"):
+                self.saveas_name = self.saveas_name[:-1]
+            elif isinstance(key, str) and key.isprintable():
+                self.saveas_name += key
+            return
+        if key == "\x1b":
+            seq = self.read_escape()
+            if re.fullmatch(r"\[(83|115);6u", seq):  # ctrl-shift-s, in terminals that can send it: save as
+                self.saveas_name = ""
+                self.sheet_status = ""
+            elif seq in ESCAPE_KEYS:
+                self.handle_sheet(getattr(curses, ESCAPE_KEYS[seq]))
+            elif not seq:
+                self.sheet_close()
+        elif key == "\x13":  # ctrl-s
+            self.sheet_apply(close=False)
+        elif key == "\x18":  # ctrl-x
+            self.sheet_apply(close=True)
+        elif key in ("\x05", "\x11"):  # ctrl-e again, ctrl-q
+            self.sheet_close()
+        elif key == "\x03":
+            self.running = False
+        elif key == curses.KEY_UP or key == curses.KEY_BTAB:
+            self.sheet_move(-1)
+        elif key in (curses.KEY_DOWN, "\n", "\r", curses.KEY_ENTER, "\t"):
+            self.sheet_move(1)
+        elif key == curses.KEY_PPAGE:
+            self.sheet_move(-10)
+        elif key == curses.KEY_NPAGE:
+            self.sheet_move(10)
+        elif rid and key in (curses.KEY_BACKSPACE, "\x7f", "\x08"):
+            edit = self.edits.get(rid, "")[:-1]
+            if edit:
+                self.edits[rid] = edit
+            else:
+                self.edits.pop(rid, None)
+            self.sheet_errors.pop(rid, None)
+        elif rid and key == "\x17":  # ctrl-w clears the cell
+            self.edits.pop(rid, None)
+            self.sheet_errors.pop(rid, None)
+        elif rid and isinstance(key, str) and key.isprintable():
+            self.edits[rid] = self.edits.get(rid, "") + key
+            self.sheet_errors.pop(rid, None)
 
     @staticmethod
     def keyname(key: int) -> bytes:
@@ -1914,6 +2202,8 @@ class Tui:
             self.toggle("timeline")
         elif head == "cheat":
             self.toggle("cheat")
+        elif head == "sheet":
+            self.sheet_open()
         elif head == "clear":
             self.log.clear()
         elif head == "split":
@@ -1928,6 +2218,11 @@ class Tui:
         elif head in ("help", "-h", "--help"):
             full = argv[1:] == ["all"]
             self.log.extend(HELP.rstrip().splitlines() if full else render_cheat(max(40, self.layout()[2] - 2)))
+        elif head == "saveas":
+            if len(argv) != 2:
+                self.log.append("saveas NAME  (a bare name goes next to this project; a path goes where it says)")
+            else:
+                self.save_as(argv[1])
         elif head in ("ui", "tui", "rebuild", "new"):
             self.log.append(f"{head}: run that from the shell")
         else:
@@ -1952,7 +2247,19 @@ def run_tui(project: Project) -> None:
     import locale
     locale.setlocale(locale.LC_ALL, "")
     os.environ.setdefault("ESCDELAY", "25")  # a bare Esc should not wait a second
-    curses.wrapper(lambda scr: Tui(project, scr).loop())
+
+    def start(scr) -> None:
+        try:  # ctrl-s is XOFF to the terminal driver unless IXON is off; endwin restores the old mode
+            import termios
+            fd = sys.stdin.fileno()
+            attrs = termios.tcgetattr(fd)
+            attrs[0] &= ~termios.IXON
+            termios.tcsetattr(fd, termios.TCSANOW, attrs)
+        except Exception:
+            pass
+        Tui(project, scr).loop()
+
+    curses.wrapper(start)
 
 
 def cmd_ui(project: Project, args: Args) -> None:
@@ -1972,13 +2279,16 @@ Every command has a long and a short name (gout add / gout a). gout cheat prints
 PROJECT
   gout new   n  NAME [-R HZ]      create NAME/ with {TRACK_DIR}/ and {DB_NAME} (default {DEFAULT_RATE} Hz)
   gout                            inside a project: open the terminal ui (prompt left; timeline and
-                                  cheat sheet right, ctrl-u / ctrl-k hide each); elsewhere: this page
+                                  cheat sheet right, ctrl-u / ctrl-k hide each; ctrl-e opens the
+                                  parameter sheet: every setting and track parameter as name, value
+                                  and new value, ctrl-s applies); elsewhere: this page
   gout view  v                    print the timeline once: one row per track, each column a
                                   block ▁▂▃▄▅▆▇█ as tall as the peak there (6 dB per step)
   gout cheat c                    print the cheat sheet
   gout ls    l                    list the tracks and the state of {MASTER_WAV}
   gout mix   x  [-3] [-v]         render {MASTER_WAV} (32-bit float stereo); -3 also writes {MASTER_MP3}
   gout undo  u                    undo the last change (not a hard trim or rm -D)
+  gout saveas sa NAME | PATH      copy the whole project (files included) next to this one, or to PATH
   gout dump  dp                   print the project state as JSON
   gout rebuild rb [-f]            recreate {DB_NAME} from the files in {TRACK_DIR}/, every track at 0
   gout set   se KEY VALUE         settings; gout set alone lists them:  autorender on|off,  rate HZ
@@ -2176,6 +2486,7 @@ PROJECT_COMMANDS = {
     "add": cmd_add, "scan": cmd_scan, "ls": cmd_ls, "move": cmd_move, "trim": cmd_trim, "rm": cmd_rm,
     "mute": cmd_mute, "solo": cmd_solo, "gain": cmd_gain, "pan": cmd_pan,
     "set": cmd_set, "stats": cmd_stats, "mix": cmd_mix, "undo": cmd_undo, "dump": cmd_dump,
+    "saveas": cmd_saveas,
     "view": cmd_view, "ui": cmd_ui,
 }
 FREE_COMMANDS = {"new": cmd_new, "rebuild": cmd_rebuild, "cheat": cmd_cheat}
@@ -2216,7 +2527,7 @@ def run(argv: list[str], project: Project | None = None) -> int:
     if head in ("-V", "--version", "version"):
         print(f"gout {__version__}")
         return 0
-    if head in ("quit", "clear", "split") and project is None:
+    if head in ("quit", "clear", "split", "sheet") and project is None:
         die(f"{head} only means something inside the ui (gout, in a project)")
 
     need_tools()
