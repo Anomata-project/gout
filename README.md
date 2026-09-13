@@ -35,16 +35,25 @@ A project is a directory:
 
 ```
 song/
-  gout.db        sqlite: track order, positions, trims, gain, pan, mute/solo, undo history
+  gout.db        sqlite: track order, positions, trims, gain, pan, mute/solo, undo history, caches
+  gout.json      the same state as a readable document, rewritten after every change
   master/        the track files, wav or mp3, never modified by moves or soft trims
   master.wav     the mix, 32-bit float stereo at the project rate (48 kHz by default)
 ```
+
+`gout.json` is the readable twin of the database: the same document `gout dump` prints, rewritten
+atomically after every change. It holds the settings and every track's file, position, trims,
+gain, pan, mute and solo, in plain units (milliseconds, dB, pan from -1 to 1). It is there to
+read, to diff in git, and to recover from: `gout rebuild` uses it to put everything back where it
+was. `gout import FILE.json` applies such a document to the current project; `-s` takes only the
+settings, which turns a project into a master template, `-t` only the tracks, matched by file name.
 
 `add` takes any path and copies the file in; the original is never touched. Files you copy or
 move into `master/` yourself are picked up by `gout scan`, which registers the new ones at 0 and
 leaves the existing tracks alone. Renaming a file inside `master/` by hand breaks the track that
 points at it: `scan` reports it as missing. `gout rebuild` is the last resort: it recreates
-`gout.db` from whatever is in `master/`, every track at 0 with nothing else remembered.
+`gout.db` from whatever is in `master/`, then restores positions, trims and settings from
+`gout.json` when it is there, and otherwise leaves every track at 0.
 
 ## Commands
 
@@ -72,8 +81,9 @@ name (a unique prefix will do). `-N` / `--no-mix` on any change skips the automa
 | `mix` | `x` | `[-3] [-v]` | render `master.wav`; `-3` / `--mp3` also writes `master.mp3` |
 | `undo` | `u` | | undo the last change (not a hard trim or `rm -D`) |
 | `stems` | `sm` | `[DIR] [-A]` | one wav per track, processed as in the mix and all the same length, into `stems/`; `-A` only what the mix hears |
-| `dump` | `dp` | | the state as JSON |
-| `rebuild` | `rb` | `[-f]` | recreate `gout.db` from `master/` |
+| `dump` | `dp` | | the state as JSON, the same document as `gout.json` |
+| `import` | `im` | `FILE.json [-s \| -t]` | apply a document: settings and tracks, or only one of them |
+| `rebuild` | `rb` | `[-f]` | recreate `gout.db` from `master/`, restoring state from `gout.json` when present |
 | `set` | `se` | `KEY VALUE` | settings; `set` alone lists them all (see the master bus below) |
 | `stats` | `st` | | integrated LUFS, loudness range and true peak per track file, and for `master.wav` |
 | `cheat` | `c` | | the cheat sheet |

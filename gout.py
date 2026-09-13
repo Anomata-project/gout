@@ -28,6 +28,7 @@ from pathlib import Path
 __version__ = "2.0.0"
 
 DB_NAME = "gout.db"
+SIDECAR = "gout.json"  # the readable copy of the state, rewritten after every change
 TRACK_DIR = "master"
 MASTER_WAV = "master.wav"
 MASTER_MP3 = "master.mp3"
@@ -681,6 +682,32 @@ class Project:
                 self.conn.execute("UPDATE history SET created = ? WHERE id = (SELECT MAX(id) FROM history)",
                                   (json.dumps(files),))
 
+    def document(self) -> dict:
+        return {"gout": __version__, **self.snapshot()}
+
+    def sync_json(self) -> None:
+        """Write gout.json next to the database whenever the state it describes changed."""
+        text = json.dumps(self.document(), indent=2) + "\n"
+        path = self.root / SIDECAR
+        try:
+            if path.exists() and path.read_text() == text:
+                return
+            tmp = path.with_name(SIDECAR + ".part")
+            tmp.write_text(text)
+            tmp.replace(path)
+        except OSError as exc:
+            print(f"      could not write {SIDECAR}: {exc}", file=sys.stderr)
+
+    def reorder(self, files: list[str]) -> None:
+        """Number the tracks so those in `files` come first, in that order."""
+        tracks = self.tracks()
+        ranked = sorted(tracks, key=lambda t: (files.index(t["file"]) if t["file"] in files
+                                               else len(files) + t["n"]))
+        with self.conn:
+            self.conn.execute("UPDATE tracks SET n = -n")
+            for new, t in enumerate(ranked, 1):
+                self.conn.execute("UPDATE tracks SET n = ? WHERE n = ?", (new, -t["n"]))
+
     def restore(self, snap: dict) -> None:
         with self.conn:
             self.conn.execute("DELETE FROM tracks")
@@ -1070,6 +1097,7 @@ def cmd_new(root_hint: Path | None, args: Args) -> None:
     if (root / DB_NAME).exists():
         die(f"{root / DB_NAME} already exists")
     project = Project.create(root, int(rate_txt))
+    project.sync_json()
     print(f"new   {project.root}  ({project.rate} Hz, tracks go in {TRACK_DIR}/)")
 
 
@@ -1474,6 +1502,102 @@ def cmd_stems(project: Project, args: Args) -> None:
         print(f"      summed at unity they give {MASTER_WAV} exactly")
 
 
+def apply_document(project: Project, data: dict, settings: bool = True, tracks: bool = True,
+                   verbose: bool = False) -> tuple[int, int, list[str]]:
+    """Apply a gout.json document to the project. Returns (settings, tracks applied, warnings)."""
+    warnings: list[str] = []
+    n_settings = 0
+    if settings:
+        for key, value in (data.get("project") or {}).items():
+            if key in ("name", "created") or key.startswith(("master_", "ui_")):
+                continue
+            if key == "automix":
+                key = "autorender"
+            if key not in ("rate", "autorender") and key not in MASTER_DEFAULTS:
+                continue  # something a newer or older gout knew about
+            try:
+                k, v = parse_setting(key, str(value))
+            except GoutError as exc:
+                warnings.append(f"{key}: {exc}")
+                continue
+            project.set(k, v)
+            n_settings += 1
+    n_tracks = 0
+    if tracks:
+        order: list[str] = []
+        for item in data.get("tracks") or []:
+            if not isinstance(item, dict):
+                continue
+            file, name = item.get("file"), item.get("name")
+            current = project.tracks()
+            t = next((x for x in current if x["file"] == file), None) or \
+                next((x for x in current if x["name"] == name), None)
+            if t is None:
+                path = project.tracks_dir / file if file else None
+                if path is not None and path.is_file():
+                    t, _ = ingest(project, path, name, 0, verbose)
+                else:
+                    warnings.append(f"{name or file}: no such file in {TRACK_DIR}/, skipped")
+                    continue
+            fields: dict = {}
+            try:
+                if item.get("offset_ms") is not None:
+                    fields["offset_ms"] = int(item["offset_ms"])
+                if item.get("in_ms") is not None:
+                    fields["in_ms"] = max(0, min(int(item["in_ms"]), t["length_ms"] - 1))
+                if "out_ms" in item:
+                    out = item["out_ms"]
+                    fields["out_ms"] = None if out is None or int(out) >= t["length_ms"] else int(out)
+                if item.get("gain_db") is not None:
+                    fields["gain_db"] = max(-60.0, min(24.0, float(item["gain_db"])))
+                if item.get("pan") is not None:
+                    fields["pan"] = max(-1.0, min(1.0, float(item["pan"])))
+                for flag in ("mute", "solo"):
+                    if item.get(flag) is not None:
+                        fields[flag] = 1 if item[flag] else 0
+            except (TypeError, ValueError) as exc:
+                warnings.append(f"{t['name']}: bad value ({exc}), skipped")
+                continue
+            in_ms = fields.get("in_ms", t["in_ms"])
+            out_ms = fields.get("out_ms", t["out_ms"])
+            if out_ms is not None and out_ms <= in_ms:
+                fields["out_ms"] = None
+            if fields:
+                project.update(t["n"], **fields)
+            order.append(t["file"])
+            n_tracks += 1
+        if order:
+            project.reorder(order)
+    return n_settings, n_tracks, warnings
+
+
+def read_document(path: Path) -> dict:
+    if not path.is_file():
+        die(f"no such file: {path}")
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        die(f"cannot read {path}: {exc}")
+    if not isinstance(data, dict) or not ("project" in data or "tracks" in data):
+        die(f"{path} is not a gout document (expected the shape of gout dump)")
+    return data
+
+
+def cmd_import(project: Project, args: Args) -> None:
+    only_settings = args.flag("--settings", "-s")
+    only_tracks = args.flag("--tracks", "-t")
+    (path,) = args.positionals("gout import FILE.json [-s | -t]   (-s settings only, -t tracks only)", 1, 1)
+    data = read_document(Path(path).expanduser())
+    project.record(f"import {Path(path).name}")
+    n_settings, n_tracks, warnings = apply_document(project, data, settings=not only_tracks,
+                                                    tracks=not only_settings, verbose=args.verbose)
+    print(f"import {path}  {n_settings} setting{'' if n_settings == 1 else 's'},"
+          f" {n_tracks} track{'' if n_tracks == 1 else 's'}")
+    for w in warnings:
+        print(f"      {w}")
+    autorender(project, args)
+
+
 def cmd_undo(project: Project, args: Args) -> None:
     args.positionals("gout undo")
     command = project.undo()
@@ -1505,6 +1629,7 @@ def save_as(project: Project, name: str) -> Project:
     copy = Project(dst)
     copy.set("name", dst.name)
     copy.set("created", dt.datetime.now().isoformat(timespec="seconds"))
+    copy.sync_json()
     return copy
 
 
@@ -1517,7 +1642,7 @@ def cmd_saveas(project: Project, args: Args) -> None:
 
 def cmd_dump(project: Project, args: Args) -> None:
     args.positionals("gout dump")
-    print(json.dumps(project.snapshot(), indent=2))
+    print(json.dumps(project.document(), indent=2))
 
 
 def cmd_rebuild(root_hint: Path | None, args: Args) -> None:
@@ -1534,10 +1659,20 @@ def cmd_rebuild(root_hint: Path | None, args: Args) -> None:
         db.unlink()
     project = Project.create(root, DEFAULT_RATE)
     files = sorted(p for p in tracks_dir.iterdir() if p.suffix.lower() in (".wav", ".mp3"))
-    print(f"rebuild  {root}  ({len(files)} files in {TRACK_DIR}/, every track at 0)")
+    print(f"rebuild  {root}  ({len(files)} files in {TRACK_DIR}/)")
     for path in files:
         ingest(project, path, None, 0, args.verbose)
-    if files:
+    side = root / SIDECAR
+    if side.is_file():
+        n_settings, n_tracks, warnings = apply_document(project, read_document(side), verbose=args.verbose)
+        print(f"      positions, trims and settings restored from {SIDECAR}"
+              f" ({n_settings} settings, {n_tracks} tracks)")
+        for w in warnings:
+            print(f"      {w}")
+    else:
+        print(f"      no {SIDECAR} found: every track at 0, default settings")
+    project.sync_json()
+    if files and project.autorender:
         mix(project)
 
 
@@ -1672,7 +1807,8 @@ PROJECT
  saveas sa NAME|PATH                  copy the project
  stems sm [DIR] [-A]                  one wav per track
  dump  dp                             the state as json
- rebuild rb [-f]                      gout.db from master/
+ import im FILE.json [-s|-t]          apply such a json
+ rebuild rb [-f]                      db from master/ + json
  set   se KEY VALUE                   alone: list settings
  stats st                             LUFS / dBTP per track
  new   n  NAME [-R HZ]                48000 Hz by default
@@ -1726,7 +1862,7 @@ COMMANDS = {
     "add": ("a",), "scan": ("sc",), "ls": ("l", "list"), "view": ("v",), "move": ("m", "mv"), "trim": ("t",),
     "rm": ("r", "remove", "del"), "mute": ("mu",), "solo": ("s",), "gain": ("g",), "pan": ("p",),
     "mix": ("x", "render", "bounce"), "undo": ("u",), "dump": ("dp",), "rebuild": ("rb",),
-    "set": ("se",), "stats": ("st",), "saveas": ("sa", "copy"), "stems": ("sm",), "new": ("n",), "cheat": ("c",), "help": ("h", "?"), "ui": ("tui",), "cut": (),
+    "set": ("se",), "stats": ("st",), "saveas": ("sa", "copy"), "stems": ("sm",), "import": ("im",), "new": ("n",), "cheat": ("c",), "help": ("h", "?"), "ui": ("tui",), "cut": (),
     "quit": ("q", "exit"), "clear": ("cl",), "split": ("sp",), "sheet": ("sh",),
 }
 ALIASES = {alias: name for name, aliases in COMMANDS.items() for alias in aliases}
@@ -2346,8 +2482,12 @@ PROJECT
   gout saveas sa NAME | PATH      copy the whole project (files included) next to this one, or to PATH
   gout stems sm [DIR] [-A]        one wav per track, trimmed, placed, gained and panned as in the mix,
                                   all the same length from 0:00, into {STEMS_DIR}/ (-A: only what the mix hears)
-  gout dump  dp                   print the project state as JSON
-  gout rebuild rb [-f]            recreate {DB_NAME} from the files in {TRACK_DIR}/, every track at 0
+  gout dump  dp                   print the project state as JSON: the same document gout keeps in
+                                  {SIDECAR} next to the database, rewritten after every change
+  gout import im FILE.json [-s|-t]  apply such a document: settings, and tracks matched by file name
+                                  (-s settings only, e.g. a master template; -t tracks only)
+  gout rebuild rb [-f]            recreate {DB_NAME} from the files in {TRACK_DIR}/, then restore positions,
+                                  trims and settings from {SIDECAR} when it is there
   gout set   se KEY VALUE         settings; gout set alone lists them:  autorender on|off,  rate HZ
   gout stats st                   integrated LUFS, LRA and true peak per track file, and for {MASTER_WAV}
 
@@ -2543,7 +2683,7 @@ PROJECT_COMMANDS = {
     "add": cmd_add, "scan": cmd_scan, "ls": cmd_ls, "move": cmd_move, "trim": cmd_trim, "rm": cmd_rm,
     "mute": cmd_mute, "solo": cmd_solo, "gain": cmd_gain, "pan": cmd_pan,
     "set": cmd_set, "stats": cmd_stats, "mix": cmd_mix, "undo": cmd_undo, "dump": cmd_dump,
-    "saveas": cmd_saveas, "stems": cmd_stems,
+    "saveas": cmd_saveas, "stems": cmd_stems, "import": cmd_import,
     "view": cmd_view, "ui": cmd_ui,
 }
 FREE_COMMANDS = {"new": cmd_new, "rebuild": cmd_rebuild, "cheat": cmd_cheat}
@@ -2596,6 +2736,7 @@ def run(argv: list[str], project: Project | None = None) -> int:
         if found is None:
             die(f"not inside a gout project (no {DB_NAME} here or above) — gout new NAME")
         PROJECT_COMMANDS[head](found, Args(rest))
+        found.sync_json()
         return 0
     if head == "cut":
         cmd_cut(rest)
