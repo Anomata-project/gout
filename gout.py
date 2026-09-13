@@ -474,7 +474,9 @@ CREATE TABLE IF NOT EXISTS tracks (
     gain_db     REAL NOT NULL DEFAULT 0,
     pan         REAL NOT NULL DEFAULT 0,
     mute        INTEGER NOT NULL DEFAULT 0,
-    solo        INTEGER NOT NULL DEFAULT 0
+    solo        INTEGER NOT NULL DEFAULT 0,
+    eq          TEXT NOT NULL DEFAULT '',
+    eq_on       INTEGER NOT NULL DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS envelopes (
     file  TEXT PRIMARY KEY,
@@ -497,7 +499,7 @@ CREATE TABLE IF NOT EXISTS history (
 """
 
 TRACK_COLUMNS = ("n", "name", "file", "kind", "length_ms", "channels", "sample_rate",
-                 "offset_ms", "in_ms", "out_ms", "gain_db", "pan", "mute", "solo")
+                 "offset_ms", "in_ms", "out_ms", "gain_db", "pan", "mute", "solo", "eq", "eq_on")
 
 
 class Project:
@@ -514,6 +516,10 @@ class Project:
         if "created" not in {r[1] for r in self.conn.execute("PRAGMA table_info(history)")}:
             with self.conn:  # databases from before the column existed
                 self.conn.execute("ALTER TABLE history ADD COLUMN created TEXT NOT NULL DEFAULT '[]'")
+        if "eq" not in {r[1] for r in self.conn.execute("PRAGMA table_info(tracks)")}:
+            with self.conn:
+                self.conn.execute("ALTER TABLE tracks ADD COLUMN eq TEXT NOT NULL DEFAULT ''")
+                self.conn.execute("ALTER TABLE tracks ADD COLUMN eq_on INTEGER NOT NULL DEFAULT 1")
         if "lufs" not in {r[1] for r in self.conn.execute("PRAGMA table_info(envelopes)")}:
             with self.conn:
                 for col in ("lufs", "tp", "lra"):
@@ -807,6 +813,107 @@ def tag_args(project: "Project") -> list[str]:
     return out
 
 
+# --------------------------------------------------------------------------- eq
+#
+# A track's eq is one line of bands:  hp80  lp12k  hp80/24  +3@200  -4@2.5k/3  ls100:+2  hs8k:-3
+# (cuts with a slope in dB per octave, peaks as gain@frequency/Q, shelves as frequency:gain).
+
+EQ_SLOPES = {6: (1,), 12: (2,), 18: (2, 1), 24: (2, 2), 36: (2, 2, 2), 48: (2, 2, 2, 2)}
+EQ_SHELF_Q = 0.707
+EQ_MAX_BANDS = 16
+EQ_SYNTAX = "hp80  lp12k  hp80/24  +3@200  -4@2.5k/3  ls100:+2  hs8k:-3"
+
+
+def parse_hz(text: str) -> float:
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)(k?)", text.lower())
+    if not m:
+        raise ValueError(f"bad frequency {text!r} (80, 2.5k, 12k)")
+    f = float(m.group(1)) * (1000 if m.group(2) else 1)
+    if not 10 <= f <= 22000:
+        raise ValueError(f"frequency {text} is outside 10 Hz .. 22 kHz")
+    return f
+
+
+def fmt_hz(f: float) -> str:
+    return f"{f / 1000:g}k" if f >= 1000 else f"{f:g}"
+
+
+def parse_band(token: str) -> dict:
+    t = token.lower()
+    m = re.fullmatch(r"(hp|lp)(\d+(?:\.\d+)?k?)(?:/(\d+))?", t)
+    if m:
+        slope = int(m.group(3) or 12)
+        if slope not in EQ_SLOPES:
+            raise ValueError(f"slope {slope} in {token!r}: use 6, 12, 18, 24, 36 or 48 dB per octave")
+        return {"type": m.group(1), "f": parse_hz(m.group(2)), "slope": slope}
+    m = re.fullmatch(r"([+-]?\d+(?:\.\d+)?)@(\d+(?:\.\d+)?k?)(?:/(\d+(?:\.\d+)?))?", t)
+    if m:
+        g, q = float(m.group(1)), float(m.group(3) or 1)
+        if not -24 <= g <= 24:
+            raise ValueError(f"gain {g:+g} in {token!r}: keep it within ±24 dB")
+        if not 0.1 <= q <= 20:
+            raise ValueError(f"Q {q:g} in {token!r}: use 0.1 .. 20")
+        return {"type": "peak", "f": parse_hz(m.group(2)), "g": g, "q": q}
+    m = re.fullmatch(r"(ls|hs)(\d+(?:\.\d+)?k?):([+-]?\d+(?:\.\d+)?)", t)
+    if m:
+        g = float(m.group(3))
+        if not -24 <= g <= 24:
+            raise ValueError(f"gain {g:+g} in {token!r}: keep it within ±24 dB")
+        return {"type": m.group(1), "f": parse_hz(m.group(2)), "g": g}
+    raise ValueError(f"bad band {token!r}; bands look like  {EQ_SYNTAX}")
+
+
+def fmt_band(b: dict) -> str:
+    if b["type"] in ("hp", "lp"):
+        return f"{b['type']}{fmt_hz(b['f'])}" + (f"/{b['slope']}" if b["slope"] != 12 else "")
+    if b["type"] == "peak":
+        return f"{b['g']:+g}@{fmt_hz(b['f'])}" + (f"/{b['q']:g}" if b["q"] != 1 else "")
+    return f"{b['type']}{fmt_hz(b['f'])}:{b['g']:+g}"
+
+
+def parse_eq(text: str) -> list[dict]:
+    """Bands from a line of tokens, in a fixed order: hp, lp, then the rest as written."""
+    bands = [parse_band(tok) for tok in text.split()]
+    cuts = {}
+    rest = []
+    for b in bands:
+        if b["type"] in ("hp", "lp"):
+            cuts[b["type"]] = b  # the last hp or lp wins
+        else:
+            rest.append(b)
+    if len(rest) > EQ_MAX_BANDS:
+        raise ValueError(f"more than {EQ_MAX_BANDS} bands")
+    return [cuts[k] for k in ("hp", "lp") if k in cuts] + rest
+
+
+def fmt_eq(bands: list[dict]) -> str:
+    return " ".join(fmt_band(b) for b in bands)
+
+
+def eq_filters(bands: list[dict]) -> list[str]:
+    out: list[str] = []
+    for b in bands:
+        if b["type"] in ("hp", "lp"):
+            name = "highpass" if b["type"] == "hp" else "lowpass"
+            out += [f"{name}=f={b['f']:g}:poles={poles}" for poles in EQ_SLOPES[b["slope"]]]
+        elif b["type"] == "peak":
+            out.append(f"equalizer=f={b['f']:g}:t=q:w={b['q']:g}:g={b['g']:g}")
+        else:
+            name = "lowshelf" if b["type"] == "ls" else "highshelf"
+            out.append(f"{name}=f={b['f']:g}:t=q:w={EQ_SHELF_Q}:g={b['g']:g}")
+    return out
+
+
+def track_eq(t: dict) -> list[dict]:
+    """The stored bands of a track, if its eq is on."""
+    if not t.get("eq") or not t.get("eq_on", 1):
+        return []
+    try:
+        return parse_eq(t["eq"])
+    except ValueError:
+        return []
+
+
 # --------------------------------------------------------------------------- timeline maths
 
 
@@ -861,6 +968,7 @@ def track_steps(project: Project, t: dict) -> list[str] | None:
         steps.append("asetpts=PTS-STARTPTS")
     if delay > 0:
         steps.append(f"adelay={delay}:all=1")
+    steps += eq_filters(track_eq(t))
     if t["gain_db"]:
         steps.append(f"volume={t['gain_db']:.2f}dB")
     steps.append(pan_filter(t["channels"], t["pan"]))
@@ -1208,6 +1316,8 @@ def cmd_ls(project: Project, args: Args) -> None:
         flags = ("M" if t["mute"] else "-") + ("S" if t["solo"] else "-")
         if not is_heard(t, any_solo):
             flags += " (silent)"
+        if t["eq"]:
+            flags += f"  eq {t['eq']}" + ("" if t["eq_on"] else " (off)")
         print(f"{t['n']:>4}  {t['name']:<16} {t['kind']:<4} {t['channels']:>2}  {fmt_ms(start):<12} "
               f"{fmt_ms(b - a):<12} {fmt_ms(t['length_ms']):<12} {trim:<27} "
               f"{fmt_db(t['gain_db']):<7} {fmt_pan(t['pan']):<4} {flags}")
@@ -1394,6 +1504,73 @@ def cmd_pan(project: Project, args: Args) -> None:
 SET_USAGE = "gout set KEY VALUE   (gout set alone lists the keys and their values)"
 
 
+EQ_USAGE = (f"gout eq TRACK [BANDS... | on | off | clear]\n       bands: {EQ_SYNTAX}\n"
+            "       hp/lp: cut with a slope in dB per octave (12 by default); +3@200: a peak of +3 dB at 200 Hz,\n"
+            "       /3 sets its Q; ls100:+2 and hs8k:-3 are shelves")
+
+
+def eq_line(t: dict) -> str:
+    text = t["eq"] or "flat"
+    if t["eq"] and not t["eq_on"]:
+        text += "  (off: bypassed, eq TRACK on brings it back)"
+    return f"eq    {t['n']:>2}  {t['name']:<16} {text}"
+
+
+def cmd_eq(project: Project, args: Args) -> None:
+    pos = args.positionals(EQ_USAGE, 1)
+    t = project.track(pos[0])
+    words = pos[1:]
+    if not words:
+        print(eq_line(t))
+        return
+    if words == ["off"]:
+        project.record(f"eq {t['name']} off")
+        project.update(t["n"], eq_on=0)
+    elif words == ["on"]:
+        project.record(f"eq {t['name']} on")
+        project.update(t["n"], eq_on=1)
+    elif words == ["clear"]:
+        project.record(f"eq {t['name']} clear")
+        project.update(t["n"], eq="", eq_on=1)
+    else:
+        try:
+            bands = parse_eq(" ".join(words))
+        except ValueError as exc:
+            die(f"{exc}\n{EQ_USAGE}")
+        project.record(f"eq {t['name']} {' '.join(words)}")
+        project.update(t["n"], eq=fmt_eq(bands), eq_on=1)
+    print(eq_line(project.track(str(t["n"]))))
+    autorender(project, args)
+
+
+def _cut(project: Project, args: Args, kind: str) -> None:
+    pos = args.positionals(f"gout {kind} TRACK HZ [SLOPE] | off     e.g. {kind} 3 {'80' if kind == 'hp' else '12k'}"
+                           f"  ({kind} 3 80 24 for 24 dB per octave)", 2, 3)
+    t = project.track(pos[0])
+    try:
+        bands = [b for b in parse_eq(t["eq"]) if b["type"] != kind]
+        if pos[1].lower() != "off":
+            slope = int(pos[2]) if len(pos) > 2 else 12
+            if slope not in EQ_SLOPES:
+                raise ValueError(f"slope {pos[2]}: use 6, 12, 18, 24, 36 or 48 dB per octave")
+            bands.append({"type": kind, "f": parse_hz(pos[1]), "slope": slope})
+        bands = parse_eq(fmt_eq(bands))  # canonical order
+    except ValueError as exc:
+        die(str(exc))
+    project.record(f"{kind} {t['name']} {' '.join(pos[1:])}")
+    project.update(t["n"], eq=fmt_eq(bands), eq_on=1)
+    print(eq_line(project.track(str(t["n"]))))
+    autorender(project, args)
+
+
+def cmd_hp(project: Project, args: Args) -> None:
+    _cut(project, args, "hp")
+
+
+def cmd_lp(project: Project, args: Args) -> None:
+    _cut(project, args, "lp")
+
+
 def cmd_set(project: Project, args: Args) -> None:
     pos = args.positionals(SET_USAGE, 0, 2)
     if not pos:
@@ -1552,9 +1729,14 @@ def apply_document(project: Project, data: dict, settings: bool = True, tracks: 
                     fields["gain_db"] = max(-60.0, min(24.0, float(item["gain_db"])))
                 if item.get("pan") is not None:
                     fields["pan"] = max(-1.0, min(1.0, float(item["pan"])))
-                for flag in ("mute", "solo"):
+                for flag in ("mute", "solo", "eq_on"):
                     if item.get(flag) is not None:
                         fields[flag] = 1 if item[flag] else 0
+                if item.get("eq") is not None:
+                    try:
+                        fields["eq"] = fmt_eq(parse_eq(str(item["eq"])))
+                    except ValueError as exc:
+                        warnings.append(f"{t['name']}: eq ignored ({exc})")
             except (TypeError, ValueError) as exc:
                 warnings.append(f"{t['name']}: bad value ({exc}), skipped")
                 continue
@@ -1800,6 +1982,9 @@ MIXER
  solo  s  TRACK [on|off]              solo all off
  gain  g  TRACK -6                    dB, -60 .. +24
  pan   p  TRACK L30 | R30 | C         all start at C
+ hp/lp    TRACK 80 [24] | off         cuts, slope dB/oct
+ eq    e  TRACK hp80 +3@200 hs8k:-2   peaks gain@hz/q
+ eq    e  TRACK on | off | clear      shelves ls100:+2
  mix   x  [-3] [-v]                   -3 also master.mp3
 PROJECT
  undo  u                              not hard trim / rm -D
@@ -1860,7 +2045,7 @@ def cmd_cheat(root_hint: Path | None, args: Args) -> None:
 # long name -> the short form and the other spellings; every command works under all of them
 COMMANDS = {
     "add": ("a",), "scan": ("sc",), "ls": ("l", "list"), "view": ("v",), "move": ("m", "mv"), "trim": ("t",),
-    "rm": ("r", "remove", "del"), "mute": ("mu",), "solo": ("s",), "gain": ("g",), "pan": ("p",),
+    "rm": ("r", "remove", "del"), "mute": ("mu",), "solo": ("s",), "gain": ("g",), "pan": ("p",), "eq": ("e",), "hp": (), "lp": (),
     "mix": ("x", "render", "bounce"), "undo": ("u",), "dump": ("dp",), "rebuild": ("rb",),
     "set": ("se",), "stats": ("st",), "saveas": ("sa", "copy"), "stems": ("sm",), "import": ("im",), "new": ("n",), "cheat": ("c",), "help": ("h", "?"), "ui": ("tui",), "cut": (),
     "quit": ("q", "exit"), "clear": ("cl",), "split": ("sp",), "sheet": ("sh",),
@@ -2146,6 +2331,8 @@ class Tui:
             row(f"t{n}:pan", "pan", fmt_pan(t["pan"]), lambda v, n=n: ["pan", n, v], "L30 | C | R30")
             row(f"t{n}:mute", "mute", "on" if t["mute"] else "off", lambda v, n=n: ["mute", n, v], "on | off")
             row(f"t{n}:solo", "solo", "on" if t["solo"] else "off", lambda v, n=n: ["solo", n, v], "on | off")
+            row(f"t{n}:eq", "eq", (t["eq"] or "flat") + ("" if t["eq_on"] else " (off)"),
+                lambda v, n=n: ["eq", n, *v.split()], "hp80 +3@200 hs8k:-2 | off | clear")
         return rows
 
     def sheet_open(self) -> None:
@@ -2516,6 +2703,11 @@ TRACKS   (TRACK is the number shown by ls, or the track name)
   gout solo  s  TRACK [on|off]               toggle solo        (solo all off)
   gout gain  g  TRACK DB                     gain 2 -6
   gout pan   p  TRACK C | L30 | R30          balance; every track starts centred, 50/50
+  gout hp       TRACK HZ [SLOPE] | off       high-pass cut, e.g. hp 3 80, hp 3 80 24 (dB per octave)
+  gout lp       TRACK HZ [SLOPE] | off       low-pass cut, e.g. lp 3 12k
+  gout eq    e  TRACK BANDS...               the whole eq in one line, before the fader:
+                                             {EQ_SYNTAX}
+  gout eq    e  TRACK on | off | clear       bypass, bring back, or remove;  eq TRACK shows it
   -N (--no-mix) on any of these skips the automatic re-mix; -p DIR before a command picks
   the project. Long flags: --at --name --hard --clear --reencode --delete --mp3 --rate --width
 
@@ -2682,6 +2874,7 @@ def cmd_cut(argv: list[str]) -> None:
 PROJECT_COMMANDS = {
     "add": cmd_add, "scan": cmd_scan, "ls": cmd_ls, "move": cmd_move, "trim": cmd_trim, "rm": cmd_rm,
     "mute": cmd_mute, "solo": cmd_solo, "gain": cmd_gain, "pan": cmd_pan,
+    "eq": cmd_eq, "hp": cmd_hp, "lp": cmd_lp,
     "set": cmd_set, "stats": cmd_stats, "mix": cmd_mix, "undo": cmd_undo, "dump": cmd_dump,
     "saveas": cmd_saveas, "stems": cmd_stems, "import": cmd_import,
     "view": cmd_view, "ui": cmd_ui,
