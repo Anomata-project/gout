@@ -66,6 +66,21 @@ def render_panel(project: "Project", t: dict, width: int, height: int, kind: str
     return effect_picture(project, t, eff, item, min(width, hi), height)
 
 
+def panel_head(t: dict, kind: str) -> str:
+    """The effect panel's name line without its pictures: the effect and its settings, and the
+    one after it in the chain, the pair the pictures would show. Cheap: nothing is drawn."""
+    items = t.get("fx", [])
+    at = next((i for i, it in enumerate(items) if it["kind"] == kind), None)
+    if at is None:
+        return f"{kind} none"
+    parts = []
+    for it in [items[at]] + [it for it in items[at + 1:] if effect(it["kind"]) is not None][:1]:
+        eff = effect(it["kind"])
+        text = f"{it['kind']} {it['params'] or (eff.empty if eff else '')}".rstrip()
+        parts.append(text + ("" if it["on"] else "  (off)"))
+    return "   ".join(parts)
+
+
 LABEL_W = 15  # " n name      MS"
 
 
@@ -397,7 +412,7 @@ KEY_SECTIONS = [
     ("KEYS", "", [
         ("ctrl-u", "timeline on and off"),
         ("ctrl-k", "cheat sheet on and off"),
-        ("ctrl-g", "effect panel on and off (eq N, comp N pick the track)"),
+        ("ctrl-g", "effect pictures on and off; the name line stays (eq N, comp N pick the track)"),
         ("ctrl-e", "the parameter sheet"),
         ("tab shift-tab", "on an empty line: flip the cheat sheet"),
         ("ctrl-n ctrl-p", "the cheat sheet a line at a time"),

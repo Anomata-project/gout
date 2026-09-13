@@ -185,6 +185,45 @@ class UiTest(GoutTest):
         ui.draw()
         self.assertLess(ui.sheet_len, narrow)
 
+    def test_ctrl_g_hides_the_effect_pictures_but_keeps_the_name_line(self):
+        root = self.project("song", "bass.wav")
+        project, screen, ui = self.open_ui(root)
+
+        def panel():
+            ui.draw()
+            rows = [screen.row(y) for y in range(screen.h)]
+            head = next(y for y, row in enumerate(rows) if "1 bass  eq" in row)
+            sheet = next(y for y, row in enumerate(rows) if y > head and "cheat sheet  " in row)
+            return rows[head], sheet - head - 1  # the name line, and how many picture rows under it
+
+        ui.input = "eq 1 hp80"
+        ui.submit()
+        head, pictures = panel()
+        self.assertIn("eq hp80", head)
+        self.assertIn("ctrl-g hides", head)
+        self.assertGreater(pictures, 3)
+
+        ui.handle("\x07")
+        head, pictures = panel()
+        self.assertIn("eq hp80", head)
+        self.assertIn("ctrl-g shows", head)
+        self.assertEqual(pictures, 0)
+        self.assertEqual(project.get("ui_fx_pictures"), "off")
+
+        ui.input = "eq 1 hp120"  # changing the effect updates the name line, the pictures stay hidden
+        ui.submit()
+        head, pictures = panel()
+        self.assertIn("eq hp120", head)
+        self.assertEqual(pictures, 0)
+
+        Tui = gout_attr("tui", "Tui")
+        self.assertFalse(Tui(project, FakeScreen()).show_panel)  # remembered per project
+
+        ui.handle("\x07")
+        head, pictures = panel()
+        self.assertIn("ctrl-g hides", head)
+        self.assertGreater(pictures, 3)
+
     def test_grey_suggestion_is_taken_with_the_right_arrow(self):
         root = self.project("song", "bass.wav")
         project, screen, ui = self.open_ui(root)

@@ -17,7 +17,7 @@ from .core import __version__, fmt_ms, fmt_pan, GoutError, is_master, MASTER_N, 
 from .model import audible, timeline
 from .fx import effect, effects, GUTTER, resolve
 from .settings import MASTER_DEFAULTS, master_track, setting
-from .render import CHEAT_HEADINGS, cheat_layout, LABEL_W, render_cheat, render_panel, render_timeline
+from .render import CHEAT_HEADINGS, cheat_layout, LABEL_W, panel_head, render_cheat, render_panel, render_timeline
 from .helptext import help_text
 from .commands import save_as, slot_of
 from .cli import aliases, command_table, run
@@ -74,7 +74,7 @@ class Tui:
         self.saveas_name: str | None = None  # the "save as:" field in the sheet while it is open
         self.panel_track: int | None = None  # the track (0: master) whose effect the panel shows
         self.panel_kind = "eq"               # which effect: the one last touched
-        self.show_panel = True
+        self.show_panel = (project.get("ui_fx_pictures") or "on") != "off"  # the pictures; the name line always shows
         self.show_timeline = (project.get("ui_timeline") or "on") != "off"
         self.show_cheat = (project.get("ui_cheat") or "on") != "off"
         split = project.get("ui_split") or "40"
@@ -218,8 +218,8 @@ class Tui:
                     state += "   rendering master.wav…"
                 self.put(0, right_x, (" timeline" + state).ljust(right_w), self.palette.attr("header"))
                 room = max(3, h - 2 - 6) if self.show_cheat else max(3, h - 1)  # the cheat sheet keeps six lines
-                if self.show_panel and self.panel_track is not None:
-                    room = max(3, room - (10 if h >= 32 else 8))
+                if self.panel_track is not None:
+                    room = max(3, room - ((10 if h >= 32 else 8) if self.show_panel else 1))
                 rows = render_timeline(p, right_w, styled=True, playhead_ms=where if (self.player or where) else None,
                                        max_rows=room, theme=self.theme)
                 for y, (label, cells, kind, classes, role) in enumerate(rows, 1):
@@ -229,17 +229,19 @@ class Tui:
                     self.draw_cells(y, right_x + LABEL_W + 1, cells, kind, classes)
                 top = 1 + len(rows)
 
-        if right_x is not None and self.show_panel and self.panel_track is not None:
+        if right_x is not None and self.panel_track is not None:
             track = master_track(p) if self.panel_track == MASTER_N else \
                 next((t for t in tracks if t["n"] == self.panel_track), None)
             if track is None:
                 self.panel_track = None
             else:
                 height = 8 if h >= 32 else 6
-                rows = render_panel(p, track, right_w - 1, height, self.panel_kind)
+                rows = (render_panel(p, track, right_w - 1, height, self.panel_kind) if self.show_panel
+                        else [(panel_head(track, self.panel_kind), "", "head")])
                 who = "master" if self.panel_track == MASTER_N else f"{track['n']} {track['name']}"
-                self.put(top, right_x, (f" {who}  " + rows[0][0])[:right_w - 15].ljust(right_w - 15)
-                         + "  ctrl-g hides", self.palette.attr("header"))
+                hint = "  ctrl-g hides" if self.show_panel else "  ctrl-g shows"
+                self.put(top, right_x, (f" {who}  " + rows[0][0])[:right_w - len(hint)].ljust(right_w - len(hint))
+                         + hint, self.palette.attr("header"))
                 for i, (text, classes, kind) in enumerate(rows[1:], 1):
                     if top + i >= h:
                         break
@@ -814,11 +816,13 @@ class Tui:
             if not tracks:
                 self.log.append("no tracks yet, nothing to show an effect for")
                 return
-            self.panel_track, self.show_panel = tracks[0]["n"], True
+            self.panel_track = tracks[0]["n"]
             if tracks[0]["fx"]:
                 self.panel_kind = tracks[0]["fx"][0]["kind"]
-        else:
-            self.show_panel = not self.show_panel
+            if self.show_panel:
+                return
+        self.show_panel = not self.show_panel  # the pictures only: the name line stays
+        self.project.set("ui_fx_pictures", "on" if self.show_panel else "off")
 
     def follow(self, head: str, argv: list[str]) -> None:
         """Point the effect panel at what an effect command just touched."""
@@ -843,8 +847,8 @@ class Tui:
         else:
             eff = resolve(head)
             kind = eff.name if eff else None
-        if kind:
-            self.panel_track, self.panel_kind, self.show_panel = t["n"], kind, True
+        if kind:  # the pictures stay as ctrl-g left them
+            self.panel_track, self.panel_kind = t["n"], kind
 
     def toggle(self, what: str) -> None:
         """Show or hide one section of the right panel; remembered per project."""
@@ -907,10 +911,10 @@ class Tui:
                 self.log.append("stop  playhead back to the start")
         elif is_effect and head != "fx" and len(argv) == 1:
             kind = resolve(head).name
-            if self.panel_track is not None and self.show_panel and self.panel_kind != kind:
-                self.panel_kind = kind  # switch the panel to that effect rather than hiding it
+            if self.panel_track is not None and self.panel_kind != kind:
+                self.panel_kind = kind  # switch the panel to that effect rather than hiding its pictures
             else:
-                if self.panel_track is None or not self.show_panel:
+                if self.panel_track is None:
                     self.panel_kind = kind
                 self.toggle_panel()
         elif head == "clear":

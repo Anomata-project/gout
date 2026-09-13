@@ -354,7 +354,8 @@ highpass, lowpass, equalizer, lowshelf and highshelf filters.
 `gout eq 3` draws the frequency response from 20 Hz to 20 kHz on a log axis, with the track's own
 average spectrum dimmed behind it, so you see what you are cutting. In the ui the same picture
 sits in the right panel and follows whichever track you last touched with `eq`, `hp` or `lp`;
-`ctrl-g` or `eq` alone hides and shows it.
+`ctrl-g` or `eq` alone hides and shows the pictures. The name line with the effect and its
+settings stays, and keeps following your changes; the choice is remembered per project.
 
 Presets: `voice`, `podcast`, `warm`, `air`, `bright`, `mud`, `clean`, `phone`, `bass`, `kick`,
 `guitar`, `flat`. A preset expands to ordinary bands, so what you see in `ls` and the sheet is
