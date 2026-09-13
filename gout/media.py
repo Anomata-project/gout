@@ -398,6 +398,6 @@ def measure_loudness(path: Path, target: float = -23.0, ceiling: float = -1.0) -
 
 
 def fmt_lufs(m: dict | None) -> str:
-    if not m or m["i"] == float("-inf") or m["i"] < -70:
+    if not m or m["i"] == float("-inf") or m["i"] <= -70:
         return "silent"
     return f"{m['i']:.1f} LUFS  LRA {m['lra']:.1f}  peak {m['tp']:+.1f} dBTP"

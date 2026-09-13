@@ -126,6 +126,16 @@ def build_graph(project: "Project", tracks: list[dict], warnings: set[str] | Non
     return inputs, ";".join(chains), used
 
 
+def ebur128_summary(stderr: str) -> dict | None:
+    """Integrated loudness, loudness range and true peak from ffmpeg's ebur128 summary."""
+    summary = stderr[stderr.rfind("Summary:"):] if "Summary:" in stderr else ""
+    found = {key: re.search(pattern, summary) for key, pattern in
+             (("i", r"I:\s+(-?[\d.]+|-inf) LUFS"), ("lra", r"LRA:\s+(-?[\d.]+) LU"), ("tp", r"Peak:\s+(-?[\d.]+|-inf) dBFS"))}
+    if not all(found.values()):
+        return None
+    return {key: float(m.group(1)) for key, m in found.items()}
+
+
 def mix(project: Project, verbose: bool = False, mp3: bool = False) -> None:
     tracks = project.tracks()
     state = project.state_fingerprint()  # what this render will sound like, for play to compare
@@ -168,8 +178,9 @@ def mix(project: Project, verbose: bool = False, mp3: bool = False) -> None:
         lufs = setting(project, "lufs")
         target = None if lufs == "off" else float(lufs)
         ceiling = float(setting(project, "ceiling"))
-        measured = measure_loudness(raw, target if target is not None else -23.0, ceiling)
-        duration = probe(raw)["duration"]
+        # only a loudness target needs the render measured before the final pass
+        measured = measure_loudness(raw, target, ceiling) if target is not None else None
+        duration = probe(raw)["duration"] if target is not None else 0.0
         chain: list[str] = []
         if target is not None and measured is None:
             how = "loudness could not be measured, left as is"
@@ -194,6 +205,7 @@ def mix(project: Project, verbose: bool = False, mp3: bool = False) -> None:
         if tail > 0:
             chain.append(f"apad=pad_dur={tail / 1000:.3f}")
         bits = setting(project, "bits")
+        chain.append("ebur128=peak=true:framelog=quiet")  # the mix line's numbers, measured while writing
         cmd = ["ffmpeg", "-hide_banner", "-nostats", "-loglevel", "info", "-y", "-i", str(raw)]
         if chain:
             cmd += ["-af", ",".join(chain)]
@@ -221,7 +233,7 @@ def mix(project: Project, verbose: bool = False, mp3: bool = False) -> None:
                 tmp.unlink()
 
     length_ms = round(probe(project.master)["duration"] * 1000)
-    got = measure_loudness(project.master)
+    got = ebur128_summary(result.stderr)
     project.set("master_ms", str(length_ms))
     for key, field in (("master_lufs", "i"), ("master_tp", "tp"), ("master_lra", "lra")):
         project.set(key, "" if got is None else f"{got[field]:.2f}")
