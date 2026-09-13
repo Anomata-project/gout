@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import math
 import json
 import re
 import shutil
 import sqlite3
 import subprocess
 import sys
+from array import array
 from pathlib import Path
 
 __version__ = "2.0.0"
@@ -291,6 +293,120 @@ def cut_to_size(src: Path, dst: Path, start: float, limit: int, remaining: float
         cut(src, dst, start, best[0], reencode, bitrate, verbose)
         best = (best[0], dst.stat().st_size)
     return best
+
+
+# --------------------------------------------------------------------------- mp3 frames
+#
+# ffmpeg's own -ss on an mp3 with -c copy lands 90-115 ms late (measured, any length,
+# CBR or VBR), which is too sloppy to keep a hard-trimmed track aligned. So hard trims
+# of mp3 walk the frames in Python and copy whole frames: the removed head is then a
+# known number of frames, and the ffmpeg pass afterwards only adds the Xing header and
+# carries the tags. What ffmpeg's decoder skips at the start of a file depends on the
+# LAME tag: delay+529 samples when the tag exists, nothing otherwise; the new file gets
+# a tag with delay 0, so the audio moves by exactly the old delay (or -529 samples).
+
+MP3_KBPS = {
+    1: (0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320),  # MPEG-1 layer III
+    2: (0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160),      # MPEG-2 / 2.5
+}
+MP3_RATES = {3: (44100, 48000, 32000), 2: (22050, 24000, 16000), 0: (11025, 12000, 8000)}
+MP3_DECODER_DELAY = 529
+
+
+def id3v2_size(data: bytes) -> int:
+    if data[:3] != b"ID3" or len(data) < 10:
+        return 0
+    size = (data[6] & 0x7F) << 21 | (data[7] & 0x7F) << 14 | (data[8] & 0x7F) << 7 | (data[9] & 0x7F)
+    return 10 + size + (10 if data[5] & 0x10 else 0)
+
+
+def mp3_lame_delay(data: bytes) -> int:
+    """Encoder delay from the LAME/Lavc/Lavf tag in the Xing/Info frame, or -1 without one."""
+    head = data[id3v2_size(data):][:4096]
+    for tag in (b"Xing", b"Info"):
+        i = head.find(tag)
+        if i < 0:
+            continue
+        flags = int.from_bytes(head[i + 4:i + 8], "big")
+        j = i + 8 + (4 if flags & 1 else 0) + (4 if flags & 2 else 0) \
+            + (100 if flags & 4 else 0) + (4 if flags & 8 else 0)
+        b = head[j + 21:j + 24]
+        if len(b) == 3 and head[j:j + 4] in (b"LAME", b"Lavc", b"Lavf"):
+            return (b[0] << 4) | (b[1] >> 4)
+        return -1
+    return -1
+
+
+def mp3_index(data: bytes) -> tuple[array, array, int, int]:
+    """Walk the layer III frames: (positions, sizes, sample_rate, samples_per_frame).
+
+    ID3 tags and the Xing/Info/VBRI frame are skipped; junk is scanned past.
+    """
+    pos, end = id3v2_size(data), len(data)
+    if end >= 128 and data[end - 128:end - 125] == b"TAG":
+        end -= 128
+    positions, sizes = array("Q"), array("H")
+    sr = spf = 0
+    while pos + 4 <= end:
+        if data[pos] != 0xFF or (data[pos + 1] & 0xE0) != 0xE0:
+            pos += 1
+            continue
+        b1, b2 = data[pos + 1], data[pos + 2]
+        version, layer = (b1 >> 3) & 3, (b1 >> 1) & 3
+        bri, sri, pad = b2 >> 4, (b2 >> 2) & 3, (b2 >> 1) & 1
+        if version == 1 or layer != 1 or bri in (0, 15) or sri == 3:
+            pos += 1
+            continue
+        rate = MP3_RATES[version][sri]
+        this_spf = 1152 if version == 3 else 576
+        size = this_spf // 8 * MP3_KBPS[1 if version == 3 else 2][bri] * 1000 // rate + pad
+        if pos + size > end:
+            break
+        if not sr:
+            sr, spf = rate, this_spf
+        if not positions:
+            frame = data[pos:pos + size]
+            if b"Xing" in frame or b"Info" in frame or b"VBRI" in frame:
+                pos += size  # the VBR header frame carries no audio
+                continue
+        positions.append(pos)
+        sizes.append(size)
+        pos += size
+    return positions, sizes, sr, spf
+
+
+def mp3_frame_cut(src: Path, dst: Path, a_ms: int, b_ms: int, verbose: bool) -> tuple[int, int, int]:
+    """Copy the frames covering [a_ms, b_ms) of src to dst without re-encoding.
+
+    Returns (head_ms, kept_from_ms, kept_to_ms): head_ms is how much decoded audio
+    disappeared from the front, so the track's timeline offset must grow by it.
+    """
+    data = src.read_bytes()
+    positions, sizes, sr, spf = mp3_index(data)
+    if len(positions) < 2:
+        die(f"could not read the mp3 frames of {src.name}")
+    frame_ms = spf * 1000 / sr
+    k0 = max(0, min(len(positions) - 1, int(a_ms / frame_ms)))
+    k1 = max(k0 + 1, min(len(positions), math.ceil(b_ms / frame_ms)))
+    raw = dst.with_name(dst.name + ".frames")
+    span = positions[k1 - 1] + sizes[k1 - 1] - positions[k0]
+    if span == sum(sizes[k0:k1]):  # contiguous, the normal case
+        raw.write_bytes(data[positions[k0]:positions[k0] + span])
+    else:
+        with raw.open("wb") as fh:
+            for k in range(k0, k1):
+                fh.write(data[positions[k]:positions[k] + sizes[k]])
+    try:
+        run_quiet(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(src),
+                   "-f", "mp3", "-i", str(raw), "-map", "1:a", "-map_metadata", "0",
+                   "-c:a", "copy", "-write_xing", "1", "-id3v2_version", "3", str(dst)], verbose)
+    finally:
+        raw.unlink(missing_ok=True)
+    delay = mp3_lame_delay(data)
+    # decoded_cut(y) == decoded_src(y + head): the old file skipped delay+529 samples
+    # (or none without a tag), the new one skips 529, so the head is a bit less than k0 frames
+    head = k0 * spf - (delay if delay >= 0 else -MP3_DECODER_DELAY)
+    return round(head * 1000 / sr), round(k0 * frame_ms), round(k1 * frame_ms)
 
 
 # --------------------------------------------------------------------------- project store
@@ -786,6 +902,79 @@ def cmd_move(project: Project, args: Args) -> None:
     automix(project, args)
 
 
+TRIM_USAGE = ("gout trim TRACK [-st TIME] [-et TIME | -el TIME] [--clear]     soft: file untouched\n"
+              "       gout trim TRACK --hard [-st ..] [-et ..|-el ..] [-r]       hard: rewrite the file\n"
+              "       times are measured from the start of the track's own file")
+
+
+def cmd_trim(project: Project, args: Args) -> None:
+    hard = args.flag("--hard", "-H")
+    clear = args.flag("--clear")
+    reencode = args.flag("-r", "--reencode")
+    st, et, el = args.value("-st", "--start"), args.value("-et", "--end"), args.value("-el", "--length")
+    (spec,) = args.positionals(TRIM_USAGE, 1, 1)
+    if et and el:
+        die("-et and -el are exclusive\n" + TRIM_USAGE)
+    t = project.track(spec)
+    length = t["length_ms"]
+    a, b = audible(t)
+    if clear:
+        a, b = 0, length
+    if st:
+        a = parse_ms(st)
+    if et:
+        b = parse_ms(et)
+    elif el:
+        b = a + parse_ms(el)
+    b = min(b, length)
+    if a < 0 or a >= length:
+        die(f"in point {fmt_ms(a)} is outside the file ({fmt_ms(length)} long)")
+    if b <= a:
+        die(f"out point {fmt_ms(b)} is not after the in point {fmt_ms(a)}")
+
+    if not (hard or clear or st or et or el):
+        trimmed = a > 0 or b < length
+        print(f"trim  {t['n']:>2}  {t['name']:<16} " + (f"{fmt_ms(a)} > {fmt_ms(b)}  of {fmt_ms(length)}"
+              if trimmed else f"none (whole file, {fmt_ms(length)})") + "  soft")
+        return
+
+    if not hard:
+        project.record(f"trim {t['name']} {fmt_ms(a)}>{fmt_ms(b)}")
+        project.update(t["n"], in_ms=a, out_ms=None if b >= length else b)
+        start, end = timeline({**t, "in_ms": a, "out_ms": b})
+        print(f"trim  {t['n']:>2}  {t['name']:<16} {fmt_ms(a)} > {fmt_ms(b)}  soft, {fmt_ms(b - a)} audible"
+              f"  at {fmt_ms(start)} -> {fmt_ms(end)}")
+        automix(project, args)
+        return
+
+    if a == 0 and b >= length:
+        die("nothing to cut: the whole file is already the audible part (soft-trim first, or give -st/-et)")
+    src = project.tracks_dir / t["file"]
+    tmp = src.with_name(f"{src.stem}.part{src.suffix}")
+    info = probe(src)
+    project.record(f"trim {t['name']} --hard {fmt_ms(a)}>{fmt_ms(b)}", undoable=False)
+    try:
+        if t["kind"] == "mp3" and not reencode:
+            head, snap_a, snap_b = mp3_frame_cut(src, tmp, a, b, args.verbose)
+            how = f"mp3 frames {fmt_ms(snap_a)} > {fmt_ms(snap_b)}, not re-encoded"
+        else:
+            codec = info["codec"] if info["codec"].startswith("pcm_") else "mp3"
+            cut(src, tmp, a / 1000, (b - a) / 1000, reencode, info["bitrate"], args.verbose, codec)
+            head = a
+            how = "re-encoded, exact" if t["kind"] == "mp3" else "wav, exact"
+        tmp.replace(src)
+    finally:
+        tmp.unlink(missing_ok=True)
+    new_len = round(probe(src)["duration"] * 1000)
+    offset = t["offset_ms"] + head
+    project.update(t["n"], offset_ms=offset, in_ms=0, out_ms=None, length_ms=new_len)
+    start, end = timeline({**t, "offset_ms": offset, "in_ms": 0, "out_ms": None, "length_ms": new_len})
+    print(f"trim  {t['n']:>2}  {t['name']:<16} {fmt_ms(a)} > {fmt_ms(b)}  hard ({how})")
+    print(f"      {TRACK_DIR}/{t['file']}  {fmt_ms(length)} -> {fmt_ms(new_len)}"
+          f"  at {fmt_ms(start)} -> {fmt_ms(end)}  (position kept; not undoable)")
+    automix(project, args)
+
+
 def cmd_rm(project: Project, args: Args) -> None:
     delete = args.flag("-D", "--delete")
     (spec,) = args.positionals("gout rm TRACK [-D]", 1, 1)
@@ -942,6 +1131,9 @@ PROJECT
 TRACKS   (TRACK is the number shown by ls, or the track name)
   gout add FILE... [--name N] [--at TIME]   copy wav/mp3 into {TRACK_DIR}/ (other formats become wav)
   gout move TRACK +TIME | -TIME | TIME      nudge later, nudge earlier, or place at a time
+  gout trim TRACK [-st T] [-et T | -el T]   soft trim: in/out points, the file is untouched
+  gout trim TRACK --clear                   soft trim off again
+  gout trim TRACK --hard [-st ..] [-et ..]  hard trim: rewrite the file (bakes the soft trim)
   gout rm TRACK [-D]                        drop a track; -D also deletes its file
   gout mute TRACK [on|off]                  toggle mute        (mute all off)
   gout solo TRACK [on|off]                  toggle solo        (solo all off)
@@ -975,6 +1167,14 @@ EXAMPLES
   gout solo 3 && gout mix --mp3            hear it alone, bounce an mp3
   gout cut show.mp3 -st 00:34:00 -fs 1.99  1.99 MB of audio starting at 34:00
 
+SOFT AND HARD TRIM
+  Trim times count from the start of the track's own file, not from the timeline.
+  A soft trim only stores in/out points; the mix applies them sample-exactly and
+  you can change them as often as you like. A hard trim rewrites the file in {TRACK_DIR}/
+  so the material gets lighter; with no times it bakes the current soft trim. The
+  sound stays where it was on the timeline. mp3 hard trims copy whole frames (26 ms
+  grid, nothing re-encoded); -r re-encodes for the exact millisecond. wav is exact.
+
 HOW THE MIX WORKS
   Every track is decoded, trimmed, delayed to its position, panned to stereo and summed
   with ffmpeg's amix (normalize off, so adding a track never turns the others down).
@@ -985,8 +1185,8 @@ HOW -fs WORKS
   file lands between 97% and 100% of the limit — never over it.
 
 NOTES
-  Needs ffmpeg and ffprobe on PATH. Cutting an mp3 copies the stream, so it snaps to a
-  frame boundary (~26 ms); -r re-encodes for the exact millisecond. wav cuts are exact.
+  Needs ffmpeg and ffprobe on PATH. gout cut on an mp3 copies the stream, which starts
+  up to ~0.1 s late (ffmpeg's seek); -r re-encodes for the exact millisecond. wav is exact.
   Everything else is the Python standard library — the project state lives in {DB_NAME}
   (sqlite), the audio in {TRACK_DIR}/ is never modified by moves or trims.
 """
@@ -1102,7 +1302,7 @@ def cmd_cut(argv: list[str]) -> None:
 # --------------------------------------------------------------------------- dispatch
 
 PROJECT_COMMANDS = {
-    "add": cmd_add, "ls": cmd_ls, "move": cmd_move, "rm": cmd_rm,
+    "add": cmd_add, "ls": cmd_ls, "move": cmd_move, "trim": cmd_trim, "rm": cmd_rm,
     "mute": cmd_mute, "solo": cmd_solo, "gain": cmd_gain, "pan": cmd_pan,
     "set": cmd_set, "mix": cmd_mix, "undo": cmd_undo, "dump": cmd_dump,
 }
