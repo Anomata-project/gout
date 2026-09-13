@@ -80,6 +80,7 @@ name (a unique prefix will do). `-N` / `--no-mix` on any change skips the automa
 | `pan` | `p` | `TRACK L30 \| R30 \| C` | every track starts centred |
 | `hp`, `lp` | | `TRACK HZ [SLOPE] \| off` | high-pass or low-pass cut, slope in dB per octave (12 by default) |
 | `eq` | `e` | `TRACK BANDS... \| PRESET \| on \| off \| clear` | the whole eq in one line; `eq TRACK` shows it with the curve |
+| `comp` | `cp` | `TRACK SETTINGS... \| PRESET \| on \| off \| clear` | compressor after the eq; `comp TRACK` shows its curve |
 | `mix` | `x` | `[-3] [-v]` | render `master.wav`; `-3` / `--mp3` also writes `master.mp3` |
 | `undo` | `u` | | undo the last change (not a hard trim or `rm -D`) |
 | `stems` | `sm` | `[DIR] [-A]` | one wav per track, processed as in the mix and all the same length, into `stems/`; `-A` only what the mix hears |
@@ -170,7 +171,7 @@ mix   master.wav  00:03:12.500  -14.0 LUFS  LRA 6.2  peak -1.0 dBTP
 | `title`, `artist`, `album`, `year`, `comment` | tags written into `master.wav` and `master.mp3` |
 
 The chain is: sum of the tracks, master gain, fades, loudness step, head and tail padding, then
-the file. Under three seconds of material the loudness step is a plain gain, since `loudnorm`
+the file. Per track, before the sum: soft trim, position, eq, compressor, gain, pan. Under three seconds of material the loudness step is a plain gain, since `loudnorm`
 cannot measure that reliably. `gout stats` shows integrated LUFS, loudness range and true peak
 for every track file (and what it comes to after the track's gain), so you can balance tracks
 by numbers before touching the master.
@@ -203,6 +204,30 @@ sits in the right panel and follows whichever track you last touched with `eq`, 
 Presets: `voice`, `podcast`, `warm`, `air`, `bright`, `mud`, `clean`, `phone`, `bass`, `kick`,
 `guitar`, `flat`. A preset expands to ordinary bands, so what you see in `ls` and the sheet is
 always the real eq.
+
+## Compressor
+
+Every track has a compressor after its eq, written as one line:
+
+```
+gout comp 3 -18 4:1                      # threshold -18 dB, ratio 4:1, the rest at defaults
+gout comp 3 -20 3:1 a5 r120 k4 m4        # attack ms, release ms, knee dB, makeup dB
+gout comp 3 -24 8:1 mauto                # makeup picked for you
+gout comp 3 vocal                        # a preset, or   comp 3 drums a2   to build on one
+gout comp 3 off | on | clear
+gout comp 3                              # show it with its curve
+gout comp presets
+```
+
+`gout comp 3` draws the static curve, input level across and output level up, both from -60 to
+0 dB, with the unity line dotted. Behind it sits a histogram of where this track's own peaks
+fall, so you see at once whether the threshold is in the material or above it, and the header
+says how often the compressor would work on this track and by how much. Attack and release are
+not in the picture; they are ffmpeg's `acompressor` values. Presets: `gentle`, `vocal`, `drums`,
+`bass`, `glue`, `squash`, `limit`, `none`.
+
+In the ui the compressor curve sits next to the eq curve in the same panel when it is wide
+enough, and otherwise the panel shows whichever of the two you touched last.
 
 ## Stems
 

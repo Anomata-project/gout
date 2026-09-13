@@ -548,7 +548,9 @@ CREATE TABLE IF NOT EXISTS tracks (
     mute        INTEGER NOT NULL DEFAULT 0,
     solo        INTEGER NOT NULL DEFAULT 0,
     eq          TEXT NOT NULL DEFAULT '',
-    eq_on       INTEGER NOT NULL DEFAULT 1
+    eq_on       INTEGER NOT NULL DEFAULT 1,
+    comp        TEXT NOT NULL DEFAULT '',
+    comp_on     INTEGER NOT NULL DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS envelopes (
     file  TEXT PRIMARY KEY,
@@ -572,7 +574,8 @@ CREATE TABLE IF NOT EXISTS history (
 """
 
 TRACK_COLUMNS = ("n", "name", "file", "kind", "length_ms", "channels", "sample_rate",
-                 "offset_ms", "in_ms", "out_ms", "gain_db", "pan", "mute", "solo", "eq", "eq_on")
+                 "offset_ms", "in_ms", "out_ms", "gain_db", "pan", "mute", "solo", "eq", "eq_on",
+                 "comp", "comp_on")
 
 
 class Project:
@@ -593,6 +596,10 @@ class Project:
             with self.conn:
                 self.conn.execute("ALTER TABLE tracks ADD COLUMN eq TEXT NOT NULL DEFAULT ''")
                 self.conn.execute("ALTER TABLE tracks ADD COLUMN eq_on INTEGER NOT NULL DEFAULT 1")
+        if "comp" not in {r[1] for r in self.conn.execute("PRAGMA table_info(tracks)")}:
+            with self.conn:
+                self.conn.execute("ALTER TABLE tracks ADD COLUMN comp TEXT NOT NULL DEFAULT ''")
+                self.conn.execute("ALTER TABLE tracks ADD COLUMN comp_on INTEGER NOT NULL DEFAULT 1")
         if "lufs" not in {r[1] for r in self.conn.execute("PRAGMA table_info(envelopes)")}:
             with self.conn:
                 for col in ("lufs", "tp", "lra"):
@@ -1153,6 +1160,202 @@ def render_eq(project: "Project", t: dict, width: int, height: int = 8,
     return rows
 
 
+# --------------------------------------------------------------------------- compressor
+#
+# A track's compressor is one line:  -18 4:1 a10 r120 k6 m3   (threshold dB, ratio, attack ms,
+# release ms, knee dB, makeup dB). Presets stand for such lines.
+
+COMP_DEFAULTS = {"threshold": -18.0, "ratio": 2.0, "attack": 20.0, "release": 200.0, "knee": 6.0, "makeup": 0.0}
+COMP_PRESETS = {
+    "gentle": ("-18 2:1 a20 r200 k6", "barely there: evens things out"),
+    "vocal":  ("-20 3:1 a5 r120 k4 m4", "keeps a voice in front"),
+    "drums":  ("-14 4:1 a10 r80 k2 m3", "punch: lets the transient through, grabs the rest"),
+    "bass":   ("-16 3:1 a15 r150 k4 m3", "steady low end"),
+    "glue":   ("-16 2:1 a30 r300 k8 m2", "slow and soft, for a whole part"),
+    "squash": ("-24 8:1 a2 r60 k1 m8", "flat and loud"),
+    "limit":  ("-6 20:1 a0.5 r50 k1", "catches peaks only"),
+    "none":   ("", "no compressor"),
+}
+COMP_SYNTAX = "-18 4:1 a10 r120 k6 m3   (threshold dB, ratio, attack ms, release ms, knee dB, makeup dB or mauto)"
+
+
+def parse_comp(text: str) -> dict:
+    """Parameters from a line of tokens; unspecified ones take the defaults."""
+    tokens: list[str] = []
+    for tok in text.split():
+        if tok.lower() in COMP_PRESETS:
+            tokens += COMP_PRESETS[tok.lower()][0].split()
+        else:
+            tokens.append(tok)
+    c = dict(COMP_DEFAULTS)
+    auto = False
+    for tok in tokens:
+        t = tok.lower()
+        if re.fullmatch(r"-\d+(?:\.\d+)?(?:db)?", t) or t in ("0", "0db"):
+            c["threshold"] = float(t.removesuffix("db"))
+        elif re.fullmatch(r"\d+(?:\.\d+)?(?::1|x)?", t):
+            c["ratio"] = float(t.removesuffix(":1").removesuffix("x"))
+        elif re.fullmatch(r"a\d+(?:\.\d+)?", t):
+            c["attack"] = float(t[1:])
+        elif re.fullmatch(r"r\d+(?:\.\d+)?", t):
+            c["release"] = float(t[1:])
+        elif re.fullmatch(r"k\d+(?:\.\d+)?", t):
+            c["knee"] = float(t[1:])
+        elif t == "mauto":
+            auto = True
+        elif re.fullmatch(r"m\+?\d+(?:\.\d+)?", t):
+            c["makeup"] = float(t[1:])
+        else:
+            raise ValueError(f"bad compressor setting {tok!r}; a line looks like  {COMP_SYNTAX}"
+                             "  (or a preset: comp presets)")
+    if not -60 <= c["threshold"] <= 0:
+        raise ValueError("threshold must be between -60 and 0 dB")
+    if not 1 <= c["ratio"] <= 20:
+        raise ValueError("ratio must be between 1 and 20")
+    if not 0.01 <= c["attack"] <= 2000:
+        raise ValueError("attack must be between 0.01 and 2000 ms")
+    if not 0.01 <= c["release"] <= 9000:
+        raise ValueError("release must be between 0.01 and 9000 ms")
+    if not 1 <= c["knee"] <= 8:
+        raise ValueError("knee must be between 1 and 8 dB")
+    if auto:  # half of what a full-scale peak would lose
+        c["makeup"] = round(-c["threshold"] * (1 - 1 / c["ratio"]) / 2, 1)
+    if not 0 <= c["makeup"] <= 36:
+        raise ValueError("makeup must be between 0 and 36 dB (ffmpeg only adds gain here; use gain to cut)")
+    return c
+
+
+def fmt_comp(c: dict) -> str:
+    out = f"{c['threshold']:g} {c['ratio']:g}:1 a{c['attack']:g} r{c['release']:g} k{c['knee']:g}"
+    return out + (f" m{c['makeup']:g}" if c["makeup"] else "")
+
+
+def comp_filter(c: dict) -> str:
+    return (f"acompressor=threshold={10 ** (c['threshold'] / 20):.6f}:ratio={c['ratio']:g}"
+            f":attack={c['attack']:g}:release={c['release']:g}:knee={c['knee']:g}"
+            f":makeup={10 ** (c['makeup'] / 20):.4f}")
+
+
+def track_comp(t: dict) -> dict | None:
+    if not t.get("comp") or not t.get("comp_on", 1):
+        return None
+    try:
+        return parse_comp(t["comp"])
+    except ValueError:
+        return None
+
+
+def comp_out(c: dict, x: float, makeup: bool = True) -> float:
+    """Static transfer curve: output level for an input level x, both in dB, soft knee."""
+    thr, ratio, w = c["threshold"], c["ratio"], c["knee"]
+    if x < thr - w / 2:
+        y = x
+    elif x > thr + w / 2:
+        y = thr + (x - thr) / ratio
+    else:
+        y = x + (1 / ratio - 1) * (x - thr + w / 2) ** 2 / (2 * w)
+    return y + (c["makeup"] if makeup else 0)
+
+
+def comp_estimate(c: dict, peaks: bytes) -> tuple[float, float, float] | None:
+    """(share of the time it works, average and deepest reduction in dB) on a track's peaks."""
+    levels = [20 * math.log10(v / 128) for v in peaks if v > 0]
+    if not levels:
+        return None
+    reductions = [comp_out(c, x, makeup=False) - x for x in levels]
+    working = [g for g in reductions if g < -0.1]
+    if not working:
+        return (0.0, 0.0, 0.0)
+    return (len(working) / len(levels), sum(working) / len(working), min(working))
+
+
+COMP_W = 30  # columns of the transfer plot including the gutter
+
+
+def render_comp(t: dict, width: int = COMP_W, height: int = 8,
+                peaks: bytes | None = None) -> list[tuple[str, str, str]]:
+    """Rows of (text, classes, kind): input dB left to right, output dB bottom to top,
+    both -60 .. 0. Classes: a the curve, z the unity line, x the track's level histogram."""
+    gw = max(10, width - EQ_GUTTER)
+    sub = 2 * height
+    try:
+        c = parse_comp(t["comp"]) if t["comp"] else None
+    except ValueError:
+        c = None
+    xs = [-60 + 60 * col / (gw - 1) for col in range(gw)]
+
+    def ysub(db: float) -> int:
+        db = max(-60.0, min(0.0, db))
+        return max(0, min(sub - 1, round(-db / 60 * (sub - 1))))
+
+    cells = [[" "] * gw for _ in range(height)]
+    classes = [[" "] * gw for _ in range(height)]
+    if peaks:
+        counts = [0] * gw
+        for v in peaks:
+            if v > 0:
+                db = 20 * math.log10(v / 128)
+                counts[max(0, min(gw - 1, round((db + 60) / 60 * (gw - 1))))] += 1
+        top_count = max(counts) or 1
+        for col in range(gw):
+            level = counts[col] / top_count
+            if level > 0:
+                top_sub = round((1 - level) * (sub - 1))
+                for row in range(height):
+                    if 2 * row >= top_sub:
+                        cells[row][col], classes[row][col] = "░", "x"
+    for col, x in enumerate(xs):  # the unity line, output = input
+        row = ysub(x) // 2
+        if classes[row][col] == " ":
+            cells[row][col], classes[row][col] = "·", "z"
+    if c is not None:
+        ys = [ysub(comp_out(c, x)) for x in xs]
+        for col in range(gw):
+            lo, hi = (ys[col], ys[col]) if col == 0 else (min(ys[col - 1], ys[col]), max(ys[col - 1], ys[col]))
+            for row in range(height):
+                top, bot = lo <= 2 * row <= hi, lo <= 2 * row + 1 <= hi
+                if top or bot:
+                    cells[row][col] = "█" if top and bot else ("▀" if top else "▄")
+                    classes[row][col] = "a"
+    state = "" if not t["comp"] else ("  (off)" if not t["comp_on"] else "")
+    head = f"comp {t['comp'] or 'none'}{state}"
+    if c is not None and peaks:
+        est = comp_estimate(c, peaks)
+        if est and est[0] > 0:
+            head += f"  works {est[0]:.0%} of the time, {est[1]:.1f} dB avg, {est[2]:.1f} dB most"
+        elif est:
+            head += "  never reaches the threshold on this track"
+    rows = [(head, "", "head")]
+    for row in range(height):
+        label = "0" if row == 0 else ("-60" if row == height - 1 else ("-30" if row == height // 2 else ""))
+        rows.append((f"{label:>{EQ_GUTTER - 1}} " + "".join(cells[row]),
+                     " " * EQ_GUTTER + "".join(classes[row]), "graph"))
+    axis = [" "] * gw
+    for db, text in ((-60, "-60"), (-40, "-40"), (-20, "-20"), (0, "0")):
+        col = round((db + 60) / 60 * (gw - 1))
+        col = max(0, min(gw - len(text), col - len(text) // 2 if db else col - len(text) + 1))
+        axis[col:col + len(text)] = list(text)
+    rows.append((" " * EQ_GUTTER + "".join(axis), "", "axis"))
+    return rows
+
+
+def render_track_panel(project: "Project", t: dict, width: int, height: int = 8,
+                       spectrum: bytes | None = None, peaks: bytes | None = None,
+                       prefer: str = "eq") -> list[tuple[str, str, str]]:
+    """The eq curve and the compressor curve side by side; only one when the panel is narrow."""
+    if width >= 76:
+        left_w = width - COMP_W - 2
+        left = render_eq(project, t, left_w, height, spectrum)
+        right = render_comp(t, COMP_W, height, peaks)
+        rows = [(left[0][0][:left_w].ljust(left_w) + "  " + right[0][0], "", "head")]
+        for (lt, lc, kind), (rt, rc, _) in zip(left[1:], right[1:]):
+            rows.append((lt.ljust(left_w) + "  " + rt, lc.ljust(left_w) + "  " + rc, kind))
+        return rows
+    if prefer == "comp":
+        return render_comp(t, min(width, 60), height, peaks)
+    return render_eq(project, t, width, height, spectrum)
+
+
 # --------------------------------------------------------------------------- timeline maths
 
 
@@ -1208,6 +1411,9 @@ def track_steps(project: Project, t: dict) -> list[str] | None:
     if delay > 0:
         steps.append(f"adelay={delay}:all=1")
     steps += eq_filters(track_eq(t))
+    comp = track_comp(t)
+    if comp is not None:
+        steps.append(comp_filter(comp))
     if t["gain_db"]:
         steps.append(f"volume={t['gain_db']:.2f}dB")
     steps.append(pan_filter(t["channels"], t["pan"]))
@@ -1557,6 +1763,8 @@ def cmd_ls(project: Project, args: Args) -> None:
             flags += " (silent)"
         if t["eq"]:
             flags += f"  eq {t['eq']}" + ("" if t["eq_on"] else " (off)")
+        if t["comp"]:
+            flags += f"  comp {t['comp']}" + ("" if t["comp_on"] else " (off)")
         print(f"{t['n']:>4}  {t['name']:<16} {t['kind']:<4} {t['channels']:>2}  {fmt_ms(start):<12} "
               f"{fmt_ms(b - a):<12} {fmt_ms(t['length_ms']):<12} {trim:<27} "
               f"{fmt_db(t['gain_db']):<7} {fmt_pan(t['pan']):<4} {flags}")
@@ -1794,6 +2002,54 @@ def cmd_eq(project: Project, args: Args) -> None:
     autorender(project, args)
 
 
+COMP_USAGE = (f"gout comp TRACK [SETTINGS... | PRESET | on | off | clear]\n       settings: {COMP_SYNTAX}\n"
+              f"       presets: {' '.join(COMP_PRESETS)}   (comp presets explains them)")
+
+
+def comp_line(t: dict) -> str:
+    text = t["comp"] or "none"
+    if t["comp"] and not t["comp_on"]:
+        text += "  (off: bypassed, comp TRACK on brings it back)"
+    return f"comp  {t['n']:>2}  {t['name']:<16} {text}"
+
+
+def cmd_comp(project: Project, args: Args) -> None:
+    pos = args.positionals(COMP_USAGE, 1)
+    if pos[0].lower() in ("presets", "preset", "list"):
+        print("presets  a name stands for these settings; add your own after it, comp 3 vocal a10")
+        for name, (line, what) in COMP_PRESETS.items():
+            print(f"  {name:<8} {line or 'none':<26} {what}")
+        return
+    t = project.track(pos[0])
+    words = pos[1:]
+    if not words:
+        print(comp_line(t))
+        width = min(100, shutil.get_terminal_size((100, 24)).columns)
+        peaks = project.envelope(t["file"], project.tracks_dir / t["file"]) or None
+        for text, _, kind in render_comp(t, min(width - 6, 64), peaks=peaks):
+            print("      " + text)
+        print("      · output = input   █ the compressor   ░ how often this track's peaks sit at that level")
+        return
+    if words == ["off"]:
+        project.record(f"comp {t['name']} off")
+        project.update(t["n"], comp_on=0)
+    elif words == ["on"]:
+        project.record(f"comp {t['name']} on")
+        project.update(t["n"], comp_on=1)
+    elif words in (["clear"], ["none"]):
+        project.record(f"comp {t['name']} clear")
+        project.update(t["n"], comp="", comp_on=1)
+    else:
+        try:
+            c = parse_comp(" ".join(words))
+        except ValueError as exc:
+            die(f"{exc}\n{COMP_USAGE}")
+        project.record(f"comp {t['name']} {' '.join(words)}")
+        project.update(t["n"], comp=fmt_comp(c), comp_on=1)
+    print(comp_line(project.track(str(t["n"]))))
+    autorender(project, args)
+
+
 def _cut(project: Project, args: Args, kind: str) -> None:
     pos = args.positionals(f"gout {kind} TRACK HZ [SLOPE] | off     e.g. {kind} 3 {'80' if kind == 'hp' else '12k'}"
                            f"  ({kind} 3 80 24 for 24 dB per octave)", 2, 3)
@@ -1980,7 +2236,7 @@ def apply_document(project: Project, data: dict, settings: bool = True, tracks: 
                     fields["gain_db"] = max(-60.0, min(24.0, float(item["gain_db"])))
                 if item.get("pan") is not None:
                     fields["pan"] = max(-1.0, min(1.0, float(item["pan"])))
-                for flag in ("mute", "solo", "eq_on"):
+                for flag in ("mute", "solo", "eq_on", "comp_on"):
                     if item.get(flag) is not None:
                         fields[flag] = 1 if item[flag] else 0
                 if item.get("eq") is not None:
@@ -1988,6 +2244,11 @@ def apply_document(project: Project, data: dict, settings: bool = True, tracks: 
                         fields["eq"] = fmt_eq(parse_eq(str(item["eq"])))
                     except ValueError as exc:
                         warnings.append(f"{t['name']}: eq ignored ({exc})")
+                if item.get("comp") is not None:
+                    try:
+                        fields["comp"] = fmt_comp(parse_comp(str(item["comp"]))) if str(item["comp"]) else ""
+                    except ValueError as exc:
+                        warnings.append(f"{t['name']}: comp ignored ({exc})")
             except (TypeError, ValueError) as exc:
                 warnings.append(f"{t['name']}: bad value ({exc}), skipped")
                 continue
@@ -2237,6 +2498,8 @@ MIXER
  eq    e  TRACK hp80 +3@200 hs8k:-2   peaks gain@hz/q
  eq    e  TRACK on | off | clear      shelves ls100:+2
  eq    e  TRACK voice|warm|air|mud..  presets (eq presets)
+ comp  cp TRACK -18 4:1 a10 r120 k6 m3  thr ratio a r k m
+ comp  cp TRACK vocal|drums|glue..    presets (comp presets)
  mix   x  [-3] [-v]                   -3 also master.mp3
 PROJECT
  undo  u                              not hard trim / rm -D
@@ -2298,7 +2561,7 @@ def cmd_cheat(root_hint: Path | None, args: Args) -> None:
 # long name -> the short form and the other spellings; every command works under all of them
 COMMANDS = {
     "add": ("a",), "scan": ("sc",), "ls": ("l", "list"), "view": ("v",), "move": ("m", "mv"), "trim": ("t",),
-    "rm": ("r", "remove", "del"), "mute": ("mu",), "solo": ("s",), "gain": ("g",), "pan": ("p",), "eq": ("e",), "hp": (), "lp": (),
+    "rm": ("r", "remove", "del"), "mute": ("mu",), "solo": ("s",), "gain": ("g",), "pan": ("p",), "eq": ("e",), "hp": (), "lp": (), "comp": ("cp",),
     "mix": ("x", "render", "bounce"), "undo": ("u",), "dump": ("dp",), "rebuild": ("rb",),
     "set": ("se",), "stats": ("st",), "saveas": ("sa", "copy"), "stems": ("sm",), "import": ("im",), "new": ("n",), "cheat": ("c",), "help": ("h", "?"), "ui": ("tui",), "cut": (),
     "quit": ("q", "exit"), "clear": ("cl",), "split": ("sp",), "sheet": ("sh",),
@@ -2334,8 +2597,9 @@ class Tui:
         self.sheet_errors: dict[str, str] = {}
         self.sheet_status = ""
         self.saveas_name: str | None = None  # the "save as:" field in the sheet while it is open
-        self.eq_track: int | None = None  # track number whose eq curve the panel shows
+        self.eq_track: int | None = None  # track number whose eq and compressor curves the panel shows
         self.show_eq = True
+        self.panel_prefer = "eq"  # which curve a narrow panel shows: the one last touched
         self.show_timeline = (project.get("ui_timeline") or "on") != "off"
         self.show_cheat = (project.get("ui_cheat") or "on") != "off"
         split = project.get("ui_split") or "40"
@@ -2435,8 +2699,11 @@ class Tui:
                 self.eq_track = None
             else:
                 height = 8 if h >= 32 else 6
-                rows = render_eq(p, track, right_w - 1, height, self.spectrum_for(track))
-                self.put(top, right_x, (" " + rows[0][0] + "   ctrl-g hides").ljust(right_w), curses.A_REVERSE)
+                peaks = p.envelope(track["file"], p.tracks_dir / track["file"]) or None
+                rows = render_track_panel(p, track, right_w - 1, height, self.spectrum_for(track), peaks,
+                                          self.panel_prefer)
+                self.put(top, right_x, (" " + rows[0][0][:right_w - 16] + "   ctrl-g hides").ljust(right_w),
+                         curses.A_REVERSE)
                 for i, (text, classes, kind) in enumerate(rows[1:], 1):
                     if top + i >= h:
                         break
@@ -2611,6 +2878,8 @@ class Tui:
             row(f"t{n}:solo", "solo", "on" if t["solo"] else "off", lambda v, n=n: ["solo", n, v], "on | off")
             row(f"t{n}:eq", "eq", (t["eq"] or "flat") + ("" if t["eq_on"] else " (off)"),
                 lambda v, n=n: ["eq", n, *v.split()], "hp80 +3@200 hs8k:-2 | voice | off | clear")
+            row(f"t{n}:comp", "comp", (t["comp"] or "none") + ("" if t["comp_on"] else " (off)"),
+                lambda v, n=n: ["comp", n, *v.split()], "-18 4:1 a10 r120 k6 m3 | vocal | off | clear")
         return rows
 
     def sheet_open(self) -> None:
@@ -2870,7 +3139,7 @@ class Tui:
             self.toggle("cheat")
         elif head == "sheet":
             self.sheet_open()
-        elif head == "eq" and len(argv) == 1:
+        elif head in ("eq", "comp") and len(argv) == 1:
             self.toggle_eq()
         elif head == "clear":
             self.log.clear()
@@ -2907,9 +3176,10 @@ class Tui:
             finally:
                 self.busy = False
             self.log.extend(buf.getvalue().rstrip("\n").splitlines())
-            if head in ("eq", "hp", "lp") and len(argv) > 1:
+            if head in ("eq", "hp", "lp", "comp") and len(argv) > 1:
                 try:  # the panel follows the track you are working on
                     self.eq_track, self.show_eq = self.project.track(argv[1])["n"], True
+                    self.panel_prefer = "comp" if head == "comp" else "eq"
                 except GoutError:
                     pass
         del self.log[:-2000]
@@ -3004,6 +3274,10 @@ TRACKS   (TRACK is the number shown by ls, or the track name)
                                              {EQ_SYNTAX}
   gout eq    e  TRACK PRESET [BANDS...]      a named start: {' '.join(EQ_PRESETS)}
   gout eq    e  TRACK on | off | clear       bypass, bring back, or remove;  eq presets lists them
+  gout comp  cp TRACK -18 4:1 a10 r120 k6 m3 compressor after the eq: threshold dB, ratio, attack ms,
+                                             release ms, knee dB, makeup dB (mauto picks one)
+  gout comp  cp TRACK PRESET | on | off | clear   presets: {' '.join(COMP_PRESETS)}
+  gout comp  cp TRACK                        show it with its curve and where this track's peaks sit
   gout eq    e  TRACK                        show the bands and draw the curve, 20 Hz to 20 kHz; in
                                              the ui the curve panel follows the track you eq (ctrl-g)
   -N (--no-mix) on any of these skips the automatic re-mix; -p DIR before a command picks
@@ -3172,7 +3446,7 @@ def cmd_cut(argv: list[str]) -> None:
 PROJECT_COMMANDS = {
     "add": cmd_add, "scan": cmd_scan, "ls": cmd_ls, "move": cmd_move, "trim": cmd_trim, "rm": cmd_rm,
     "mute": cmd_mute, "solo": cmd_solo, "gain": cmd_gain, "pan": cmd_pan,
-    "eq": cmd_eq, "hp": cmd_hp, "lp": cmd_lp,
+    "eq": cmd_eq, "hp": cmd_hp, "lp": cmd_lp, "comp": cmd_comp,
     "set": cmd_set, "stats": cmd_stats, "mix": cmd_mix, "undo": cmd_undo, "dump": cmd_dump,
     "saveas": cmd_saveas, "stems": cmd_stems, "import": cmd_import,
     "view": cmd_view, "ui": cmd_ui,
