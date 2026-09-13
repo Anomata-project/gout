@@ -265,6 +265,77 @@ def compute_envelope(path: Path) -> bytes:
     return bytes(peaks)
 
 
+SPEC_BANDS = 40     # log-spaced 20 Hz .. 20 kHz
+SPEC_N = 4096       # fft size
+SPEC_WINDOWS = 8    # windows spread over up to a minute from the middle of the file
+SPEC_SR = 44100
+SPEC_RANGE = 60.0   # dB below the loudest band that still shows
+
+
+def fft(x: list[complex]) -> list[complex]:
+    """In-place style radix-2 FFT, pure Python; len(x) must be a power of two."""
+    n = len(x)
+    y = list(x)
+    j = 0
+    for i in range(1, n):
+        bit = n >> 1
+        while j & bit:
+            j ^= bit
+            bit >>= 1
+        j |= bit
+        if i < j:
+            y[i], y[j] = y[j], y[i]
+    length = 2
+    while length <= n:
+        ang = -2 * math.pi / length
+        wlen = complex(math.cos(ang), math.sin(ang))
+        half = length // 2
+        for i in range(0, n, length):
+            w = 1 + 0j
+            for k in range(i, i + half):
+                u, v = y[k], y[k + half] * w
+                y[k], y[k + half] = u + v, u - v
+                w *= wlen
+        length <<= 1
+    return y
+
+
+def compute_spectrum(path: Path, duration: float) -> bytes:
+    """Average spectrum of a file as SPEC_BANDS bytes: 255 is the loudest band, 0 is
+    SPEC_RANGE dB under it. A minute from the middle of the file, a few Hann windows."""
+    start = max(0.0, duration / 2 - 30)
+    result = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-ss", f"{start:.3f}", "-t", "60", "-i", str(path),
+         "-map", "0:a:0", "-ac", "1", "-ar", str(SPEC_SR), "-f", "s16le", "-"],
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        return b""
+    data = array("h")
+    data.frombytes(result.stdout[:len(result.stdout) // 2 * 2])
+    if len(data) < SPEC_N:
+        return b""
+    hann = [0.5 - 0.5 * math.cos(2 * math.pi * n / (SPEC_N - 1)) for n in range(SPEC_N)]
+    edges = [20 * (1000 ** (k / SPEC_BANDS)) for k in range(SPEC_BANDS + 1)]
+    bins = []
+    for k in range(SPEC_BANDS):
+        lo = max(1, int(edges[k] * SPEC_N / SPEC_SR))
+        hi = max(lo + 1, int(edges[k + 1] * SPEC_N / SPEC_SR))
+        bins.append((min(lo, SPEC_N // 2 - 1), min(hi, SPEC_N // 2)))
+    power = [0.0] * SPEC_BANDS
+    step = max(SPEC_N, (len(data) - SPEC_N) // max(1, SPEC_WINDOWS - 1))
+    starts = list(range(0, len(data) - SPEC_N + 1, step))[:SPEC_WINDOWS]
+    for s0 in starts:
+        frame = [complex(data[s0 + n] * hann[n]) for n in range(SPEC_N)]
+        spectrum = fft(frame)
+        mags = [abs(v) ** 2 for v in spectrum[:SPEC_N // 2]]
+        for k, (lo, hi) in enumerate(bins):
+            power[k] += sum(mags[lo:hi]) / (hi - lo)
+    db = [10 * math.log10(v / len(starts) + 1e-9) for v in power]
+    top = max(db)
+    return bytes(max(0, min(255, round((v - top + SPEC_RANGE) / SPEC_RANGE * 255))) for v in db)
+
+
 def level_char(peak: int) -> str:
     if peak <= 0:
         return LEVELS[0]
@@ -487,7 +558,8 @@ CREATE TABLE IF NOT EXISTS envelopes (
     peaks BLOB NOT NULL,
     lufs  REAL,
     tp    REAL,
-    lra   REAL
+    lra   REAL,
+    spectrum BLOB
 );
 CREATE TABLE IF NOT EXISTS history (
     id       INTEGER PRIMARY KEY,
@@ -525,6 +597,9 @@ class Project:
             with self.conn:
                 for col in ("lufs", "tp", "lra"):
                     self.conn.execute(f"ALTER TABLE envelopes ADD COLUMN {col} REAL")
+        if "spectrum" not in {r[1] for r in self.conn.execute("PRAGMA table_info(envelopes)")}:
+            with self.conn:
+                self.conn.execute("ALTER TABLE envelopes ADD COLUMN spectrum BLOB")
         old = self.get("automix")  # the setting was called automix before 2.0.0 final
         if old is not None:
             if self.get("autorender") is None:
@@ -662,6 +737,23 @@ class Project:
             self.conn.execute("UPDATE envelopes SET lufs = ?, tp = ?, lra = ? WHERE file = ?",
                               (m["i"], m["tp"], m["lra"], name))
         return m
+
+    def spectrum(self, name: str, path: Path) -> bytes:
+        """Cached average spectrum of a file; computed on first use, dropped when the file changes."""
+        self.envelope(name, path)
+        row = self.conn.execute("SELECT spectrum FROM envelopes WHERE file = ?", (name,)).fetchone()
+        if row is None:
+            return b""
+        if row["spectrum"] is not None:
+            return row["spectrum"]
+        try:
+            duration = probe(path)["duration"]
+        except GoutError:
+            return b""
+        spec = compute_spectrum(path, duration)
+        with self.conn:
+            self.conn.execute("UPDATE envelopes SET spectrum = ? WHERE file = ?", (spec, name))
+        return spec
 
     def forget_envelope(self, name: str) -> None:
         with self.conn:
@@ -1008,9 +1100,8 @@ def render_eq(project: "Project", t: dict, width: int, height: int = 8,
             level = spectrum[min(len(spectrum) - 1, c * len(spectrum) // gw)] / 255  # 0..1 of the range
             top_sub = round((1 - level) * (sub - 1))
             for row in range(height):
-                if 2 * row + 1 >= top_sub:
-                    cells[row][c] = "░" if 2 * row >= top_sub else "▗"
-                    classes[row][c] = "x"
+                if 2 * row >= top_sub:
+                    cells[row][c], classes[row][c] = "░", "x"
     for c in range(gw):
         if classes[zero_row][c] == " ":
             cells[zero_row][c], classes[zero_row][c] = "─", "z"
@@ -1023,7 +1114,8 @@ def render_eq(project: "Project", t: dict, width: int, height: int = 8,
                 cells[row][c] = "█" if top and bot else ("▀" if top else "▄")
                 classes[row][c] = "a"
     state = "" if not t["eq"] else ("  (off)" if not t["eq_on"] else "")
-    rows = [(f"eq   {t['n']:>2} {t['name'][:9]:<9} {t['eq'] or 'flat'}{state}"[:width], "", "head")]
+    rows = [(f"eq   {t['n']:>2} {t['name'][:9]:<9} {t['eq'] or 'flat'}{state}"
+             + ("  ░ spectrum" if spectrum else "")[:width], "", "head")]
     for row in range(height):
         label = f"{span:+d}" if row == 0 else (f"{-span:+d}" if row == height - 1 else ("0" if row == zero_row else ""))
         rows.append((f"{label:>{EQ_GUTTER - 1}} " + "".join(cells[row]),
@@ -1649,8 +1741,11 @@ def cmd_eq(project: Project, args: Args) -> None:
     if not words:
         print(eq_line(t))
         width = min(100, shutil.get_terminal_size((100, 24)).columns)
-        for text, _, kind in render_eq(project, t, width - 6)[1:]:
+        spectrum = project.spectrum(t["file"], project.tracks_dir / t["file"]) or None
+        for text, _, kind in render_eq(project, t, width - 6, spectrum=spectrum)[1:]:
             print("      " + text)
+        if spectrum:
+            print("      ░ the track's own spectrum, loudest band at the top")
         return
     if words == ["off"]:
         project.record(f"eq {t['name']} off")
@@ -2339,7 +2434,7 @@ class Tui:
         scr.refresh()
 
     def spectrum_for(self, track: dict) -> bytes | None:
-        return None  # filled in by the spectrum step
+        return self.project.spectrum(track["file"], self.project.tracks_dir / track["file"]) or None
 
     def draw_cells(self, y: int, x: int, cells: str, kind: str, classes: str = "") -> None:
         import curses
