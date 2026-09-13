@@ -1240,7 +1240,7 @@ PROJECT
  rebuild rb [-f]                      gout.db from master/
  set   se autorender on|off | rate HZ
  new   n  NAME [-R HZ]                48000 Hz by default
- cheat c  this sheet   help h         help all: whole page
+ cheat c  sheet on/off  help h        help all: whole page
  quit  q  leave the ui  clear cl      empty the log
  split sp 50 | +5 | -5                left pane width (ui)
 FLAGS  -N --no-mix skip the re-mix    -p DIR the project
@@ -1250,7 +1250,8 @@ FLAGS  -N --no-mix skip the re-mix    -p DIR the project
 TIMES  2s  500ms  1:30  00:01:30.250  bare number = MINUTES
        trim times count from the track file's start
 TRACK  number from ls, or the name (unique prefix ok)
-KEYS   ctrl-u  timeline on/off   tab shift-tab  flip sheet
+KEYS   ctrl-u  timeline on/off   ctrl-k  sheet on/off
+       tab shift-tab  flip sheet (shows it when hidden)
        ctrl-n ctrl-p  sheet line  pgup pgdn      scroll log
        up down  earlier commands  ctrl-l  clear the log
        ctrl-← ctrl-→  move the split  (shift/alt too)
@@ -1281,7 +1282,7 @@ COMMANDS = {
     "add": ("a",), "ls": ("l", "list"), "view": ("v",), "move": ("m", "mv"), "trim": ("t",),
     "rm": ("r", "remove", "del"), "mute": ("mu",), "solo": ("s",), "gain": ("g",), "pan": ("p",),
     "mix": ("x", "render", "bounce"), "undo": ("u",), "dump": ("dp",), "rebuild": ("rb",),
-    "set": ("se",), "new": ("n",), "cheat": ("c",), "help": ("h", "?"), "ui": ("tui",), "cut": (),
+    "set": ("se",), "new": ("n",), "cheat": ("c", "sheet"), "help": ("h", "?"), "ui": ("tui",), "cut": (),
     "quit": ("q", "exit"), "clear": ("cl",), "split": ("sp",),
 }
 ALIASES = {alias: name for name, aliases in COMMANDS.items() for alias in aliases}
@@ -1296,11 +1297,12 @@ class Tui:
     def __init__(self, project: Project, scr):
         self.project, self.scr = project, scr
         self.log: list[str] = [f"gout {__version__}  {project.root}",
-                               "the cheat sheet is on the right, tab flips it; ctrl-u hides the timeline"]
+                               "ctrl-u shows/hides the timeline, ctrl-k the cheat sheet, tab flips its pages"]
         self.input = ""
         self.history: list[str] = []
         self.hist_i: int | None = None
-        self.show_view = True
+        self.show_timeline = (project.get("ui_timeline") or "on") != "off"
+        self.show_cheat = (project.get("ui_cheat") or "on") != "off"
         split = project.get("ui_split") or "40"
         self.split = int(split) if split.isdigit() else 40  # left pane, percent of the width
         self.scroll = 0
@@ -1327,7 +1329,7 @@ class Tui:
 
     def layout(self) -> tuple[int, int, int, int | None, int]:
         h, w = self.scr.getmaxyx()
-        if self.show_view and w >= 60:
+        if (self.show_timeline or self.show_cheat) and w >= 60:
             left = max(30, min(w - 30, w * max(20, min(80, self.split)) // 100))
             return h, w, left, left + 1, w - left - 1
         return h, w, w, None, 0
@@ -1369,23 +1371,26 @@ class Tui:
         if right_x is not None:
             for y in range(h):
                 self.put(y, right_x - 1, "│", curses.A_DIM)
-            self.put(0, right_x, " timeline".ljust(right_w), curses.A_REVERSE)
-            rows = render_timeline(p, right_w)
-            room = max(3, h - 2 - 6)  # leave the cheat sheet at least six lines
-            if len(rows) > room:
-                heads = [r for r in rows if r[2] in ("axis", "ruler")]
-                tail = [r for r in rows if r[2] in ("master", "note") and r not in heads]
-                tracks = [r for r in rows if r[2] == "track"]
-                keep = max(1, room - len(heads) - len(tail) - 1)
-                rows = heads + tracks[:keep] + [("", f"+{len(tracks) - keep} more tracks — ls", "note")] + tail
-            for y, (label, cells, kind) in enumerate(rows, 1):
-                if y >= h:
-                    break
-                self.put(y, right_x, label, curses.A_DIM if kind in ("axis", "ruler", "note") else 0)
-                self.draw_cells(y, right_x + LABEL_W + 1, cells, kind)
+            top = 0
+            if self.show_timeline:
+                self.put(0, right_x, " timeline".ljust(right_w), curses.A_REVERSE)
+                rows = render_timeline(p, right_w)
+                room = max(3, h - 2 - 6) if self.show_cheat else max(3, h - 1)  # sheet keeps six lines
+                if len(rows) > room:
+                    heads = [r for r in rows if r[2] in ("axis", "ruler")]
+                    tail = [r for r in rows if r[2] in ("master", "note") and r not in heads]
+                    tracks = [r for r in rows if r[2] == "track"]
+                    keep = max(1, room - len(heads) - len(tail) - 1)
+                    rows = heads + tracks[:keep] + [("", f"+{len(tracks) - keep} more tracks — ls", "note")] + tail
+                for y, (label, cells, kind) in enumerate(rows, 1):
+                    if y >= h:
+                        break
+                    self.put(y, right_x, label, curses.A_DIM if kind in ("axis", "ruler", "note") else 0)
+                    self.draw_cells(y, right_x + LABEL_W + 1, cells, kind)
+                top = 1 + len(rows)
 
+        if right_x is not None and self.show_cheat:
             sheet = render_cheat(right_w - 1)
-            top = 1 + len(rows)
             self.sheet_h = max(1, h - top - 1)
             self.sheet_len = len(sheet)
             self.cheat_scroll = max(0, min(self.cheat_scroll, max(0, len(sheet) - self.sheet_h)))
@@ -1439,7 +1444,9 @@ class Tui:
         if key == curses.KEY_RESIZE:
             return
         if key == "\x15":  # ctrl-u
-            self.show_view = not self.show_view
+            self.toggle("timeline")
+        elif key == "\x0b":  # ctrl-k
+            self.toggle("cheat")
         elif key in ("\n", "\r", curses.KEY_ENTER):
             self.submit()
         elif key in (curses.KEY_BACKSPACE, "\x7f", "\x08"):
@@ -1479,6 +1486,9 @@ class Tui:
         elif key == curses.KEY_NPAGE:
             self.scroll = max(0, self.scroll - 10)
         elif key in ("\t", curses.KEY_BTAB, "\x0e", "\x10"):  # tab, shift-tab, ctrl-n, ctrl-p
+            if not self.show_cheat:
+                self.toggle("cheat")
+                return
             last = max(0, self.sheet_len - self.sheet_h)
             step = self.sheet_h if key in ("\t", curses.KEY_BTAB) else 1
             if key in ("\t", "\x0e"):
@@ -1522,7 +1532,17 @@ class Tui:
     def resize(self, delta: int, absolute: int | None = None) -> None:
         self.split = max(20, min(80, self.split + delta if absolute is None else absolute))
         self.project.set("ui_split", str(self.split))
-        self.show_view = True
+        if not (self.show_timeline or self.show_cheat):
+            self.toggle("timeline")
+
+    def toggle(self, what: str) -> None:
+        """Show or hide one section of the right panel; remembered per project."""
+        if what == "timeline":
+            self.show_timeline = not self.show_timeline
+            self.project.set("ui_timeline", "on" if self.show_timeline else "off")
+        else:
+            self.show_cheat = not self.show_cheat
+            self.project.set("ui_cheat", "on" if self.show_cheat else "off")
 
     def submit(self) -> None:
         line = self.input.strip()
@@ -1541,7 +1561,9 @@ class Tui:
         if head in ("q", "quit", "exit"):
             self.running = False
         elif head in ("view", "timeline"):
-            self.show_view = not self.show_view
+            self.toggle("timeline")
+        elif head == "cheat":
+            self.toggle("cheat")
         elif head == "clear":
             self.log.clear()
         elif head == "split":
@@ -1553,8 +1575,8 @@ class Tui:
             elif arg:
                 self.log.append("split takes a percentage (split 50) or a step (split +5, split -5)")
             self.log.append(f"split  left pane {self.split}% of the width  (ctrl-← ctrl-→ move it)")
-        elif head in ("help", "-h", "--help", "cheat"):
-            full = head != "cheat" and argv[1:] == ["all"]
+        elif head in ("help", "-h", "--help"):
+            full = argv[1:] == ["all"]
             self.log.extend(HELP.rstrip().splitlines() if full else render_cheat(max(40, self.layout()[2] - 2)))
         elif head in ("ui", "tui", "rebuild", "new"):
             self.log.append(f"{head}: run that from the shell")
@@ -1599,8 +1621,8 @@ Every command has a long and a short name (gout add / gout a). gout cheat prints
 
 PROJECT
   gout new   n  NAME [-R HZ]      create NAME/ with {TRACK_DIR}/ and {DB_NAME} (default {DEFAULT_RATE} Hz)
-  gout                            inside a project: open the terminal ui (prompt left, tracks and
-                                  the cheat sheet right, ctrl-u hides them); elsewhere: this page
+  gout                            inside a project: open the terminal ui (prompt left; timeline and
+                                  cheat sheet right, ctrl-u / ctrl-k hide each); elsewhere: this page
   gout view  v                    print the timeline once and exit
   gout cheat c                    print the cheat sheet
   gout ls    l                    list the tracks and the state of {MASTER_WAV}

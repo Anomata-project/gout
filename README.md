@@ -101,8 +101,10 @@ picture, not a mouse target: the keyboard drives everything.
                                            │  move  m  TRACK +1s | -500ms | 1:30   later|earlier|place
 ```
 
-`ctrl-u` or `view` hides and shows the right side, `help` or `cheat` prints the sheet into the
-log, `help all` the whole instruction page, `quit` / `ctrl-d` / `ctrl-c` leave.
+The two right-hand sections are independent: `ctrl-u` or `view` hides and shows the timeline,
+`ctrl-k` or `cheat` the cheat sheet (`tab` brings it back too). Hide both and the prompt gets the
+whole width. `help` prints the sheet into the log, `help all` the whole instruction page,
+`quit` / `ctrl-d` / `ctrl-c` leave. Both states are remembered per project.
 
 `ctrl-←` / `ctrl-→` move the split between the panes (shift or alt with the arrows work too),
 or type `split 50`, `split +5`, `split -5`. The width is remembered per project. There is no
