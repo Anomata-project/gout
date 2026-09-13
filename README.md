@@ -40,8 +40,11 @@ song/
   master.wav     the mix, 32-bit float stereo at the project rate (48 kHz by default)
 ```
 
-`gout.db` is the only thing that can get out of step with the files. `gout rebuild` recreates it
-from whatever is in `master/`, every track at 0.
+`add` takes any path and copies the file in; the original is never touched. Files you copy or
+move into `master/` yourself are picked up by `gout scan`, which registers the new ones at 0 and
+leaves the existing tracks alone. Renaming a file inside `master/` by hand breaks the track that
+points at it: `scan` reports it as missing. `gout rebuild` is the last resort: it recreates
+`gout.db` from whatever is in `master/`, every track at 0 with nothing else remembered.
 
 ## Commands
 
@@ -54,6 +57,7 @@ name (a unique prefix will do). `-N` / `--no-mix` on any change skips the automa
 | --- | --- | --- | --- |
 | `new` | `n` | `NAME [-R HZ]` | create a project (48 kHz by default) |
 | `add` | `a` | `FILE... [-a TIME] [-n NAME]` | add tracks at `TIME` (default 0) |
+| `scan` | `sc` | | register wav/mp3 files you copied into `master/` yourself; reports missing ones |
 | `ls` | `l` | | list tracks, positions, trims, flags |
 | `view` | `v` | `[-w COLS]` | print the timeline once |
 | `move` | `m` | `TRACK +TIME \| -TIME \| TIME` | nudge later, nudge earlier, place at a time |

@@ -442,7 +442,8 @@ CREATE TABLE IF NOT EXISTS history (
     ts       TEXT NOT NULL,
     command  TEXT NOT NULL,
     undoable INTEGER NOT NULL DEFAULT 1,
-    snapshot TEXT NOT NULL
+    snapshot TEXT NOT NULL,
+    created  TEXT NOT NULL DEFAULT '[]'
 );
 """
 
@@ -461,6 +462,9 @@ class Project:
         self.conn = sqlite3.connect(self.db_path)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+        if "created" not in {r[1] for r in self.conn.execute("PRAGMA table_info(history)")}:
+            with self.conn:  # databases from before the column existed
+                self.conn.execute("ALTER TABLE history ADD COLUMN created TEXT NOT NULL DEFAULT '[]'")
         old = self.get("automix")  # the setting was called automix before 2.0.0 final
         if old is not None:
             if self.get("autorender") is None:
@@ -580,6 +584,13 @@ class Project:
                  json.dumps(self.snapshot())),
             )
 
+    def created(self, files: list[str]) -> None:
+        """Note files the command being recorded copied into master/ (undo may delete them)."""
+        if files:
+            with self.conn:
+                self.conn.execute("UPDATE history SET created = ? WHERE id = (SELECT MAX(id) FROM history)",
+                                  (json.dumps(files),))
+
     def restore(self, snap: dict) -> None:
         with self.conn:
             self.conn.execute("DELETE FROM tracks")
@@ -600,13 +611,12 @@ class Project:
         if not row["undoable"]:
             die(f"cannot undo '{row['command']}': it rewrote or deleted an audio file")
         snap = json.loads(row["snapshot"])
-        before = {t["file"] for t in self.tracks()}
-        after = {t["file"] for t in snap["tracks"]}
         self.restore(snap)
-        for stray in before - after:  # a file we copied in and are now backing out
-            with_path = self.tracks_dir / stray
-            if with_path.exists():
-                with_path.unlink()
+        still_used = {t["file"] for t in snap["tracks"]}
+        for name in json.loads(row["created"] or "[]"):  # only copies gout made, never the user's files
+            path = self.tracks_dir / name
+            if name not in still_used and path.exists():
+                path.unlink()
         with self.conn:
             self.conn.execute("DELETE FROM history WHERE id = ?", (row["id"],))
         return row["command"]
@@ -816,7 +826,11 @@ def cmd_new(root_hint: Path | None, args: Args) -> None:
     print(f"new   {project.root}  ({project.rate} Hz, tracks go in {TRACK_DIR}/)")
 
 
-def ingest(project: Project, src: Path, name: str | None, at_ms: int, verbose: bool) -> dict:
+def ingest(project: Project, src: Path, name: str | None, at_ms: int, verbose: bool) -> tuple[dict, bool]:
+    """Register src as a track; copies it into master/ unless it already lives there.
+
+    Returns (track, created) where created says whether a new file was written.
+    """
     if not src.is_file():
         die(f"no such file: {src}")
     info = probe(src)
@@ -829,8 +843,13 @@ def ingest(project: Project, src: Path, name: str | None, at_ms: int, verbose: b
         kind, ext = "wav", ".wav"  # anything else is decoded to wav on the way in
 
     in_place = src.resolve().parent == project.tracks_dir.resolve() and ext == suffix
-    if in_place and name is None and not any(t["file"] == src.name for t in project.tracks()):
-        track_name, dst = src.stem, src
+    if in_place and not any(t["file"] == src.name for t in project.tracks()):
+        taken = {t["name"] for t in project.tracks()}
+        base = re.sub(r"[^A-Za-z0-9._-]+", "-", name or src.stem).strip("-.") or "track"
+        track_name, i = base, 2
+        while track_name in taken:
+            track_name, i = f"{base}-{i}", i + 1
+        dst = src
     else:
         track_name = project.unique_name(name or src.stem)
         dst = project.tracks_dir / f"{track_name}{ext}"
@@ -849,7 +868,7 @@ def ingest(project: Project, src: Path, name: str | None, at_ms: int, verbose: b
     how = "kept in" if dst == src else ("copied to" if ext == suffix else "converted to")
     print(f"add   {track['n']:>2}  {track['name']:<16} {kind}  {info['channels']}ch  {info['sample_rate']} Hz"
           f"  {fmt_ms(track['length_ms'])}  at {fmt_ms(at_ms)}  ({how} {TRACK_DIR}/{dst.name})")
-    return track
+    return track, dst != src
 
 
 def cmd_add(project: Project, args: Args) -> None:
@@ -860,9 +879,38 @@ def cmd_add(project: Project, args: Args) -> None:
         die("--name works with a single file")
     at_ms = parse_ms(at) if at else 0
     project.record("add " + " ".join(files))
+    made: list[str] = []
     for f in files:
-        ingest(project, Path(f), name, at_ms, args.verbose)
+        track, created = ingest(project, Path(f), name, at_ms, args.verbose)
+        if created:
+            made.append(track["file"])
+    project.created(made)
     autorender(project, args)
+
+
+def cmd_scan(project: Project, args: Args) -> None:
+    """Register files that appeared in master/ by hand; report tracks whose file is gone."""
+    args.positionals("gout scan [-N]")
+    tracks = project.tracks()
+    known = {t["file"] for t in tracks}
+    files = sorted(f for f in project.tracks_dir.iterdir()
+                   if f.is_file() and f.suffix.lower() in (".wav", ".mp3")
+                   and not f.name.startswith(".") and ".part" not in f.name)
+    new = [f for f in files if f.name not in known]
+    missing = [t for t in tracks if not (project.tracks_dir / t["file"]).exists()]
+    if not new and not missing:
+        print(f"scan  {TRACK_DIR}/ matches {DB_NAME}: {len(files)} file{'' if len(files) == 1 else 's'},"
+              f" nothing new, nothing missing")
+        return
+    if new:
+        project.record("scan " + " ".join(f.name for f in new))
+        for f in new:
+            ingest(project, f, None, 0, args.verbose)
+    for t in missing:
+        print(f"scan  missing  {t['n']:>2}  {t['name']:<16} {TRACK_DIR}/{t['file']} is gone"
+              f"  (gout rm {t['n']} drops the track, or put the file back)")
+    if new:
+        autorender(project, args)
 
 
 def cmd_ls(project: Project, args: Args) -> None:
@@ -1221,6 +1269,7 @@ CHEAT = """\
 CHEAT SHEET          long short        tab flips the pages
 TRACKS
  add   a  FILE.. [-a TIME] [-n NAME]  copy into master/
+ scan  sc                             new files in master/
  ls    l                              list the tracks
  move  m  TRACK +1s | -500ms | 1:30   later|earlier|place
  trim  t  TRACK -st 2s -et 1:40       soft: file untouched
@@ -1279,7 +1328,7 @@ def cmd_cheat(root_hint: Path | None, args: Args) -> None:
 
 # long name -> the short form and the other spellings; every command works under all of them
 COMMANDS = {
-    "add": ("a",), "ls": ("l", "list"), "view": ("v",), "move": ("m", "mv"), "trim": ("t",),
+    "add": ("a",), "scan": ("sc",), "ls": ("l", "list"), "view": ("v",), "move": ("m", "mv"), "trim": ("t",),
     "rm": ("r", "remove", "del"), "mute": ("mu",), "solo": ("s",), "gain": ("g",), "pan": ("p",),
     "mix": ("x", "render", "bounce"), "undo": ("u",), "dump": ("dp",), "rebuild": ("rb",),
     "set": ("se",), "new": ("n",), "cheat": ("c", "sheet"), "help": ("h", "?"), "ui": ("tui",), "cut": (),
@@ -1634,6 +1683,8 @@ PROJECT
 
 TRACKS   (TRACK is the number shown by ls, or the track name)
   gout add   a  FILE... [-n NAME] [-a TIME]  copy wav/mp3 into {TRACK_DIR}/ (other formats become wav)
+  gout scan  sc                              register wav/mp3 you copied into {TRACK_DIR}/ yourself,
+                                             at 0; reports tracks whose file has gone missing
   gout move  m  TRACK +TIME | -TIME | TIME   nudge later, nudge earlier, or place at a time
   gout trim  t  TRACK [-st T] [-et T|-el T]  soft trim: in/out points, the file is untouched
   gout trim  t  TRACK -c                     soft trim off again (--clear)
@@ -1807,7 +1858,7 @@ def cmd_cut(argv: list[str]) -> None:
 # --------------------------------------------------------------------------- dispatch
 
 PROJECT_COMMANDS = {
-    "add": cmd_add, "ls": cmd_ls, "move": cmd_move, "trim": cmd_trim, "rm": cmd_rm,
+    "add": cmd_add, "scan": cmd_scan, "ls": cmd_ls, "move": cmd_move, "trim": cmd_trim, "rm": cmd_rm,
     "mute": cmd_mute, "solo": cmd_solo, "gain": cmd_gain, "pan": cmd_pan,
     "set": cmd_set, "mix": cmd_mix, "undo": cmd_undo, "dump": cmd_dump,
     "view": cmd_view, "ui": cmd_ui,
