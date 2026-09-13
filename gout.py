@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import argparse
+import cmath
 import contextlib
 import datetime as dt
 import io
@@ -914,6 +915,131 @@ def track_eq(t: dict) -> list[dict]:
         return []
 
 
+def biquad(kind: str, f: float, fs: float, q: float = EQ_SHELF_Q, g: float = 0.0) -> tuple:
+    """RBJ cookbook coefficients, the same family ffmpeg's biquads use."""
+    w0 = 2 * math.pi * min(f, fs * 0.499) / fs
+    cw, sw = math.cos(w0), math.sin(w0)
+    if kind == "lp1":
+        a1 = -math.exp(-w0)
+        return (1 + a1, 0.0, 0.0, 1.0, a1, 0.0)
+    if kind == "hp1":
+        a1 = -math.exp(-w0)
+        b0 = (1 - a1) / 2
+        return (b0, -b0, 0.0, 1.0, a1, 0.0)
+    alpha = sw / (2 * q)
+    if kind == "lp2":
+        return ((1 - cw) / 2, 1 - cw, (1 - cw) / 2, 1 + alpha, -2 * cw, 1 - alpha)
+    if kind == "hp2":
+        return ((1 + cw) / 2, -(1 + cw), (1 + cw) / 2, 1 + alpha, -2 * cw, 1 - alpha)
+    A = 10 ** (g / 40)
+    if kind == "peak":
+        return (1 + alpha * A, -2 * cw, 1 - alpha * A, 1 + alpha / A, -2 * cw, 1 - alpha / A)
+    r = 2 * math.sqrt(A) * alpha
+    if kind == "ls":
+        return (A * ((A + 1) - (A - 1) * cw + r), 2 * A * ((A - 1) - (A + 1) * cw),
+                A * ((A + 1) - (A - 1) * cw - r), (A + 1) + (A - 1) * cw + r,
+                -2 * ((A - 1) + (A + 1) * cw), (A + 1) + (A - 1) * cw - r)
+    return (A * ((A + 1) + (A - 1) * cw + r), -2 * A * ((A - 1) + (A + 1) * cw),  # hs
+            A * ((A + 1) + (A - 1) * cw - r), (A + 1) - (A - 1) * cw + r,
+            2 * ((A - 1) - (A + 1) * cw), (A + 1) - (A - 1) * cw - r)
+
+
+def eq_sections(bands: list[dict], fs: float) -> list[tuple]:
+    out = []
+    for b in bands:
+        if b["type"] in ("hp", "lp"):
+            for poles in EQ_SLOPES[b["slope"]]:
+                out.append(biquad(f"{b['type']}{poles}", b["f"], fs))
+        elif b["type"] == "peak":
+            out.append(biquad("peak", b["f"], fs, b["q"], b["g"]))
+        else:
+            out.append(biquad(b["type"], b["f"], fs, EQ_SHELF_Q, b["g"]))
+    return out
+
+
+def eq_response(bands: list[dict], fs: float, freqs: list[float]) -> list[float]:
+    """Gain in dB of the whole eq at each frequency."""
+    sections = eq_sections(bands, fs)
+    out = []
+    for f in freqs:
+        z1 = cmath.exp(-1j * 2 * math.pi * min(f, fs * 0.499) / fs)
+        z2 = z1 * z1
+        db = 0.0
+        for b0, b1, b2, a0, a1, a2 in sections:
+            h = abs((b0 + b1 * z1 + b2 * z2) / (a0 + a1 * z1 + a2 * z2))
+            db += 20 * math.log10(h) if h > 1e-9 else -180
+        out.append(db)
+    return out
+
+
+EQ_GUTTER = 4
+EQ_TICKS = ((20, "20"), (50, "50"), (100, "100"), (200, "200"), (500, "500"), (1000, "1k"),
+            (2000, "2k"), (5000, "5k"), (10000, "10k"), (20000, "20k"))
+
+
+def render_eq(project: "Project", t: dict, width: int, height: int = 8,
+              spectrum: bytes | None = None) -> list[tuple[str, str, str]]:
+    """Rows of (text, classes, kind) plotting a track's eq curve from 20 Hz to 20 kHz.
+
+    kind is head, graph or axis. Classes: a the curve, z the 0 dB line, x the spectrum.
+    Half blocks give two levels per row; the dB range fits the curve, at least ±6.
+    """
+    gw = max(12, width - EQ_GUTTER)
+    freqs = [20 * (1000 ** (c / (gw - 1))) for c in range(gw)]
+    try:
+        bands = parse_eq(t["eq"]) if t["eq"] else []
+    except ValueError:
+        bands = []
+    curve = eq_response(bands, project.rate, freqs)
+    # the range follows the boosts and cuts of peaks and shelves; cut slopes run off the bottom
+    loudest = max([abs(b["g"]) for b in bands if b["type"] in ("peak", "ls", "hs")] + [0.0])
+    span = max(12, min(24, math.ceil((loudest + 1.5) / 6) * 6))
+    sub = 2 * height
+
+    def ysub(db: float) -> int:
+        db = max(-span, min(span, db))
+        return max(0, min(sub - 1, round((span - db) / (2 * span) * (sub - 1))))
+
+    cells = [[" "] * gw for _ in range(height)]
+    classes = [[" "] * gw for _ in range(height)]
+    zero_row = ysub(0) // 2
+    if spectrum:  # background: one bar per column, dim
+        for c in range(gw):
+            level = spectrum[min(len(spectrum) - 1, c * len(spectrum) // gw)] / 255  # 0..1 of the range
+            top_sub = round((1 - level) * (sub - 1))
+            for row in range(height):
+                if 2 * row + 1 >= top_sub:
+                    cells[row][c] = "░" if 2 * row >= top_sub else "▗"
+                    classes[row][c] = "x"
+    for c in range(gw):
+        if classes[zero_row][c] == " ":
+            cells[zero_row][c], classes[zero_row][c] = "─", "z"
+    ys = [ysub(v) for v in curve]
+    for c in range(gw):
+        lo, hi = (ys[c], ys[c]) if c == 0 else (min(ys[c - 1], ys[c]), max(ys[c - 1], ys[c]))
+        for row in range(height):
+            top, bot = lo <= 2 * row <= hi, lo <= 2 * row + 1 <= hi
+            if top or bot:
+                cells[row][c] = "█" if top and bot else ("▀" if top else "▄")
+                classes[row][c] = "a"
+    state = "" if not t["eq"] else ("  (off)" if not t["eq_on"] else "")
+    rows = [(f"eq   {t['n']:>2} {t['name'][:9]:<9} {t['eq'] or 'flat'}{state}"[:width], "", "head")]
+    for row in range(height):
+        label = f"{span:+d}" if row == 0 else (f"{-span:+d}" if row == height - 1 else ("0" if row == zero_row else ""))
+        rows.append((f"{label:>{EQ_GUTTER - 1}} " + "".join(cells[row]),
+                     " " * EQ_GUTTER + "".join(classes[row]), "graph"))
+    axis = [" "] * gw
+    last = -2
+    for f, text in EQ_TICKS:
+        c = round(math.log(f / 20) / math.log(1000) * (gw - 1))
+        c = max(0, min(gw - len(text), c - len(text) // 2))
+        if c > last + 1:
+            axis[c:c + len(text)] = list(text)
+            last = c + len(text) - 1
+    rows.append((" " * EQ_GUTTER + "".join(axis), "", "axis"))
+    return rows
+
+
 # --------------------------------------------------------------------------- timeline maths
 
 
@@ -1522,6 +1648,9 @@ def cmd_eq(project: Project, args: Args) -> None:
     words = pos[1:]
     if not words:
         print(eq_line(t))
+        width = min(100, shutil.get_terminal_size((100, 24)).columns)
+        for text, _, kind in render_eq(project, t, width - 6)[1:]:
+            print("      " + text)
         return
     if words == ["off"]:
         project.record(f"eq {t['name']} off")
@@ -2017,6 +2146,7 @@ KEYS   ctrl-u  timeline on/off   ctrl-k  sheet on/off
        ctrl-n ctrl-p  sheet line  pgup pgdn      scroll log
        up down  earlier commands  ctrl-l  clear the log
        ctrl-← ctrl-→  move the split  (shift/alt too)
+       ctrl-g  eq curve panel on/off  (eq N picks the track)
        ctrl-d  ctrl-c  quit
 SHEET  ↑↓ rows, type the new value, ctrl-s apply and stay
        ctrl-x apply and close  esc close  ctrl-w clear cell
@@ -2081,6 +2211,8 @@ class Tui:
         self.sheet_errors: dict[str, str] = {}
         self.sheet_status = ""
         self.saveas_name: str | None = None  # the "save as:" field in the sheet while it is open
+        self.eq_track: int | None = None  # track number whose eq curve the panel shows
+        self.show_eq = True
         self.show_timeline = (project.get("ui_timeline") or "on") != "off"
         self.show_cheat = (project.get("ui_cheat") or "on") != "off"
         split = project.get("ui_split") or "40"
@@ -2159,6 +2291,8 @@ class Tui:
                 self.put(0, right_x, " timeline".ljust(right_w), curses.A_REVERSE)
                 rows = render_timeline(p, right_w, styled=True)
                 room = max(3, h - 2 - 6) if self.show_cheat else max(3, h - 1)  # sheet keeps six lines
+                if self.show_eq and self.eq_track is not None:
+                    room = max(3, room - (10 if h >= 32 else 8))
                 if len(rows) > room:
                     heads = [r for r in rows if r[2] in ("axis", "ruler")]
                     tail = [r for r in rows if r[2] in ("master", "note") and r not in heads]
@@ -2171,6 +2305,21 @@ class Tui:
                     self.put(y, right_x, label, curses.A_DIM if kind in ("axis", "ruler", "note") else 0)
                     self.draw_cells(y, right_x + LABEL_W + 1, cells, kind, classes)
                 top = 1 + len(rows)
+
+        if right_x is not None and self.show_eq and self.eq_track is not None:
+            track = next((t for t in tracks if t["n"] == self.eq_track), None)
+            if track is None:
+                self.eq_track = None
+            else:
+                height = 8 if h >= 32 else 6
+                rows = render_eq(p, track, right_w - 1, height, self.spectrum_for(track))
+                self.put(top, right_x, (" " + rows[0][0] + "   ctrl-g hides").ljust(right_w), curses.A_REVERSE)
+                for i, (text, classes, kind) in enumerate(rows[1:], 1):
+                    if top + i >= h:
+                        break
+                    self.put(top + i, right_x + 1, text[:EQ_GUTTER], curses.A_DIM)
+                    self.draw_cells(top + i, right_x + 1 + EQ_GUTTER, text[EQ_GUTTER:], kind, classes[EQ_GUTTER:])
+                top += len(rows)
 
         if right_x is not None and self.show_cheat:
             sheet = render_cheat(right_w - 1)
@@ -2189,12 +2338,16 @@ class Tui:
             pass
         scr.refresh()
 
+    def spectrum_for(self, track: dict) -> bytes | None:
+        return None  # filled in by the spectrum step
+
     def draw_cells(self, y: int, x: int, cells: str, kind: str, classes: str = "") -> None:
         import curses
         if kind in ("note", "axis", "ruler"):
             self.put(y, x, cells, curses.A_DIM)
             return
-        attrs = {"a": curses.A_BOLD, "s": curses.A_DIM, "t": curses.A_DIM, "z": curses.A_DIM, "m": curses.A_BOLD}
+        attrs = {"a": curses.A_BOLD, "s": curses.A_DIM, "t": curses.A_DIM, "z": curses.A_DIM, "m": curses.A_BOLD,
+                 "x": curses.A_DIM}
         classes = classes.ljust(len(cells))
         i = 0
         while i < len(cells):
@@ -2231,6 +2384,8 @@ class Tui:
             return
         if key == "\x05":  # ctrl-e
             self.sheet_open()
+        elif key == "\x07":  # ctrl-g: the eq curve panel
+            self.toggle_eq()
         elif key == "\x15":  # ctrl-u
             self.toggle("timeline")
         elif key == "\x0b":  # ctrl-k
@@ -2551,6 +2706,16 @@ class Tui:
         if not (self.show_timeline or self.show_cheat):
             self.toggle("timeline")
 
+    def toggle_eq(self) -> None:
+        if self.eq_track is None:
+            tracks = self.project.tracks()
+            if not tracks:
+                self.log.append("no tracks yet, nothing to show an eq for")
+                return
+            self.eq_track, self.show_eq = tracks[0]["n"], True
+        else:
+            self.show_eq = not self.show_eq
+
     def toggle(self, what: str) -> None:
         """Show or hide one section of the right panel; remembered per project."""
         if what == "timeline":
@@ -2582,6 +2747,8 @@ class Tui:
             self.toggle("cheat")
         elif head == "sheet":
             self.sheet_open()
+        elif head == "eq" and len(argv) == 1:
+            self.toggle_eq()
         elif head == "clear":
             self.log.clear()
         elif head == "split":
@@ -2617,6 +2784,11 @@ class Tui:
             finally:
                 self.busy = False
             self.log.extend(buf.getvalue().rstrip("\n").splitlines())
+            if head in ("eq", "hp", "lp") and len(argv) > 1:
+                try:  # the panel follows the track you are working on
+                    self.eq_track, self.show_eq = self.project.track(argv[1])["n"], True
+                except GoutError:
+                    pass
         del self.log[:-2000]
 
 
@@ -2707,7 +2879,9 @@ TRACKS   (TRACK is the number shown by ls, or the track name)
   gout lp       TRACK HZ [SLOPE] | off       low-pass cut, e.g. lp 3 12k
   gout eq    e  TRACK BANDS...               the whole eq in one line, before the fader:
                                              {EQ_SYNTAX}
-  gout eq    e  TRACK on | off | clear       bypass, bring back, or remove;  eq TRACK shows it
+  gout eq    e  TRACK on | off | clear       bypass, bring back, or remove
+  gout eq    e  TRACK                        show the bands and draw the curve, 20 Hz to 20 kHz; in
+                                             the ui the curve panel follows the track you eq (ctrl-g)
   -N (--no-mix) on any of these skips the automatic re-mix; -p DIR before a command picks
   the project. Long flags: --at --name --hard --clear --reencode --delete --mp3 --rate --width
 
