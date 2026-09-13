@@ -15,6 +15,7 @@ import datetime as dt
 import io
 import math
 import os
+import random
 import json
 import re
 import shlex
@@ -552,7 +553,9 @@ CREATE TABLE IF NOT EXISTS tracks (
     comp        TEXT NOT NULL DEFAULT '',
     comp_on     INTEGER NOT NULL DEFAULT 1,
     delay       TEXT NOT NULL DEFAULT '',
-    delay_on    INTEGER NOT NULL DEFAULT 1
+    delay_on    INTEGER NOT NULL DEFAULT 1,
+    reverb      TEXT NOT NULL DEFAULT '',
+    reverb_on   INTEGER NOT NULL DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS envelopes (
     file  TEXT PRIMARY KEY,
@@ -577,7 +580,7 @@ CREATE TABLE IF NOT EXISTS history (
 
 TRACK_COLUMNS = ("n", "name", "file", "kind", "length_ms", "channels", "sample_rate",
                  "offset_ms", "in_ms", "out_ms", "gain_db", "pan", "mute", "solo", "eq", "eq_on",
-                 "comp", "comp_on", "delay", "delay_on")
+                 "comp", "comp_on", "delay", "delay_on", "reverb", "reverb_on")
 
 
 class Project:
@@ -606,6 +609,10 @@ class Project:
             with self.conn:
                 self.conn.execute("ALTER TABLE tracks ADD COLUMN delay TEXT NOT NULL DEFAULT ''")
                 self.conn.execute("ALTER TABLE tracks ADD COLUMN delay_on INTEGER NOT NULL DEFAULT 1")
+        if "reverb" not in {r[1] for r in self.conn.execute("PRAGMA table_info(tracks)")}:
+            with self.conn:
+                self.conn.execute("ALTER TABLE tracks ADD COLUMN reverb TEXT NOT NULL DEFAULT ''")
+                self.conn.execute("ALTER TABLE tracks ADD COLUMN reverb_on INTEGER NOT NULL DEFAULT 1")
         if "lufs" not in {r[1] for r in self.conn.execute("PRAGMA table_info(envelopes)")}:
             with self.conn:
                 for col in ("lufs", "tp", "lra"):
@@ -854,7 +861,7 @@ class Project:
 # --------------------------------------------------------------------------- master settings
 
 MASTER_DEFAULTS = {
-    "lufs": "off", "ceiling": "-1", "eq": "", "comp": "", "delay": "", "bpm": "", "gain": "0",
+    "lufs": "off", "ceiling": "-1", "eq": "", "comp": "", "delay": "", "reverb": "", "bpm": "", "gain": "0",
     "fadein": "0", "fadeout": "0", "head": "0", "tail": "0",
     "bits": "32f", "mp3": "320k", "title": "", "artist": "", "album": "", "year": "", "comment": "",
 }
@@ -908,12 +915,13 @@ def parse_setting(key: str, value: str) -> tuple[str, str]:
         return key, v.lower()
     if key in TAG_KEYS:
         return key, value
-    if key in ("eq", "comp", "delay"):  # the master's own, same syntax as a track's
+    if key in ("eq", "comp", "delay", "reverb"):  # the master's own, same syntax as a track's
         if v.lower() in ("off", "none", "clear", "flat", ""):
             return key, ""
         try:
             return key, {"eq": lambda: fmt_eq(parse_eq(v)), "comp": lambda: fmt_comp(parse_comp(v)),
-                         "delay": lambda: fmt_delay(parse_delay(v))}[key]()
+                         "delay": lambda: fmt_delay(parse_delay(v)),
+                         "reverb": lambda: fmt_reverb(parse_reverb(v))}[key]()
         except ValueError as exc:
             die(str(exc))
     if key == "bpm":
@@ -1057,7 +1065,8 @@ def master_track(project: "Project") -> dict:
     """The master bus in the shape of a track row, for the eq/comp code and their curves."""
     return {"n": MASTER_N, "name": "master", "file": MASTER_WAV, "kind": "wav",
             "eq": setting(project, "eq"), "eq_on": 1, "comp": setting(project, "comp"), "comp_on": 1,
-            "delay": setting(project, "delay"), "delay_on": 1}
+            "delay": setting(project, "delay"), "delay_on": 1,
+            "reverb": setting(project, "reverb"), "reverb_on": 1}
 
 
 def is_master(spec: str) -> bool:
@@ -1080,6 +1089,9 @@ def effect_tail_ms(project: "Project", t: dict) -> int:
             taps = []
         if taps:
             tail = max(tail, taps[-1][0])
+    rv = track_reverb(t)
+    if rv is not None:
+        tail += reverb_tail_ms(rv)  # a reverb after a delay rings on after its last repeat
     return math.ceil(tail)
 
 
@@ -1419,6 +1431,16 @@ def render_track_panel(project: "Project", t: dict, width: int, height: int = 8,
     return render_eq(project, t, width, height, spectrum)
 
 
+def render_panel(project: "Project", t: dict, width: int, height: int, spectrum: bytes | None,
+                 peaks: bytes | None, prefer: str) -> list[tuple[str, str, str]]:
+    """What the ui's track panel shows: delay or reverb when that was touched last, else eq and comp."""
+    if prefer == "delay":
+        return render_delay(t, project_bpm(project), min(width, 80), height)
+    if prefer == "reverb":
+        return render_reverb(project, t, min(width, 80), height)
+    return render_track_panel(project, t, width, height, spectrum, peaks, prefer)
+
+
 # --------------------------------------------------------------------------- delay
 #
 # A delay line:  375ms w30 f40 n4   or with a tempo set:  1/8 w30 f40 n4   (time, wet %, feedback %,
@@ -1559,6 +1581,226 @@ def render_delay(t: dict, bpm: float | None, width: int = 60, height: int = 6) -
     return rows
 
 
+# --------------------------------------------------------------------------- reverb
+#
+# A reverb line:  2.5s p20 d50 w25   (decay time to -60 dB, pre-delay ms, damping %, wet %).
+# ffmpeg has no algorithmic reverb, so gout synthesises a stereo impulse response (early
+# reflections, then decorrelated noise decaying at the set time, the high end decaying
+# faster the more damping) and convolves a mono sum of the track with it (afir). The
+# response is cached per setting under .gout/ir/ in the project.
+
+REVERB_DEFAULTS = {"pre": 10.0, "damp": 40.0, "wet": 20.0}
+REVERB_PRESETS = {
+    "ambience":  ("0.4s p0 d30 w15", "a little air around it"),
+    "room":      ("0.8s p5 d40 w20", "a small room"),
+    "chamber":   ("1.4s p10 d45 w20", "a warm, dense chamber"),
+    "plate":     ("1.8s p10 d15 w25", "bright and smooth, the vocal classic"),
+    "hall":      ("2.6s p25 d50 w25", "a concert hall"),
+    "cathedral": ("6s p40 d60 w30", "long and dark"),
+    "none":      ("", "no reverb"),
+}
+REVERB_SYNTAX = "2.5s p20 d50 w25   (decay to -60 dB, pre-delay ms, damping %, wet %)"
+REVERB_VERSION = 1  # bump when the synthesis changes, so cached responses are rebuilt
+IR_DIR = ".gout/ir"
+
+
+def parse_reverb(text: str) -> dict:
+    tokens: list[str] = []
+    for tok in text.split():
+        if tok.lower() in REVERB_PRESETS:
+            tokens += REVERB_PRESETS[tok.lower()][0].split()
+        else:
+            tokens.append(tok)
+    r: dict = {"decay": None, **REVERB_DEFAULTS}
+    for tok in tokens:
+        t = tok.lower()
+        if re.fullmatch(r"\d+(?:\.\d+)?(ms|s)", t):
+            r["decay"] = float(t[:-2]) / 1000 if t.endswith("ms") else float(t[:-1])
+        elif re.fullmatch(r"p\d+(?:\.\d+)?", t):
+            r["pre"] = float(t[1:])
+        elif re.fullmatch(r"d\d+(?:\.\d+)?", t):
+            r["damp"] = float(t[1:])
+        elif re.fullmatch(r"w\d+(?:\.\d+)?", t):
+            r["wet"] = float(t[1:])
+        else:
+            raise ValueError(f"bad reverb setting {tok!r}; a line looks like  {REVERB_SYNTAX}  (or a preset: reverb presets)")
+    if r["decay"] is None:
+        raise ValueError(f"a reverb needs a decay time: {REVERB_SYNTAX}")
+    if not 0.1 <= r["decay"] <= 8:
+        raise ValueError("decay must be between 0.1 and 8 s")
+    if not 0 <= r["pre"] <= 250:
+        raise ValueError("pre-delay must be between 0 and 250 ms")
+    if not 0 <= r["damp"] <= 100:
+        raise ValueError("damping is a percentage, 0 .. 100")
+    if not 0 <= r["wet"] <= 100:
+        raise ValueError("wet is a percentage, 0 .. 100")
+    return r
+
+
+def fmt_reverb(r: dict) -> str:
+    return f"{r['decay']:g}s p{r['pre']:g} d{r['damp']:g} w{r['wet']:g}"
+
+
+def track_reverb(t: dict) -> dict | None:
+    if not t.get("reverb") or not t.get("reverb_on", 1):
+        return None
+    try:
+        return parse_reverb(t["reverb"])
+    except ValueError:
+        return None
+
+
+def reverb_shape(r: dict) -> str:
+    """The settings that shape the impulse response; wet is only a level, applied at convolution."""
+    return f"{r['decay']:g}s_p{r['pre']:g}_d{r['damp']:g}"
+
+
+def reverb_tail_ms(r: dict) -> int:
+    return math.ceil(r["pre"] + r["decay"] * 1000)
+
+
+def synth_ir(r: dict, rate: int) -> list[array]:
+    """A stereo impulse response, unit energy per channel, reproducible for the same settings."""
+    decay, damp = r["decay"], r["damp"] / 100
+    pre = round(r["pre"] * rate / 1000)
+    n_late = max(1, round(decay * rate))
+    k_dark = math.exp(-6.9078 / (decay * rate))                    # -60 dB after `decay`
+    k_bright = math.exp(-6.9078 / (max(0.05, decay * (1 - 0.85 * damp)) * rate))
+    a = 1 - math.exp(-2 * math.pi * 2500 / rate)                   # one-pole low-pass at 2.5 kHz
+    lp_gain = math.sqrt((2 - a) / a)                               # keeps its noise power at 1
+    wb, wd = math.sqrt(1 - damp), math.sqrt(damp)
+    build = max(1, round(0.012 * rate))                            # the late part swells in
+    er_span = min(0.08, decay * 0.04 + 0.01)
+    chans = []
+    for c in range(2):
+        rng = random.Random(f"gout-reverb-{REVERB_VERSION}-{reverb_shape(r)}-{rate}-{c}")
+        gauss = rng.gauss
+        out = array("f", bytes(4 * (pre + n_late)))
+        env_b = env_d = 1.0
+        y = 0.0
+        energy = 0.0
+        for i in range(n_late):
+            x = gauss(0.0, 1.0)
+            y += a * (x - y)
+            v = wb * x * env_b + wd * y * lp_gain * env_d
+            if i < build:
+                v *= i / build
+            out[pre + i] = v
+            energy += v * v
+            env_b *= k_bright
+            env_d *= k_dark
+        tap = math.sqrt(energy) * 0.12
+        for _ in range(8):                                         # early reflections
+            pos = pre + round(rng.uniform(0.003, er_span) * rate)
+            if pos < len(out):
+                out[pos] += rng.choice((-1.0, 1.0)) * rng.uniform(0.4, 1.0) * tap
+        total = math.sqrt(sum(v * v for v in out)) or 1.0
+        for i in range(len(out)):
+            out[i] /= total
+        chans.append(out)
+    return chans
+
+
+def write_float_wav(path: Path, chans: list[array], rate: int) -> None:
+    frames = array("f", bytes(4 * len(chans[0]) * len(chans)))
+    for c, data in enumerate(chans):
+        frames[c::len(chans)] = data
+    if sys.byteorder == "big":
+        frames.byteswap()
+    body = frames.tobytes()
+    ch = len(chans)
+    header = (b"RIFF" + (36 + len(body)).to_bytes(4, "little") + b"WAVE"
+              + b"fmt " + (16).to_bytes(4, "little") + (3).to_bytes(2, "little") + ch.to_bytes(2, "little")
+              + rate.to_bytes(4, "little") + (rate * ch * 4).to_bytes(4, "little")
+              + (ch * 4).to_bytes(2, "little") + (32).to_bytes(2, "little")
+              + b"data" + len(body).to_bytes(4, "little"))
+    tmp = path.with_name(path.name + ".part")
+    tmp.write_bytes(header + body)
+    tmp.replace(path)
+
+
+def impulse_path(project: "Project", r: dict) -> Path:
+    """The cached impulse response for these settings, synthesised on first use."""
+    key = f"v{REVERB_VERSION}-{reverb_shape(r)}-{project.rate}"
+    path = project.root / IR_DIR / f"{key}.wav"
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_float_wav(path, synth_ir(r, project.rate), project.rate)
+    return path
+
+
+def reverb_graph(project: "Project", r: dict, src: str, out: str, inputs: list[Path]) -> str:
+    """Filtergraph from a stereo label to [out]: the dry signal plus a mono sum convolved with
+    the stereo response. Appends the response file to `inputs`."""
+    k = len(inputs)
+    inputs.append(impulse_path(project, r))
+    tail = reverb_tail_ms(r) / 1000
+    return (f"{src}asplit[{out}d][{out}w];"
+            f"[{out}w]pan=stereo|c0=0.5*c0+0.5*c1|c1=0.5*c0+0.5*c1,apad=pad_dur={tail:.3f}[{out}m];"
+            f"[{k}:a]aformat=sample_rates={project.rate}:sample_fmts=fltp:channel_layouts=stereo[{out}i];"
+            f"[{out}m][{out}i]afir=dry=1:wet={r['wet'] / 100:.4f}:gtype=none[{out}r];"
+            f"[{out}d][{out}r]amix=inputs=2:normalize=0:duration=longest[{out}]")
+
+
+def track_chain(project: "Project", t: dict, steps: list[str], src: str, out: str, inputs: list[Path]) -> str:
+    """One track's whole filtergraph from its input label to [out], reverb included."""
+    rv = track_reverb(t)
+    if rv is None:
+        return f"{src}{','.join(steps)}[{out}]"
+    return f"{src}{','.join(steps)}[{out}p];" + reverb_graph(project, rv, f"[{out}p]", out, inputs)
+
+
+def render_reverb(project: "Project", t: dict, width: int = 60, height: int = 6) -> list[tuple[str, str, str]]:
+    """The impulse response's level over time, 0 to -60 dB, both channels' peak per column."""
+    gw = max(12, width - EQ_GUTTER)
+    try:
+        r = parse_reverb(t["reverb"]) if t["reverb"] else None
+    except ValueError:
+        r = None
+    cells = [[" "] * gw for _ in range(height)]
+    classes = [[" "] * gw for _ in range(height)]
+    total_ms = 1000.0
+    if r is not None:
+        path = impulse_path(project, r)
+        data = array("f")
+        data.frombytes(path.read_bytes()[44:])
+        if sys.byteorder == "big":
+            data.byteswap()
+        frames = len(data) // 2
+        total_ms = frames * 1000 / project.rate
+        peak = max((abs(v) for v in data), default=1.0) or 1.0
+        sub = 2 * height
+        for col in range(gw):
+            a = col * frames // gw
+            b = max(a + 1, (col + 1) * frames // gw)
+            level = max((abs(v) for v in data[2 * a:2 * b]), default=0.0) / peak
+            db = 20 * math.log10(max(level, 1e-6))
+            if db < -60:
+                continue
+            top_sub = round(-db / 60 * (sub - 1))
+            for row in range(height):
+                if 2 * row + 1 >= top_sub:
+                    cells[row][col] = "█" if 2 * row >= top_sub else "▄"
+                    classes[row][col] = "a"
+    head = f"reverb {t['reverb'] or 'none'}" + ("  (off)" if t["reverb"] and not t["reverb_on"] else "")
+    if r is not None:
+        head += f"  rings {reverb_tail_ms(r) / 1000:.2f} s after the sound stops"
+    rows = [(head, "", "head")]
+    for row in range(height):
+        label = "0" if row == 0 else ("-60" if row == height - 1 else ("-30" if row == height // 2 else ""))
+        rows.append((f"{label:>{EQ_GUTTER - 1}} " + "".join(cells[row]), " " * EQ_GUTTER + "".join(classes[row]), "graph"))
+    axis = [" "] * gw
+    unit_s = total_ms >= 2000
+    for frac in (0, 0.25, 0.5, 0.75, 1.0):
+        ms = total_ms * frac
+        text = f"{ms / 1000:.1f}s" if unit_s else f"{ms:.0f}ms"
+        col = max(0, min(gw - len(text), round(frac * (gw - 1)) - (0 if frac == 0 else len(text) // 2)))
+        if all(ch == " " for ch in axis[max(0, col - 1):col + len(text) + 1]):
+            axis[col:col + len(text)] = list(text)
+    rows.append((" " * EQ_GUTTER + "".join(axis), "", "axis"))
+    return rows
+
+
 # --------------------------------------------------------------------------- timeline maths
 
 
@@ -1630,25 +1872,21 @@ def track_steps(project: Project, t: dict) -> list[str] | None:
 
 def build_graph(project: Project, tracks: list[dict]) -> tuple[list[Path], str, list[dict]]:
     any_solo = any(t["solo"] for t in tracks)
-    inputs: list[Path] = []
-    chains: list[str] = []
-    used: list[dict] = []
+    plans = []
     for t in tracks:
         if not is_heard(t, any_solo):
             continue
         steps = track_steps(project, t)
-        if steps is None:
-            continue
-        i = len(inputs)
-        inputs.append(project.tracks_dir / t["file"])
-        used.append(t)
-        chains.append(f"[{i}:a]" + ",".join(steps) + f"[t{i}]")
-    if not inputs:
+        if steps is not None:
+            plans.append((t, steps))
+    if not plans:
         return [], "", []
-    labels = "".join(f"[t{i}]" for i in range(len(inputs)))
-    chains.append(f"{labels}amix=inputs={len(inputs)}:normalize=0:duration=longest"
+    inputs: list[Path] = [project.tracks_dir / t["file"] for t, _ in plans]  # reverb responses follow
+    chains = [track_chain(project, t, steps, f"[{i}:a]", f"t{i}", inputs) for i, (t, steps) in enumerate(plans)]
+    labels = "".join(f"[t{i}]" for i in range(len(plans)))
+    chains.append(f"{labels}amix=inputs={len(plans)}:normalize=0:duration=longest"
                   f":dropout_transition=0[mix]")
-    return inputs, ";".join(chains), used
+    return inputs, ";".join(chains), [t for t, _ in plans]
 
 
 def measure_loudness(path: Path, target: float = -23.0, ceiling: float = -1.0) -> dict | None:
@@ -1695,17 +1933,27 @@ def mix(project: Project, verbose: bool = False, mp3: bool = False) -> None:
         echo = delay_filter(master_delay, project_bpm(project))
         if echo:
             post.append(echo)
+    master_reverb = track_reverb(master_track(project))
+    after: list[str] = []  # gain and fades come after the master reverb
     gain = float(setting(project, "gain"))
     if gain:
-        post.append(f"volume={gain:.2f}dB")
+        after.append(f"volume={gain:.2f}dB")
     fade_in, fade_out = int(setting(project, "fadein")), int(setting(project, "fadeout"))
     end_ms = max(sounding_end(project, t) for t in used) + effect_tail_ms(project, master_track(project))
     if fade_in > 0:
-        post.append(f"afade=t=in:d={fade_in / 1000:.3f}")
+        after.append(f"afade=t=in:d={fade_in / 1000:.3f}")
     if fade_out > 0:
-        post.append(f"afade=t=out:st={max(0, end_ms - fade_out) / 1000:.3f}:d={fade_out / 1000:.3f}")
-    if post:
-        graph = graph[:-len("[mix]")] + "[sum];[sum]" + ",".join(post) + "[mix]"
+        after.append(f"afade=t=out:st={max(0, end_ms - fade_out) / 1000:.3f}:d={fade_out / 1000:.3f}")
+    if post or after or master_reverb is not None:
+        graph = graph[:-len("[mix]")] + "[sum]"
+        cur = "[sum]"
+        if post:
+            graph += f";{cur}{','.join(post)}[mpre]"
+            cur = "[mpre]"
+        if master_reverb is not None:
+            graph += ";" + reverb_graph(project, master_reverb, cur, "mrev", inputs)
+            cur = "[mrev]"
+        graph += f";{cur}{','.join(after) if after else 'anull'}[mix]"
     raw = project.root / "master.raw.part.wav"
     final = project.root / "master.part.wav"
     cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"]
@@ -1984,6 +2232,8 @@ def cmd_ls(project: Project, args: Args) -> None:
             flags += f"  comp {t['comp']}" + ("" if t["comp_on"] else " (off)")
         if t["delay"]:
             flags += f"  delay {t['delay']}" + ("" if t["delay_on"] else " (off)")
+        if t["reverb"]:
+            flags += f"  reverb {t['reverb']}" + ("" if t["reverb_on"] else " (off)")
         print(f"{t['n']:>4}  {t['name']:<16} {t['kind']:<4} {t['channels']:>2}  {fmt_ms(start):<12} "
               f"{fmt_ms(b - a):<12} {fmt_ms(t['length_ms']):<12} {trim:<27} "
               f"{fmt_db(t['gain_db']):<7} {fmt_pan(t['pan']):<4} {flags}")
@@ -2343,6 +2593,61 @@ def cmd_delay(project: Project, args: Args) -> None:
     autorender(project, args)
 
 
+REVERB_USAGE = (f"gout reverb TRACK [SETTINGS... | PRESET | on | off | clear]\n       settings: {REVERB_SYNTAX}\n"
+                f"       presets: {' '.join(REVERB_PRESETS)}   (reverb presets explains them)")
+
+
+def reverb_line(t: dict) -> str:
+    text = t["reverb"] or "none"
+    if t["reverb"] and not t["reverb_on"]:
+        text += "  (off: bypassed, reverb TRACK on brings it back)"
+    return f"reverb {t['n']:>1}  {t['name']:<16} {text}"
+
+
+def cmd_reverb(project: Project, args: Args) -> None:
+    pos = args.positionals(REVERB_USAGE, 1)
+    if pos[0].lower() in ("presets", "preset", "list"):
+        print("presets  a name stands for these settings; add your own after it, reverb 3 hall w15")
+        for name, (line, what) in REVERB_PRESETS.items():
+            print(f"  {name:<10} {line or 'none':<18} {what}")
+        return
+    master = is_master(pos[0])
+    t = master_track(project) if master else project.track(pos[0])
+    words = pos[1:]
+    if master and words:
+        key, value = parse_setting("reverb", " ".join(words) if words != ["on"] else t["reverb"])
+        project.record(f"set reverb {value}")
+        project.set("reverb", value)
+        print(reverb_line(master_track(project)))
+        autorender(project, args)
+        return
+    if not words:
+        print(reverb_line(t))
+        width = min(100, shutil.get_terminal_size((100, 24)).columns)
+        for text, _, kind in render_reverb(project, t, min(width - 6, 70)):
+            print("      " + text)
+        return
+    if words == ["off"]:
+        project.record(f"reverb {t['name']} off")
+        project.update(t["n"], reverb_on=0)
+    elif words == ["on"]:
+        project.record(f"reverb {t['name']} on")
+        project.update(t["n"], reverb_on=1)
+    elif words in (["clear"], ["none"]):
+        project.record(f"reverb {t['name']} clear")
+        project.update(t["n"], reverb="", reverb_on=1)
+    else:
+        try:
+            r = parse_reverb(" ".join(words))
+        except ValueError as exc:
+            die(f"{exc}\n{REVERB_USAGE}")
+        project.record(f"reverb {t['name']} {' '.join(words)}")
+        project.update(t["n"], reverb=fmt_reverb(r), reverb_on=1)
+        impulse_path(project, r)  # synthesise now, so the mix does not pause on it
+    print(reverb_line(project.track(str(t["n"]))))
+    autorender(project, args)
+
+
 def _cut(project: Project, args: Args, kind: str) -> None:
     pos = args.positionals(f"gout {kind} TRACK HZ [SLOPE] | off     e.g. {kind} 3 {'80' if kind == 'hp' else '12k'}"
                            f"  ({kind} 3 80 24 for 24 dB per octave)", 2, 3)
@@ -2381,6 +2686,7 @@ def cmd_set(project: Project, args: Args) -> None:
             "eq": "master eq, same syntax as a track's: hp30 hs10k:+1, or a preset",
             "comp": "master compressor: -16 2:1 a30 r300 k8, or a preset like glue",
             "delay": "master delay: 1/8 w20 f30 n3, or a preset like slap",
+            "reverb": "master reverb: 2.5s p20 d50 w15, or a preset like hall",
             "bpm": "tempo, so delays can be note values like 1/8",
             "gain": "master gain in dB, before the loudness step",
             "fadein": "e.g. 500ms", "fadeout": "e.g. 3s", "head": "silence before, e.g. 500ms",
@@ -2396,13 +2702,13 @@ def cmd_set(project: Project, args: Args) -> None:
                 value = fmt_ms(int(value))
             elif key in TAG_KEYS:
                 value = value or "-"
-            elif key in ("eq", "comp", "delay"):
+            elif key in ("eq", "comp", "delay", "reverb"):
                 value = value or "none"
             elif key == "bpm":
                 value = value or "-"
             print(f"{key:<11} {value:<14} {hints.get(key, '')}")
         return
-    if len(pos) < 2 or (len(pos) > 2 and pos[0].lower() not in ("eq", "comp", "delay") + TAG_KEYS):
+    if len(pos) < 2 or (len(pos) > 2 and pos[0].lower() not in ("eq", "comp", "delay", "reverb") + TAG_KEYS):
         die(SET_USAGE)
     key, value = parse_setting(pos[0].lower(), " ".join(pos[1:]))  # eq, comp and tags may span words
     if key == "bpm" and not value:
@@ -2475,15 +2781,19 @@ def cmd_stems(project: Project, args: Args) -> None:
           f"  ({bits}, {project.rate} Hz, stereo)")
     for t, steps in plans:
         name = f"{t['n']:02d}-{t['name']}.wav"
-        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(project.tracks_dir / t["file"]),
-               "-af", ",".join(steps + [f"apad=whole_dur={end_ms / 1000:.3f}"]), "-ar", str(project.rate)]
+        inputs = [project.tracks_dir / t["file"]]
+        graph = track_chain(project, t, steps, "[0:a]", "s", inputs) + f";[s]apad=whole_dur={end_ms / 1000:.3f}[out]"
+        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"]
+        for path in inputs:
+            cmd += ["-i", str(path)]
+        cmd += ["-filter_complex", graph, "-map", "[out]", "-ar", str(project.rate)]
         if bits == "16":
             cmd += ["-dither_method", "triangular"]
         cmd += ["-c:a", BITS_CODEC[bits], str(out_dir / name)]
         run_quiet(cmd, args.verbose)
         state = "" if is_heard(t, any_solo) else "  (muted or not soloed in the mix)"
         print(f"      {name:<26} {fmt_size((out_dir / name).stat().st_size):>10}{state}")
-    master_bits = [k for k in ("eq", "comp", "delay", "gain", "fadein", "fadeout", "head", "tail")
+    master_bits = [k for k in ("eq", "comp", "delay", "reverb", "gain", "fadein", "fadeout", "head", "tail")
                    if setting(project, k) not in ("0", "")]
     lufs = setting(project, "lufs")
     if master_bits or lufs != "off":
@@ -2543,7 +2853,7 @@ def apply_document(project: Project, data: dict, settings: bool = True, tracks: 
                     fields["gain_db"] = max(-60.0, min(24.0, float(item["gain_db"])))
                 if item.get("pan") is not None:
                     fields["pan"] = max(-1.0, min(1.0, float(item["pan"])))
-                for flag in ("mute", "solo", "eq_on", "comp_on", "delay_on"):
+                for flag in ("mute", "solo", "eq_on", "comp_on", "delay_on", "reverb_on"):
                     if item.get(flag) is not None:
                         fields[flag] = 1 if item[flag] else 0
                 if item.get("eq") is not None:
@@ -2561,6 +2871,11 @@ def apply_document(project: Project, data: dict, settings: bool = True, tracks: 
                         fields["delay"] = fmt_delay(parse_delay(str(item["delay"]))) if str(item["delay"]) else ""
                     except ValueError as exc:
                         warnings.append(f"{t['name']}: delay ignored ({exc})")
+                if item.get("reverb") is not None:
+                    try:
+                        fields["reverb"] = fmt_reverb(parse_reverb(str(item["reverb"]))) if str(item["reverb"]) else ""
+                    except ValueError as exc:
+                        warnings.append(f"{t['name']}: reverb ignored ({exc})")
             except (TypeError, ValueError) as exc:
                 warnings.append(f"{t['name']}: bad value ({exc}), skipped")
                 continue
@@ -2814,6 +3129,8 @@ MIXER
  comp  cp TRACK vocal|drums|glue..    presets (comp presets)
  delay dl TRACK 375ms|1/8 w30 f40 n4  time wet feedback n
  delay dl TRACK slap|dotted|long      presets; set bpm 120
+ reverb rv TRACK 2.5s p20 d50 w25     decay pre damp wet
+ reverb rv TRACK room|plate|hall..    presets (rv presets)
  mix   x  [-3] [-v]                   -3 also master.mp3
 PROJECT
  undo  u                              not hard trim / rm -D
@@ -2876,7 +3193,7 @@ def cmd_cheat(root_hint: Path | None, args: Args) -> None:
 # long name -> the short form and the other spellings; every command works under all of them
 COMMANDS = {
     "add": ("a",), "scan": ("sc",), "ls": ("l", "list"), "view": ("v",), "move": ("m", "mv"), "trim": ("t",),
-    "rm": ("r", "remove", "del"), "mute": ("mu",), "solo": ("s",), "gain": ("g",), "pan": ("p",), "eq": ("e",), "hp": (), "lp": (), "comp": ("cp",), "delay": ("dl", "echo"),
+    "rm": ("r", "remove", "del"), "mute": ("mu",), "solo": ("s",), "gain": ("g",), "pan": ("p",), "eq": ("e",), "hp": (), "lp": (), "comp": ("cp",), "delay": ("dl", "echo"), "reverb": ("rv", "verb"),
     "mix": ("x", "render", "bounce"), "undo": ("u",), "dump": ("dp",), "rebuild": ("rb",),
     "set": ("se",), "stats": ("st",), "saveas": ("sa", "copy"), "stems": ("sm",), "import": ("im",), "new": ("n",), "cheat": ("c",), "help": ("h", "?"), "ui": ("tui",), "cut": (),
     "quit": ("q", "exit"), "clear": ("cl",), "split": ("sp",), "sheet": ("sh",),
@@ -3017,8 +3334,8 @@ class Tui:
                 height = 8 if h >= 32 else 6
                 path = p.master if self.eq_track == MASTER_N else p.tracks_dir / track["file"]
                 peaks = (p.envelope(track["file"], path) if path.exists() else b"") or None
-                rows = render_track_panel(p, track, right_w - 1, height, self.spectrum_for(track), peaks,
-                                          self.panel_prefer)
+                rows = render_panel(p, track, right_w - 1, height, self.spectrum_for(track), peaks,
+                                    self.panel_prefer)
                 self.put(top, right_x, (" " + rows[0][0][:right_w - 16] + "   ctrl-g hides").ljust(right_w),
                          curses.A_REVERSE)
                 for i, (text, classes, kind) in enumerate(rows[1:], 1):
@@ -3175,7 +3492,7 @@ class Tui:
             "fadein": "500ms", "fadeout": "3s", "head": "500ms", "tail": "2s",
             "bits": "32f | 24 | 16", "mp3": "320k | 192k | v0",
             "eq": "hp30 hs10k:+1 | warm | off", "comp": "-16 2:1 a30 r300 k8 | glue | off",
-            "delay": "1/8 w20 f30 n3 | slap | off", "bpm": "120",
+            "delay": "1/8 w20 f30 n3 | slap | off", "reverb": "2.5s p20 d50 w15 | hall | off", "bpm": "120",
         }
         head(f"project  {p.get('name')}")
         row("set:rate", "rate", str(p.rate), lambda v: ["set", "rate", v], hints["rate"])
@@ -3204,6 +3521,8 @@ class Tui:
                 lambda v, n=n: ["comp", n, *v.split()], "-18 4:1 a10 r120 k6 m3 | vocal | off | clear")
             row(f"t{n}:delay", "delay", (t["delay"] or "none") + ("" if t["delay_on"] else " (off)"),
                 lambda v, n=n: ["delay", n, *v.split()], "375ms w30 f40 n4 | 1/8 | slap | off | clear")
+            row(f"t{n}:reverb", "reverb", (t["reverb"] or "none") + ("" if t["reverb_on"] else " (off)"),
+                lambda v, n=n: ["reverb", n, *v.split()], "2.5s p20 d50 w25 | hall | plate | off | clear")
         return rows
 
     def sheet_open(self) -> None:
@@ -3463,8 +3782,11 @@ class Tui:
             self.toggle("cheat")
         elif head == "sheet":
             self.sheet_open()
-        elif head in ("eq", "comp") and len(argv) == 1:
-            self.toggle_eq()
+        elif head in ("eq", "comp", "delay", "reverb") and len(argv) == 1:
+            if self.eq_track is not None and self.show_eq and self.panel_prefer != head and head in ("delay", "reverb", "comp"):
+                self.panel_prefer = head  # switch the panel to that picture rather than hiding it
+            else:
+                self.toggle_eq()
         elif head == "clear":
             self.log.clear()
         elif head == "split":
@@ -3500,11 +3822,11 @@ class Tui:
             finally:
                 self.busy = False
             self.log.extend(buf.getvalue().rstrip("\n").splitlines())
-            if head in ("eq", "hp", "lp", "comp") and len(argv) > 1:
+            if head in ("eq", "hp", "lp", "comp", "delay", "reverb") and len(argv) > 1:
                 try:  # the panel follows the track (or the master) you are working on
                     self.eq_track = MASTER_N if is_master(argv[1]) else self.project.track(argv[1])["n"]
                     self.show_eq = True
-                    self.panel_prefer = "comp" if head == "comp" else "eq"
+                    self.panel_prefer = head if head in ("comp", "delay", "reverb") else "eq"
                 except GoutError:
                     pass
         del self.log[:-2000]
@@ -3574,7 +3896,8 @@ MASTER   (gout set KEY VALUE)
                         -14 streaming (Spotify, YouTube), -16 Apple Music and podcasts, -23 broadcast
   ceiling -1            true-peak ceiling in dBTP for that step (default -1)
   eq hp30 hs10k:+1      master eq,  comp -16 2:1 a30 r300 k8  master compressor,  delay 1/8 w15
-                        master delay: same syntax and presets as a track's; also  gout eq master ...
+                        master delay,  reverb hall w10  master reverb: same syntax and presets as a
+                        track's; also  gout eq master ...,  gout reverb master ...
   bpm 120               the tempo, so delay times can be note values
   gain -3               master gain in dB before the loudness step
   fadein 500ms          fades on the sum;  fadeout 3s
@@ -3609,6 +3932,8 @@ TRACKS   (TRACK is the number shown by ls, or the track name)
   gout delay dl TRACK 375ms w30 f40 n4       delay after the compressor: time, wet %, feedback %, repeats;
                                              with  set bpm 120  the time can be a note value: 1/8, 3/16, 1/8d, 1/8t
   gout delay dl TRACK PRESET | on | off | clear   presets: {' '.join(DELAY_PRESETS)};  delay TRACK draws the taps
+  gout reverb rv TRACK 2.5s p20 d50 w25      reverb after the delay: decay to -60 dB, pre-delay ms, damping %, wet %
+  gout reverb rv TRACK PRESET | on | off | clear  presets: {' '.join(REVERB_PRESETS)};  reverb TRACK draws its decay
   gout eq    e  TRACK                        show the bands and draw the curve, 20 Hz to 20 kHz; in
                                              the ui the curve panel follows the track you eq (ctrl-g)
   -N (--no-mix) on any of these skips the automatic re-mix; -p DIR before a command picks
@@ -3777,7 +4102,7 @@ def cmd_cut(argv: list[str]) -> None:
 PROJECT_COMMANDS = {
     "add": cmd_add, "scan": cmd_scan, "ls": cmd_ls, "move": cmd_move, "trim": cmd_trim, "rm": cmd_rm,
     "mute": cmd_mute, "solo": cmd_solo, "gain": cmd_gain, "pan": cmd_pan,
-    "eq": cmd_eq, "hp": cmd_hp, "lp": cmd_lp, "comp": cmd_comp, "delay": cmd_delay,
+    "eq": cmd_eq, "hp": cmd_hp, "lp": cmd_lp, "comp": cmd_comp, "delay": cmd_delay, "reverb": cmd_reverb,
     "set": cmd_set, "stats": cmd_stats, "mix": cmd_mix, "undo": cmd_undo, "dump": cmd_dump,
     "saveas": cmd_saveas, "stems": cmd_stems, "import": cmd_import,
     "view": cmd_view, "ui": cmd_ui,

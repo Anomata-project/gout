@@ -6,3 +6,6 @@ dist/
 
 # gout projects live in projects/<name>; they are yours to keep, never committed
 projects/
+
+# gout caches (impulse responses) inside projects
+.gout/

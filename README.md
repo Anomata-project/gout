@@ -81,6 +81,7 @@ name (a unique prefix will do). `-N` / `--no-mix` on any change skips the automa
 | `hp`, `lp` | | `TRACK HZ [SLOPE] \| off` | high-pass or low-pass cut, slope in dB per octave (12 by default) |
 | `eq` | `e` | `TRACK BANDS... \| PRESET \| on \| off \| clear` | the whole eq in one line; `eq TRACK` shows it with the curve |
 | `delay` | `dl` | `TRACK TIME [wN fN nN] \| PRESET \| on \| off \| clear` | delay after the compressor; note values with `set bpm` |
+| `reverb` | `rv` | `TRACK DECAY [pN dN wN] \| PRESET \| on \| off \| clear` | reverb after the fader; `reverb TRACK` draws its decay |
 | `comp` | `cp` | `TRACK SETTINGS... \| PRESET \| on \| off \| clear` | compressor after the eq; `comp TRACK` shows its curve |
 | `mix` | `x` | `[-3] [-v]` | render `master.wav`; `-3` / `--mp3` also writes `master.mp3` |
 | `undo` | `u` | | undo the last change (not a hard trim or `rm -D`) |
@@ -173,7 +174,8 @@ mix   master.wav  00:03:12.500  -14.0 LUFS  LRA 6.2  peak -1.0 dBTP
 | `title`, `artist`, `album`, `year`, `comment` | tags written into `master.wav` and `master.mp3` |
 
 The chain is: sum of the tracks, master eq, master compressor, master gain, fades, loudness
-step, head and tail padding, then the file. Per track, before the sum: soft trim, position, eq, compressor, gain, pan. Under three seconds of material the loudness step is a plain gain, since `loudnorm`
+step, head and tail padding, then the file, with the master delay and reverb after its compressor. Per track, before the sum:
+soft trim, position, eq, compressor, delay, gain, pan, reverb. Under three seconds of material the loudness step is a plain gain, since `loudnorm`
 cannot measure that reliably. `gout stats` shows integrated LUFS, loudness range and true peak
 for every track file (and what it comes to after the track's gain), so you can balance tracks
 by numbers before touching the master.
@@ -247,6 +249,31 @@ gout delay master 1/4 w15            # or: gout set delay 1/4 w15
 
 Each repeat is feedback % quieter than the one before, the first at the wet level. The tempo is
 a project setting, so changing `bpm` moves every note-value delay with it.
+
+## Reverb
+
+Every track has a reverb after its delay, and the master has one too:
+
+```
+gout reverb 3 2.5s p20 d50 w25       # decay to -60 dB, pre-delay ms, damping %, wet %
+gout reverb 3 hall                   # ambience room chamber plate hall cathedral
+gout reverb 3 plate w40              # a preset with your own wet level
+gout reverb 3 off | on | clear
+gout reverb 3                        # the decay drawn in dB over time
+gout reverb master room w10          # or: gout set reverb room w10
+```
+
+ffmpeg has no algorithmic reverb, so gout builds one: it synthesises a stereo impulse response
+(a few early reflections, then noise decaying to -60 dB over the decay time, its top end dying
+faster the more damping) and convolves the track with it through ffmpeg's `afir`. The track is
+summed to mono on the way in and the left and right responses are independent, so the reverb is
+wide whatever the pan. The response has unit energy, so `w100` on a sustained sound is about as
+loud as the dry signal. Responses are cached in `.gout/ir/` inside the project and rebuilt when
+missing; they take a fraction of a second.
+
+The per-track order is: soft trim, position, eq, compressor, delay, gain, pan, reverb. The
+reverb comes after the fader, like a post-fader send, and its tail counts: stems and the master
+run on until it has died away.
 
 ## Stems
 
