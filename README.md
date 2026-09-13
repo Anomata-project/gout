@@ -80,6 +80,7 @@ name (a unique prefix will do). `-N` / `--no-mix` on any change skips the automa
 | `pan` | `p` | `TRACK L30 \| R30 \| C` | every track starts centred |
 | `hp`, `lp` | | `TRACK HZ [SLOPE] \| off` | high-pass or low-pass cut, slope in dB per octave (12 by default) |
 | `eq` | `e` | `TRACK BANDS... \| PRESET \| on \| off \| clear` | the whole eq in one line; `eq TRACK` shows it with the curve |
+| `delay` | `dl` | `TRACK TIME [wN fN nN] \| PRESET \| on \| off \| clear` | delay after the compressor; note values with `set bpm` |
 | `comp` | `cp` | `TRACK SETTINGS... \| PRESET \| on \| off \| clear` | compressor after the eq; `comp TRACK` shows its curve |
 | `mix` | `x` | `[-3] [-v]` | render `master.wav`; `-3` / `--mp3` also writes `master.mp3` |
 | `undo` | `u` | | undo the last change (not a hard trim or `rm -D`) |
@@ -229,6 +230,23 @@ not in the picture; they are ffmpeg's `acompressor` values. Presets: `gentle`, `
 
 In the ui the compressor curve sits next to the eq curve in the same panel when it is wide
 enough, and otherwise the panel shows whichever of the two you touched last.
+
+## Delay
+
+Every track has a delay after its compressor, and the master has one after its compressor too:
+
+```
+gout delay 3 375ms w30 f40 n4        # time, wet %, feedback %, repeats
+gout set bpm 120                     # then times can be note values
+gout delay 3 1/8                     # 1/4 1/8 1/16 3/16, 1/8d dotted, 1/8t triplet
+gout delay 3 slap | eighth | quarter | dotted | long
+gout delay 3 off | on | clear
+gout delay 3                         # the repeats drawn over time, in dB
+gout delay master 1/4 w15            # or: gout set delay 1/4 w15
+```
+
+Each repeat is feedback % quieter than the one before, the first at the wet level. The tempo is
+a project setting, so changing `bpm` moves every note-value delay with it.
 
 ## Stems
 

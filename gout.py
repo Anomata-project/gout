@@ -550,7 +550,9 @@ CREATE TABLE IF NOT EXISTS tracks (
     eq          TEXT NOT NULL DEFAULT '',
     eq_on       INTEGER NOT NULL DEFAULT 1,
     comp        TEXT NOT NULL DEFAULT '',
-    comp_on     INTEGER NOT NULL DEFAULT 1
+    comp_on     INTEGER NOT NULL DEFAULT 1,
+    delay       TEXT NOT NULL DEFAULT '',
+    delay_on    INTEGER NOT NULL DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS envelopes (
     file  TEXT PRIMARY KEY,
@@ -575,7 +577,7 @@ CREATE TABLE IF NOT EXISTS history (
 
 TRACK_COLUMNS = ("n", "name", "file", "kind", "length_ms", "channels", "sample_rate",
                  "offset_ms", "in_ms", "out_ms", "gain_db", "pan", "mute", "solo", "eq", "eq_on",
-                 "comp", "comp_on")
+                 "comp", "comp_on", "delay", "delay_on")
 
 
 class Project:
@@ -600,6 +602,10 @@ class Project:
             with self.conn:
                 self.conn.execute("ALTER TABLE tracks ADD COLUMN comp TEXT NOT NULL DEFAULT ''")
                 self.conn.execute("ALTER TABLE tracks ADD COLUMN comp_on INTEGER NOT NULL DEFAULT 1")
+        if "delay" not in {r[1] for r in self.conn.execute("PRAGMA table_info(tracks)")}:
+            with self.conn:
+                self.conn.execute("ALTER TABLE tracks ADD COLUMN delay TEXT NOT NULL DEFAULT ''")
+                self.conn.execute("ALTER TABLE tracks ADD COLUMN delay_on INTEGER NOT NULL DEFAULT 1")
         if "lufs" not in {r[1] for r in self.conn.execute("PRAGMA table_info(envelopes)")}:
             with self.conn:
                 for col in ("lufs", "tp", "lra"):
@@ -848,7 +854,7 @@ class Project:
 # --------------------------------------------------------------------------- master settings
 
 MASTER_DEFAULTS = {
-    "lufs": "off", "ceiling": "-1", "eq": "", "comp": "", "gain": "0",
+    "lufs": "off", "ceiling": "-1", "eq": "", "comp": "", "delay": "", "bpm": "", "gain": "0",
     "fadein": "0", "fadeout": "0", "head": "0", "tail": "0",
     "bits": "32f", "mp3": "320k", "title": "", "artist": "", "album": "", "year": "", "comment": "",
 }
@@ -902,13 +908,24 @@ def parse_setting(key: str, value: str) -> tuple[str, str]:
         return key, v.lower()
     if key in TAG_KEYS:
         return key, value
-    if key in ("eq", "comp"):  # the master's own, same syntax as a track's
+    if key in ("eq", "comp", "delay"):  # the master's own, same syntax as a track's
         if v.lower() in ("off", "none", "clear", "flat", ""):
             return key, ""
         try:
-            return key, fmt_eq(parse_eq(v)) if key == "eq" else fmt_comp(parse_comp(v))
+            return key, {"eq": lambda: fmt_eq(parse_eq(v)), "comp": lambda: fmt_comp(parse_comp(v)),
+                         "delay": lambda: fmt_delay(parse_delay(v))}[key]()
         except ValueError as exc:
             die(str(exc))
+    if key == "bpm":
+        if v.lower() in ("off", "none", ""):
+            return key, ""
+        try:
+            bpm = float(v)
+        except ValueError:
+            die(f"bad tempo {value!r}")
+        if not 20 <= bpm <= 300:
+            die("bpm must be between 20 and 300")
+        return key, f"{bpm:g}"
     die(f"unknown setting {key!r} — gout set (with nothing after it) lists them")
 
 
@@ -1039,11 +1056,36 @@ MASTER_N = 0  # the track number the master answers to in eq/comp commands and t
 def master_track(project: "Project") -> dict:
     """The master bus in the shape of a track row, for the eq/comp code and their curves."""
     return {"n": MASTER_N, "name": "master", "file": MASTER_WAV, "kind": "wav",
-            "eq": setting(project, "eq"), "eq_on": 1, "comp": setting(project, "comp"), "comp_on": 1}
+            "eq": setting(project, "eq"), "eq_on": 1, "comp": setting(project, "comp"), "comp_on": 1,
+            "delay": setting(project, "delay"), "delay_on": 1}
 
 
 def is_master(spec: str) -> bool:
     return spec.lower() in ("master", "m", str(MASTER_N))
+
+
+def project_bpm(project: "Project") -> float | None:
+    bpm = setting(project, "bpm")
+    return float(bpm) if bpm else None
+
+
+def effect_tail_ms(project: "Project", t: dict) -> int:
+    """How far a track's effects ring on after its audio ends."""
+    tail = 0.0
+    dly = track_delay(t)
+    if dly is not None:
+        try:
+            taps = delay_taps(dly, project_bpm(project))
+        except GoutError:
+            taps = []
+        if taps:
+            tail = max(tail, taps[-1][0])
+    return math.ceil(tail)
+
+
+def sounding_end(project: "Project", t: dict) -> int:
+    """Where a track stops making sound on the timeline, effect tails included."""
+    return timeline(t)[1] + effect_tail_ms(project, t)
 
 
 def track_eq(t: dict) -> list[dict]:
@@ -1377,6 +1419,146 @@ def render_track_panel(project: "Project", t: dict, width: int, height: int = 8,
     return render_eq(project, t, width, height, spectrum)
 
 
+# --------------------------------------------------------------------------- delay
+#
+# A delay line:  375ms w30 f40 n4   or with a tempo set:  1/8 w30 f40 n4   (time, wet %, feedback %,
+# repeats). Note values: 1/4 1/8 1/16 3/16, a trailing d for dotted, t for triplet.
+
+DELAY_DEFAULTS = {"wet": 30.0, "feedback": 40.0, "repeats": 4}
+DELAY_PRESETS = {
+    "slap":    ("80ms w25 f0 n1", "one quick repeat"),
+    "eighth":  ("1/8 w30 f35 n4", "eighth notes, needs a bpm"),
+    "quarter": ("1/4 w30 f40 n4", "quarter notes, needs a bpm"),
+    "dotted":  ("3/16 w30 f40 n4", "dotted eighths, the classic"),
+    "long":    ("500ms w25 f50 n6", "half a second, six repeats"),
+    "none":    ("", "no delay"),
+}
+DELAY_SYNTAX = "375ms w30 f40 n4   (time or a note value like 1/8 with a bpm set; wet %, feedback %, repeats)"
+
+
+def parse_delay(text: str) -> dict:
+    tokens: list[str] = []
+    for tok in text.split():
+        if tok.lower() in DELAY_PRESETS:
+            tokens += DELAY_PRESETS[tok.lower()][0].split()
+        else:
+            tokens.append(tok)
+    d: dict = {"time": None, **DELAY_DEFAULTS}
+    for tok in tokens:
+        t = tok.lower()
+        if re.fullmatch(r"\d+/\d+[dt]?", t):
+            d["time"] = t  # a note value, resolved against the bpm when the filter is built
+        elif re.fullmatch(r"\d+(?:\.\d+)?(ms|s)", t):
+            ms = float(t[:-2]) if t.endswith("ms") else float(t[:-1]) * 1000
+            if not 1 <= ms <= 5000:
+                raise ValueError(f"delay time {tok} is outside 1 ms .. 5 s")
+            d["time"] = f"{ms:g}ms"
+        elif re.fullmatch(r"w\d+(?:\.\d+)?", t):
+            d["wet"] = float(t[1:])
+        elif re.fullmatch(r"f\d+(?:\.\d+)?", t):
+            d["feedback"] = float(t[1:])
+        elif re.fullmatch(r"n\d+", t):
+            d["repeats"] = int(t[1:])
+        else:
+            raise ValueError(f"bad delay setting {tok!r}; a line looks like  {DELAY_SYNTAX}  (or a preset: delay presets)")
+    if d["time"] is None:
+        raise ValueError(f"a delay needs a time: {DELAY_SYNTAX}")
+    if not 0 <= d["wet"] <= 100:
+        raise ValueError("wet is a percentage, 0 .. 100")
+    if not 0 <= d["feedback"] <= 95:
+        raise ValueError("feedback is a percentage, 0 .. 95")
+    if not 1 <= d["repeats"] <= 8:
+        raise ValueError("repeats: 1 .. 8")
+    return d
+
+
+def fmt_delay(d: dict) -> str:
+    return f"{d['time']} w{d['wet']:g} f{d['feedback']:g} n{d['repeats']}"
+
+
+def delay_ms(d: dict, bpm: float | None) -> float:
+    """The delay time in ms; note values need the project's bpm."""
+    t = d["time"]
+    if t.endswith("ms"):
+        return float(t[:-2])
+    m = re.fullmatch(r"(\d+)/(\d+)([dt]?)", t)
+    if bpm is None:
+        die(f"the delay time {t} is a note value: set bpm 120 first, or give the time in ms")
+    ms = int(m.group(1)) / int(m.group(2)) * 4 * 60000 / bpm
+    return ms * {"d": 1.5, "t": 2 / 3, "": 1}[m.group(3)]
+
+
+def delay_taps(d: dict, bpm: float | None) -> list[tuple[float, float]]:
+    """(time ms, level 0..1) of each repeat."""
+    ms = delay_ms(d, bpm)
+    wet, fb = d["wet"] / 100, d["feedback"] / 100
+    taps = []
+    for k in range(1, d["repeats"] + 1):
+        level = wet * (fb ** (k - 1))
+        if level < 0.001 or k * ms > 90000:
+            break
+        taps.append((k * ms, min(1.0, level)))
+    return taps
+
+
+def delay_filter(d: dict, bpm: float | None) -> str | None:
+    taps = delay_taps(d, bpm)
+    if not taps:
+        return None
+    return ("aecho=1:1:" + "|".join(f"{ms:g}" for ms, _ in taps)
+            + ":" + "|".join(f"{lvl:.4f}" for _, lvl in taps))
+
+
+def track_delay(t: dict) -> dict | None:
+    if not t.get("delay") or not t.get("delay_on", 1):
+        return None
+    try:
+        return parse_delay(t["delay"])
+    except ValueError:
+        return None
+
+
+def render_delay(t: dict, bpm: float | None, width: int = 60, height: int = 6) -> list[tuple[str, str, str]]:
+    """The dry hit and its repeats over time, bar height by level in dB (0 .. -48)."""
+    gw = max(12, width - EQ_GUTTER)
+    try:
+        d = parse_delay(t["delay"]) if t["delay"] else None
+        taps = delay_taps(d, bpm) if d else []
+    except (ValueError, GoutError):
+        d, taps = None, []
+    total = (taps[-1][0] * 1.15) if taps else 1000.0
+    cells = [[" "] * gw for _ in range(height)]
+    classes = [[" "] * gw for _ in range(height)]
+    sub = 2 * height
+
+    def bar(col: int, level: float, cls: str) -> None:
+        db = 20 * math.log10(max(level, 1e-4))
+        top_sub = round(min(1.0, max(0.0, -db / 48)) * (sub - 1))
+        for row in range(height):
+            if 2 * row + 1 >= top_sub:
+                cells[row][col] = "█" if 2 * row >= top_sub else "▄"
+                classes[row][col] = cls
+
+    bar(0, 1.0, "z")
+    for ms, level in taps:
+        bar(max(1, min(gw - 1, round(ms / total * (gw - 1)))), level, "a")
+    head = f"delay {t['delay'] or 'none'}" + ("  (off)" if t["delay"] and not t["delay_on"] else "")
+    if d and taps:
+        head += f"  = {delay_ms(d, bpm):.0f} ms" + (f" at {bpm:g} bpm" if bpm and not d["time"].endswith("ms") else "")
+    rows = [(head, "", "head")]
+    for row in range(height):
+        label = "0" if row == 0 else ("-48" if row == height - 1 else ("-24" if row == height // 2 else ""))
+        rows.append((f"{label:>{EQ_GUTTER - 1}} " + "".join(cells[row]), " " * EQ_GUTTER + "".join(classes[row]), "graph"))
+    axis = [" "] * gw
+    for ms in ([0] + [tap[0] for tap in taps])[:8]:
+        text = f"{ms:.0f}"
+        col = max(0, min(gw - len(text), round(ms / total * (gw - 1)) - (0 if ms == 0 else len(text) // 2)))
+        if all(ch == " " for ch in axis[max(0, col - 1):col + len(text) + 1]):
+            axis[col:col + len(text)] = list(text)
+    rows.append((" " * EQ_GUTTER + "".join(axis) + "  ms", "", "axis"))
+    return rows
+
+
 # --------------------------------------------------------------------------- timeline maths
 
 
@@ -1435,6 +1617,11 @@ def track_steps(project: Project, t: dict) -> list[str] | None:
     comp = track_comp(t)
     if comp is not None:
         steps.append(comp_filter(comp))
+    dly = track_delay(t)
+    if dly is not None:
+        echo = delay_filter(dly, project_bpm(project))
+        if echo:
+            steps.append(echo)
     if t["gain_db"]:
         steps.append(f"volume={t['gain_db']:.2f}dB")
     steps.append(pan_filter(t["channels"], t["pan"]))
@@ -1503,11 +1690,16 @@ def mix(project: Project, verbose: bool = False, mp3: bool = False) -> None:
     master_comp = track_comp(master_track(project))
     if master_comp is not None:
         post.append(comp_filter(master_comp))
+    master_delay = track_delay(master_track(project))
+    if master_delay is not None:
+        echo = delay_filter(master_delay, project_bpm(project))
+        if echo:
+            post.append(echo)
     gain = float(setting(project, "gain"))
     if gain:
         post.append(f"volume={gain:.2f}dB")
     fade_in, fade_out = int(setting(project, "fadein")), int(setting(project, "fadeout"))
-    end_ms = max(timeline(t)[1] for t in used)
+    end_ms = max(sounding_end(project, t) for t in used) + effect_tail_ms(project, master_track(project))
     if fade_in > 0:
         post.append(f"afade=t=in:d={fade_in / 1000:.3f}")
     if fade_out > 0:
@@ -1790,6 +1982,8 @@ def cmd_ls(project: Project, args: Args) -> None:
             flags += f"  eq {t['eq']}" + ("" if t["eq_on"] else " (off)")
         if t["comp"]:
             flags += f"  comp {t['comp']}" + ("" if t["comp_on"] else " (off)")
+        if t["delay"]:
+            flags += f"  delay {t['delay']}" + ("" if t["delay_on"] else " (off)")
         print(f"{t['n']:>4}  {t['name']:<16} {t['kind']:<4} {t['channels']:>2}  {fmt_ms(start):<12} "
               f"{fmt_ms(b - a):<12} {fmt_ms(t['length_ms']):<12} {trim:<27} "
               f"{fmt_db(t['gain_db']):<7} {fmt_pan(t['pan']):<4} {flags}")
@@ -2093,6 +2287,62 @@ def cmd_comp(project: Project, args: Args) -> None:
     autorender(project, args)
 
 
+DELAY_USAGE = (f"gout delay TRACK [SETTINGS... | PRESET | on | off | clear]\n       settings: {DELAY_SYNTAX}\n"
+               f"       presets: {' '.join(DELAY_PRESETS)}   (delay presets explains them)")
+
+
+def delay_line(t: dict) -> str:
+    text = t["delay"] or "none"
+    if t["delay"] and not t["delay_on"]:
+        text += "  (off: bypassed, delay TRACK on brings it back)"
+    return f"delay {t['n']:>2}  {t['name']:<16} {text}"
+
+
+def cmd_delay(project: Project, args: Args) -> None:
+    pos = args.positionals(DELAY_USAGE, 1)
+    if pos[0].lower() in ("presets", "preset", "list"):
+        print("presets  a name stands for these settings; add your own after it, delay 3 slap w40")
+        for name, (line, what) in DELAY_PRESETS.items():
+            print(f"  {name:<8} {line or 'none':<20} {what}")
+        return
+    master = is_master(pos[0])
+    t = master_track(project) if master else project.track(pos[0])
+    words = pos[1:]
+    if master and words:
+        key, value = parse_setting("delay", " ".join(words) if words != ["on"] else t["delay"])
+        project.record(f"set delay {value}")
+        project.set("delay", value)
+        print(delay_line(master_track(project)))
+        autorender(project, args)
+        return
+    if not words:
+        print(delay_line(t))
+        width = min(100, shutil.get_terminal_size((100, 24)).columns)
+        for text, _, kind in render_delay(t, project_bpm(project), min(width - 6, 70)):
+            print("      " + text)
+        return
+    if words == ["off"]:
+        project.record(f"delay {t['name']} off")
+        project.update(t["n"], delay_on=0)
+    elif words == ["on"]:
+        project.record(f"delay {t['name']} on")
+        project.update(t["n"], delay_on=1)
+    elif words in (["clear"], ["none"]):
+        project.record(f"delay {t['name']} clear")
+        project.update(t["n"], delay="", delay_on=1)
+    else:
+        try:
+            d = parse_delay(" ".join(words))
+        except ValueError as exc:
+            die(f"{exc}\n{DELAY_USAGE}")
+        if not d["time"].endswith("ms") and project_bpm(project) is None:
+            die(f"{d['time']} is a note value: set bpm 120 first, or give the time in ms")
+        project.record(f"delay {t['name']} {' '.join(words)}")
+        project.update(t["n"], delay=fmt_delay(d), delay_on=1)
+    print(delay_line(project.track(str(t["n"]))))
+    autorender(project, args)
+
+
 def _cut(project: Project, args: Args, kind: str) -> None:
     pos = args.positionals(f"gout {kind} TRACK HZ [SLOPE] | off     e.g. {kind} 3 {'80' if kind == 'hp' else '12k'}"
                            f"  ({kind} 3 80 24 for 24 dB per octave)", 2, 3)
@@ -2130,6 +2380,8 @@ def cmd_set(project: Project, args: Args) -> None:
             "ceiling": "true-peak ceiling in dBTP for the loudness step",
             "eq": "master eq, same syntax as a track's: hp30 hs10k:+1, or a preset",
             "comp": "master compressor: -16 2:1 a30 r300 k8, or a preset like glue",
+            "delay": "master delay: 1/8 w20 f30 n3, or a preset like slap",
+            "bpm": "tempo, so delays can be note values like 1/8",
             "gain": "master gain in dB, before the loudness step",
             "fadein": "e.g. 500ms", "fadeout": "e.g. 3s", "head": "silence before, e.g. 500ms",
             "tail": "silence after, e.g. 2s", "bits": "32f | 24 | 16 (dithered)",
@@ -2144,13 +2396,20 @@ def cmd_set(project: Project, args: Args) -> None:
                 value = fmt_ms(int(value))
             elif key in TAG_KEYS:
                 value = value or "-"
-            elif key in ("eq", "comp"):
+            elif key in ("eq", "comp", "delay"):
                 value = value or "none"
+            elif key == "bpm":
+                value = value or "-"
             print(f"{key:<11} {value:<14} {hints.get(key, '')}")
         return
-    if len(pos) < 2 or (len(pos) > 2 and pos[0].lower() not in ("eq", "comp") + TAG_KEYS):
+    if len(pos) < 2 or (len(pos) > 2 and pos[0].lower() not in ("eq", "comp", "delay") + TAG_KEYS):
         die(SET_USAGE)
     key, value = parse_setting(pos[0].lower(), " ".join(pos[1:]))  # eq, comp and tags may span words
+    if key == "bpm" and not value:
+        users = [t["name"] for t in project.tracks() + [master_track(project)]
+                 if t["delay"] and not t["delay"].split()[0].endswith("ms")]
+        if users:
+            die(f"cannot clear bpm: the delay on {', '.join(users)} uses a note value; give it a time in ms first")
     project.record(f"set {key} {value}")
     project.set(key, value)
     shown = fmt_ms(int(value)) if key in ("fadein", "fadeout", "head", "tail") and value != "0" else value
@@ -2210,7 +2469,7 @@ def cmd_stems(project: Project, args: Args) -> None:
         die("nothing to export: no track has audible material" + (" the mix hears" if audible_only else ""))
     out_dir = Path(pos[0]).expanduser() if pos else project.root / STEMS_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
-    end_ms = max(1, max(timeline(t)[1] for t, _ in plans))
+    end_ms = max(1, max(sounding_end(project, t) for t, _ in plans))
     bits = setting(project, "bits")
     print(f"stems {out_dir}  {len(plans)} track{'' if len(plans) == 1 else 's'}, {fmt_ms(end_ms)} each"
           f"  ({bits}, {project.rate} Hz, stereo)")
@@ -2224,7 +2483,7 @@ def cmd_stems(project: Project, args: Args) -> None:
         run_quiet(cmd, args.verbose)
         state = "" if is_heard(t, any_solo) else "  (muted or not soloed in the mix)"
         print(f"      {name:<26} {fmt_size((out_dir / name).stat().st_size):>10}{state}")
-    master_bits = [k for k in ("eq", "comp", "gain", "fadein", "fadeout", "head", "tail")
+    master_bits = [k for k in ("eq", "comp", "delay", "gain", "fadein", "fadeout", "head", "tail")
                    if setting(project, k) not in ("0", "")]
     lufs = setting(project, "lufs")
     if master_bits or lufs != "off":
@@ -2284,7 +2543,7 @@ def apply_document(project: Project, data: dict, settings: bool = True, tracks: 
                     fields["gain_db"] = max(-60.0, min(24.0, float(item["gain_db"])))
                 if item.get("pan") is not None:
                     fields["pan"] = max(-1.0, min(1.0, float(item["pan"])))
-                for flag in ("mute", "solo", "eq_on", "comp_on"):
+                for flag in ("mute", "solo", "eq_on", "comp_on", "delay_on"):
                     if item.get(flag) is not None:
                         fields[flag] = 1 if item[flag] else 0
                 if item.get("eq") is not None:
@@ -2297,6 +2556,11 @@ def apply_document(project: Project, data: dict, settings: bool = True, tracks: 
                         fields["comp"] = fmt_comp(parse_comp(str(item["comp"]))) if str(item["comp"]) else ""
                     except ValueError as exc:
                         warnings.append(f"{t['name']}: comp ignored ({exc})")
+                if item.get("delay") is not None:
+                    try:
+                        fields["delay"] = fmt_delay(parse_delay(str(item["delay"]))) if str(item["delay"]) else ""
+                    except ValueError as exc:
+                        warnings.append(f"{t['name']}: delay ignored ({exc})")
             except (TypeError, ValueError) as exc:
                 warnings.append(f"{t['name']}: bad value ({exc}), skipped")
                 continue
@@ -2548,6 +2812,8 @@ MIXER
  eq    e  TRACK voice|warm|air|mud..  presets (eq presets)
  comp  cp TRACK -18 4:1 a10 r120 k6 m3  thr ratio a r k m
  comp  cp TRACK vocal|drums|glue..    presets (comp presets)
+ delay dl TRACK 375ms|1/8 w30 f40 n4  time wet feedback n
+ delay dl TRACK slap|dotted|long      presets; set bpm 120
  mix   x  [-3] [-v]                   -3 also master.mp3
 PROJECT
  undo  u                              not hard trim / rm -D
@@ -2610,7 +2876,7 @@ def cmd_cheat(root_hint: Path | None, args: Args) -> None:
 # long name -> the short form and the other spellings; every command works under all of them
 COMMANDS = {
     "add": ("a",), "scan": ("sc",), "ls": ("l", "list"), "view": ("v",), "move": ("m", "mv"), "trim": ("t",),
-    "rm": ("r", "remove", "del"), "mute": ("mu",), "solo": ("s",), "gain": ("g",), "pan": ("p",), "eq": ("e",), "hp": (), "lp": (), "comp": ("cp",),
+    "rm": ("r", "remove", "del"), "mute": ("mu",), "solo": ("s",), "gain": ("g",), "pan": ("p",), "eq": ("e",), "hp": (), "lp": (), "comp": ("cp",), "delay": ("dl", "echo"),
     "mix": ("x", "render", "bounce"), "undo": ("u",), "dump": ("dp",), "rebuild": ("rb",),
     "set": ("se",), "stats": ("st",), "saveas": ("sa", "copy"), "stems": ("sm",), "import": ("im",), "new": ("n",), "cheat": ("c",), "help": ("h", "?"), "ui": ("tui",), "cut": (),
     "quit": ("q", "exit"), "clear": ("cl",), "split": ("sp",), "sheet": ("sh",),
@@ -2909,6 +3175,7 @@ class Tui:
             "fadein": "500ms", "fadeout": "3s", "head": "500ms", "tail": "2s",
             "bits": "32f | 24 | 16", "mp3": "320k | 192k | v0",
             "eq": "hp30 hs10k:+1 | warm | off", "comp": "-16 2:1 a30 r300 k8 | glue | off",
+            "delay": "1/8 w20 f30 n3 | slap | off", "bpm": "120",
         }
         head(f"project  {p.get('name')}")
         row("set:rate", "rate", str(p.rate), lambda v: ["set", "rate", v], hints["rate"])
@@ -2935,6 +3202,8 @@ class Tui:
                 lambda v, n=n: ["eq", n, *v.split()], "hp80 +3@200 hs8k:-2 | voice | off | clear")
             row(f"t{n}:comp", "comp", (t["comp"] or "none") + ("" if t["comp_on"] else " (off)"),
                 lambda v, n=n: ["comp", n, *v.split()], "-18 4:1 a10 r120 k6 m3 | vocal | off | clear")
+            row(f"t{n}:delay", "delay", (t["delay"] or "none") + ("" if t["delay_on"] else " (off)"),
+                lambda v, n=n: ["delay", n, *v.split()], "375ms w30 f40 n4 | 1/8 | slap | off | clear")
         return rows
 
     def sheet_open(self) -> None:
@@ -3304,8 +3573,9 @@ MASTER   (gout set KEY VALUE)
                         whenever the ceiling allows, otherwise dynamic, and the mix line says which.
                         -14 streaming (Spotify, YouTube), -16 Apple Music and podcasts, -23 broadcast
   ceiling -1            true-peak ceiling in dBTP for that step (default -1)
-  eq hp30 hs10k:+1      master eq, and  comp -16 2:1 a30 r300 k8  the master compressor: same syntax
-                        and presets as a track's; also  gout eq master ...  and  gout comp master ...
+  eq hp30 hs10k:+1      master eq,  comp -16 2:1 a30 r300 k8  master compressor,  delay 1/8 w15
+                        master delay: same syntax and presets as a track's; also  gout eq master ...
+  bpm 120               the tempo, so delay times can be note values
   gain -3               master gain in dB before the loudness step
   fadein 500ms          fades on the sum;  fadeout 3s
   head 500ms  tail 2s   silence padded before and after
@@ -3336,6 +3606,9 @@ TRACKS   (TRACK is the number shown by ls, or the track name)
                                              release ms, knee dB, makeup dB (mauto picks one)
   gout comp  cp TRACK PRESET | on | off | clear   presets: {' '.join(COMP_PRESETS)}
   gout comp  cp TRACK                        show it with its curve and where this track's peaks sit
+  gout delay dl TRACK 375ms w30 f40 n4       delay after the compressor: time, wet %, feedback %, repeats;
+                                             with  set bpm 120  the time can be a note value: 1/8, 3/16, 1/8d, 1/8t
+  gout delay dl TRACK PRESET | on | off | clear   presets: {' '.join(DELAY_PRESETS)};  delay TRACK draws the taps
   gout eq    e  TRACK                        show the bands and draw the curve, 20 Hz to 20 kHz; in
                                              the ui the curve panel follows the track you eq (ctrl-g)
   -N (--no-mix) on any of these skips the automatic re-mix; -p DIR before a command picks
@@ -3504,7 +3777,7 @@ def cmd_cut(argv: list[str]) -> None:
 PROJECT_COMMANDS = {
     "add": cmd_add, "scan": cmd_scan, "ls": cmd_ls, "move": cmd_move, "trim": cmd_trim, "rm": cmd_rm,
     "mute": cmd_mute, "solo": cmd_solo, "gain": cmd_gain, "pan": cmd_pan,
-    "eq": cmd_eq, "hp": cmd_hp, "lp": cmd_lp, "comp": cmd_comp,
+    "eq": cmd_eq, "hp": cmd_hp, "lp": cmd_lp, "comp": cmd_comp, "delay": cmd_delay,
     "set": cmd_set, "stats": cmd_stats, "mix": cmd_mix, "undo": cmd_undo, "dump": cmd_dump,
     "saveas": cmd_saveas, "stems": cmd_stems, "import": cmd_import,
     "view": cmd_view, "ui": cmd_ui,
