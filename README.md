@@ -223,15 +223,23 @@ parameter sheet, entries in `gout.json`, help and the cheat sheet.
 
 ```sh
 mkdir -p ~/.config/gout/addons
-cp examples/addons/tremolo.py ~/.config/gout/addons/
+cp examples/addons/*.py ~/.config/gout/addons/
 gout addons                      # the folder, what loaded, and effects this project lacks
-gout tremolo 3 5hz d50
 ```
 
-`examples/addons/tremolo.py` is the template: a subclass of `gout.fx.Effect` that says how to read
+Three examples ship in `examples/addons/`:
+
+| addon | command | what it does |
+| --- | --- | --- |
+| `chorus.py` | `chorus` / `ch` | stereo chorus: `v3 r0.5 d2 t25 m50 w100` is voices per side, rate Hz, depth ms, delay ms, mix %, width %. Left and right get different voices, so a mono track comes out wide. Presets `subtle classic wide vibe`. Its picture shows how each voice's delay swings. |
+| `saturation.py` | `saturation` / `sat` | a soft curve for warmth, grit or fuzz: `tanh d12 m70 t8k` is curve, drive dB, mix % (parallel blend), tone low-pass. Curves `tanh atan cubic exp alg quintic sin erf hard`. Output follows the drive by default so quiet passages keep their level; `o-6` sets it by hand. It runs at four times the project rate to keep aliasing down. Presets `warm tape tube crunch fuzz`. Its picture is the curve itself and says how many of the track's peaks it bends. |
+| `tremolo.py` | `tremolo` / `trem` | the volume rises and falls: `5hz d50`. Presets `slow fast chop`. |
+
+`examples/addons/tremolo.py` is the simplest template: a subclass of `gout.fx.Effect` that says how to read
 and write its settings line and which ffmpeg filters it becomes, and a `register(gout)` function
 that calls `gout.add_effect(...)`. Effects that need more than a filter list (the built-in reverb
-convolves with a generated file) override `graph` instead of `filters`. The base class in
+convolves with a generated file; the chorus treats left and right apart; the saturation blends a
+clean path back in) override `graph` instead of `filters`. The base class in
 `gout/fx.py` documents every hook.
 
 An addon that fails to load, or wants a name that is taken, is reported on every command and

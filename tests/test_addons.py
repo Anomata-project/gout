@@ -1,15 +1,16 @@
 import shutil
 
-from helpers import REPO, GoutTest, loudness
+from helpers import REPO, GoutTest, duration, ffmpeg, loudness, stereo_correlation, thd_db
 
-TREMOLO = REPO / "examples" / "addons" / "tremolo.py"
+EXAMPLES = REPO / "examples" / "addons"
+TREMOLO = EXAMPLES / "tremolo.py"
 
 
 class AddonTest(GoutTest):
     def install(self, name: str = "tremolo.py", text: str | None = None):
         target = self.addons / name
         if text is None:
-            shutil.copy(TREMOLO, target)
+            shutil.copy(EXAMPLES / name, target)
         else:
             target.write_text(text)
         return target
@@ -64,3 +65,69 @@ class AddonTest(GoutTest):
         shutil.copy(TREMOLO, root / "addons" / "tremolo.py")
         self.assertNotIn("tremolo", self.gout("fx", "kinds").stdout)
         self.gout("tremolo", "1", "slow", ok=False)
+
+
+class ExampleAddonTest(GoutTest):
+    def install(self, *names: str) -> None:
+        for name in names:
+            shutil.copy(EXAMPLES / name, self.addons / name)
+
+    def test_chorus_widens_a_mono_track_and_keeps_its_level(self):
+        self.install("chorus.py")
+        root = self.project("song", "tone.wav")
+        self.gout("mix")
+        dry = loudness(root / "master.wav")
+        self.gout("chorus", "1", "classic")
+        self.gout("mix")
+        self.assertLess(stereo_correlation(root / "master.wav"), 0.9)
+        self.assertAlmostEqual(loudness(root / "master.wav"), dry, delta=3)
+        self.assertGreater(duration(root / "master.wav"), 6.04)  # the voices ring on a little
+        self.gout("chorus", "1", "v2", "w0")
+        self.gout("mix")
+        self.assertGreater(stereo_correlation(root / "master.wav"), 0.999)
+        self.assertIn("voices at", self.gout("chorus", "1").stdout)
+        self.assertIn("wide", self.gout("ch", "presets").stdout)
+        self.gout("chorus", "1", "v9", ok=False)
+
+    def test_saturation_bends_loud_peaks_and_leaves_quiet_ones(self):
+        self.install("saturation.py")
+        root = self.project("song", "tone.wav")
+        self.gout("mix")
+        dry = loudness(root / "master.wav")
+        self.assertLess(thd_db(root / "master.wav", 330), -60)
+        self.gout("sat", "1", "tanh", "d3")
+        self.gout("mix")
+        self.assertAlmostEqual(loudness(root / "master.wav"), dry, delta=0.5)  # oauto: quiet stays put
+        self.assertLess(thd_db(root / "master.wav", 330), -40)
+        self.gout("sat", "1", "hard", "d24")
+        self.gout("mix")
+        clipped = thd_db(root / "master.wav", 330)
+        self.assertGreater(clipped, -20)
+        self.gout("sat", "1", "hard", "d24", "m50")
+        self.gout("mix")
+        self.assertLess(thd_db(root / "master.wav", 330), clipped - 3)  # the clean half dilutes it
+        out = self.gout("saturation", "1").stdout
+        self.assertIn("comes out at", out)
+        self.assertIn("hard d24 m50", out)
+        self.assertIn("fuzz", self.gout("sat", "presets").stdout)
+        self.gout("sat", "1", "d50", ok=False)
+
+    def test_saturation_blend_lines_up_at_high_frequencies(self):
+        self.install("saturation.py")
+        high = self.tmp / "high.wav"
+        ffmpeg("-f", "lavfi", "-i", "sine=frequency=15000:duration=4", "-c:a", "pcm_s16le", str(high))
+        self.project("song")
+        root = self.cwd
+        self.gout("add", str(high))
+        self.gout("mix")
+        dry = loudness(root / "master.wav")
+        self.gout("sat", "1", "tanh", "d0", "m50")  # a clean blend: any slip between the paths cancels
+        self.gout("mix")
+        self.assertAlmostEqual(loudness(root / "master.wav"), dry, delta=0.3)
+
+    def test_all_three_examples_load_together(self):
+        self.install("chorus.py", "saturation.py", "tremolo.py")
+        report = self.gout("addons").stdout
+        for name in ("chorus", "saturation", "tremolo"):
+            self.assertIn(name, report)
+        self.assertNotIn("not loaded", report)

@@ -119,6 +119,26 @@ def difference_peak_db(a: Path, b: Path) -> float:
     return peak_db(diff)
 
 
+def stereo_correlation(path: Path, skip: float = 1.0) -> float:
+    """How alike left and right are after `skip` seconds: 1 is mono, 0 is unrelated."""
+    left, right = samples(path, 2)
+    start = int(skip * RATE)
+    l, r = left[start:], right[start:]
+    den = math.sqrt(sum(a * a for a in l) * sum(b * b for b in r)) or 1.0
+    return sum(a * b for a, b in zip(l, r)) / den
+
+
+def thd_db(path: Path, f0: float, skip: float = 1.0, seconds: float = 2.0) -> float:
+    """Everything that is not the f0 sine, relative to it, in dB (harmonics and noise)."""
+    (mono,) = samples(path, 1)
+    x = mono[int(skip * RATE):int((skip + seconds) * RATE)]
+    w = 2 * math.pi * f0 / RATE
+    s = sum(v * math.sin(w * i) for i, v in enumerate(x)) * 2 / len(x)
+    c = sum(v * math.cos(w * i) for i, v in enumerate(x)) * 2 / len(x)
+    residual = sum((v - s * math.sin(w * i) - c * math.cos(w * i)) ** 2 for i, v in enumerate(x)) / len(x)
+    return 10 * math.log10(max(residual, 1e-30) / ((s * s + c * c) / 2))
+
+
 def write_click(path: Path, seconds: float = 4.0, at: float = 2.0, rate: int = 44100) -> None:
     with wave.open(str(path), "wb") as w:
         w.setnchannels(1)
