@@ -340,7 +340,7 @@ COMMAND_SECTIONS = [
         ("KIND", "", "presets", "every preset with its settings"),
     ]),
     ("PROJECT", "", [
-        ("undo", "u", "", "undo the last change (not a hard trim or rm -D)"),
+        ("undo", "u", "", "undo the last change, again for the one before (ctrl-u); not past a hard trim or rm -D"),
         ("view", "v", "[-w COLS]", "print the timeline"),
         ("saveas", "sa", "NAME | PATH", "copy the whole project"),
         ("stems", "sm", "[DIR] [-A]", "one wav per track"),
@@ -410,7 +410,8 @@ KEY_SECTIONS = [
         ("stop", "at the prompt: the playhead back to the start"),
     ]),
     ("KEYS", "", [
-        ("ctrl-u", "timeline on and off"),
+        ("ctrl-u", "undo the last change"),
+        ("ctrl-t", "timeline on and off"),
         ("ctrl-k", "cheat sheet on and off"),
         ("ctrl-g", "effect pictures on and off; the name line stays (eq N, comp N pick the track)"),
         ("ctrl-e", "the parameter sheet"),

@@ -249,6 +249,35 @@ class UiTest(GoutTest):
         self.assertIsNone(line_for("undo"))  # undo takes it away too
         self.assertEqual(project.tracks()[0]["fx"], [])
 
+    def test_ctrl_u_undoes_and_ctrl_t_toggles_the_timeline(self):
+        root = self.project("song", "bass.wav")
+        project, screen, ui = self.open_ui(root)
+        for line in ("gain 1 -3", "pan 1 L30"):
+            ui.input = line
+            ui.submit()
+        ui.input = "mute 1"  # half typed: ctrl-u leaves the line alone
+        ui.handle("\x15")
+        self.assertEqual(ui.input, "mute 1")
+        self.assertIn("undo  pan", "\n".join(ui.log[-3:]))
+        track = project.tracks()[0]
+        self.assertEqual((track["gain_db"], track["pan"]), (-3.0, 0))
+        ui.handle("\x15")  # again: the change before
+        self.assertEqual(project.tracks()[0]["gain_db"], 0.0)
+        ui.handle("\x15")  # and the add itself
+        self.assertEqual(project.tracks(), [])
+        for _ in range(10):  # the fixture's own setup steps, then the start of the history
+            ui.handle("\x15")
+            if "nothing to undo" in ui.log[-1]:
+                break
+        self.assertIn("nothing to undo", ui.log[-1])
+
+        shown = ui.show_timeline
+        ui.handle("\x14")
+        self.assertEqual(ui.show_timeline, not shown)
+        self.assertEqual(project.get("ui_timeline"), "on" if not shown else "off")
+        ui.handle("\x14")
+        self.assertEqual(ui.show_timeline, shown)
+
     def test_grey_suggestion_is_taken_with_the_right_arrow(self):
         root = self.project("song", "bass.wav")
         project, screen, ui = self.open_ui(root)
@@ -289,7 +318,7 @@ class UiTest(GoutTest):
                     output.extend(chunk)
 
         drain(1.5)
-        for keys in (b"ls\n", b"\x15", b"\x15", b"gan 1 -2", b"\x1b[H", b"\x1b[C", b"\x1b[C", b"i\n", b"quit\n"):
+        for keys in (b"ls\n", b"\x14", b"\x14", b"gan 1 -2", b"\x1b[H", b"\x1b[C", b"\x1b[C", b"i\n", b"quit\n"):
             os.write(fd, keys)
             drain(0.8)
         _, status = os.waitpid(pid, 0)

@@ -13,7 +13,7 @@ Every command has a long and a short name (gout add / gout a). gout cheat prints
 PROJECT
   gout new   n  NAME [-R HZ]      create NAME/ with {TRACK_DIR}/ and {DB_NAME} (default {DEFAULT_RATE} Hz)
   gout                            inside a project: open the terminal ui (prompt left; timeline and
-                                  cheat sheet right, ctrl-u / ctrl-k hide each; ctrl-e opens the
+                                  cheat sheet right, ctrl-t / ctrl-k hide each; ctrl-u undoes; ctrl-e opens the
                                   parameter sheet: every setting and track parameter as name, value
                                   and new value, ctrl-s applies); elsewhere: this page. The prompt
                                   edits like a shell: arrows, home/end, up/down for earlier commands
@@ -34,7 +34,8 @@ PROJECT
   gout cheat c                    print the cheat sheet
   gout ls    l                    list the tracks and the state of {MASTER_WAV}
   gout mix   x  [-3] [-v]         render {MASTER_WAV} (32-bit float stereo); -3 also writes {MASTER_MP3}
-  gout undo  u                    undo the last change (not a hard trim or rm -D)
+  gout undo  u                    undo the last change, again for the one before (ctrl-u in the ui);
+                                  not past a hard trim or rm -D
   gout saveas sa NAME | PATH      copy the whole project (files included) next to this one, or to PATH
   gout stems sm [DIR] [-A]        one wav per track, trimmed, placed, gained and panned as in the mix,
                                   all the same length from 0:00, into {STEMS_DIR}/ (-A: only what the mix hears)

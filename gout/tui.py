@@ -49,8 +49,8 @@ class Tui:
     def __init__(self, project: Project, scr):
         self.project, self.scr = project, scr
         self.log: list[str] = [f"gout {__version__}  {project.root}",
-                               "ctrl-u shows/hides the timeline, ctrl-k the cheat sheet, tab flips its pages,"
-                               " ctrl-e opens the parameter sheet"]
+                               "ctrl-u undoes the last change, ctrl-t shows/hides the timeline, ctrl-k the cheat sheet,"
+                               " tab flips its pages, ctrl-e opens the parameter sheet"]
         self.theme, theme_problems, self.theme_path = load_theme(project.root)
         self.palette = Palette(self.theme)
         self.player: Player | None = None
@@ -459,8 +459,12 @@ class Tui:
             self.sheet_open()
         elif key == "\x07":  # ctrl-g: the effect panel
             self.toggle_panel()
-        elif key == "\x15":  # ctrl-u
+        elif key == "\x14":  # ctrl-t
             self.toggle("timeline")
+        elif key == "\x15":  # ctrl-u: undo the last change, whatever is on the line
+            self.scroll = 0
+            self.log.append("> undo  (ctrl-u)")
+            self.run_command(["undo"], "undo", False)
         elif key == "\x0b":  # ctrl-k
             self.toggle("cheat")
         elif key in ("\n", "\r", curses.KEY_ENTER):
@@ -966,23 +970,28 @@ class Tui:
         elif head in ("ui", "tui", "rebuild", "new"):
             self.log.append(f"{head}: run that from the shell")
         else:
-            self.busy = True
-            self.draw()
-            before = self.chain_kinds()
-            buf = io.StringIO()
-            try:
-                with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
-                    run(argv, self.project)
-            except GoutError as exc:
-                buf.write(f"error: {exc}\n")
-            except Exception as exc:  # keep the UI alive whatever happens
-                buf.write(f"error: {type(exc).__name__}: {exc}\n")
-            finally:
-                self.busy = False
-            self.log.extend(buf.getvalue().rstrip("\n").splitlines())
-            if is_effect:
-                self.follow(head, argv)
-            self.settle_panel(before)
+            self.run_command(argv, head, is_effect)
+        del self.log[:-2000]
+
+    def run_command(self, argv: list[str], head: str, is_effect: bool) -> None:
+        """Run a gout command against the project, its output into the log."""
+        self.busy = True
+        self.draw()
+        before = self.chain_kinds()
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+                run(argv, self.project)
+        except GoutError as exc:
+            buf.write(f"error: {exc}\n")
+        except Exception as exc:  # keep the UI alive whatever happens
+            buf.write(f"error: {type(exc).__name__}: {exc}\n")
+        finally:
+            self.busy = False
+        self.log.extend(buf.getvalue().rstrip("\n").splitlines())
+        if is_effect:
+            self.follow(head, argv)
+        self.settle_panel(before)
         del self.log[:-2000]
 
 

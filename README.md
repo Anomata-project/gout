@@ -87,7 +87,7 @@ name (a unique prefix will do). `-N` / `--no-mix` on any change skips an automat
 | `fx` | `f` | `TRACK [add KIND ... \| N SETTINGS \| N on\|off\|rm \| N move M \| clear]` | the track's (or master's) effect chain, in order; `fx kinds` lists every effect |
 | `play` | `pl` | `[FROM] [-r]` | play `master.wav`, or the project live when it is out of date; in the ui, space plays and stops |
 | `mix` | `x` | `[-3] [-v]` | render `master.wav`; `-3` / `--mp3` also writes `master.mp3` |
-| `undo` | `u` | | undo the last change (not a hard trim or `rm -D`) |
+| `undo` | `u` | | undo the last change, again for the one before; `ctrl-u` in the ui (not past a hard trim or `rm -D`) |
 | `stems` | `sm` | `[DIR] [-A]` | one wav per track, processed as in the mix and all the same length, into `stems/`; `-A` only what the mix hears |
 | `dump` | `dp` | | the state as JSON, the same document as `gout.json` |
 | `import` | `im` | `FILE.json [-s \| -t]` | apply a document: settings and tracks, or only one of them |
@@ -211,7 +211,9 @@ completion) shows in grey after the cursor; the right arrow at the end of the li
 empty line Tab still flips the cheat sheet. `gout add` also finds a file whose name has spaces when
 it was typed without quotes.
 
-`ctrl-u` or `view` hides and shows the timeline,
+`ctrl-u` undoes the last change, the same as typing `undo`, and pressing it again undoes the one
+before. It works whatever is on the line and leaves the line alone. `ctrl-t` or `view` hides and
+shows the timeline,
 `ctrl-k` or `cheat` the cheat sheet (`tab` brings it back too). Hide both and the prompt gets the
 whole width. `help` prints the sheet into the log, `help all` the whole instruction page,
 `quit` / `ctrl-d` / `ctrl-c` leave. Both states are remembered per project.
@@ -452,7 +454,8 @@ the file starts, the in point just reveals less of it.
 A hard trim keeps the sound where it is too. For wav it is exact. For mp3 the frames are
 copied without re-encoding (a 26 ms grid), and the file's LAME encoder delay is accounted
 for so the track moves by less than a millisecond; `-r` re-encodes for an exact cut.
-Hard trims and `rm -D` are the only things `undo` cannot take back.
+Hard trims and `rm -D` are the only things `undo` cannot take back, and undo stops there: changes
+made before one of them can no longer be undone either.
 
 ## `gout cut`
 
