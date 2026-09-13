@@ -163,6 +163,7 @@ mix   master.wav  00:03:12.500  -14.0 LUFS  LRA 6.2  peak -1.0 dBTP
 | --- | --- |
 | `lufs -14` / `off` | loudness target. Two passes of ffmpeg's `loudnorm`: a plain gain change whenever the ceiling allows, otherwise dynamic, and the mix line says which. -14 for Spotify and YouTube, -16 for Apple Music and podcasts, -23 for EBU broadcast. Default off |
 | `ceiling -1` | true-peak ceiling in dBTP for the loudness step |
+| `eq hp30 hs10k:+1`, `comp glue` | eq and compressor on the master, same syntax and presets as a track's; `eq master ...` and `comp master ...` do the same and draw the curves from `master.wav` |
 | `gain -3` | master gain in dB, before the loudness step |
 | `fadein 500ms`, `fadeout 3s` | fades on the sum |
 | `head 500ms`, `tail 2s` | silence padded before and after |
@@ -170,8 +171,8 @@ mix   master.wav  00:03:12.500  -14.0 LUFS  LRA 6.2  peak -1.0 dBTP
 | `mp3 320k` / `192k` / `v0` | quality of the `mix --mp3` bounce |
 | `title`, `artist`, `album`, `year`, `comment` | tags written into `master.wav` and `master.mp3` |
 
-The chain is: sum of the tracks, master gain, fades, loudness step, head and tail padding, then
-the file. Per track, before the sum: soft trim, position, eq, compressor, gain, pan. Under three seconds of material the loudness step is a plain gain, since `loudnorm`
+The chain is: sum of the tracks, master eq, master compressor, master gain, fades, loudness
+step, head and tail padding, then the file. Per track, before the sum: soft trim, position, eq, compressor, gain, pan. Under three seconds of material the loudness step is a plain gain, since `loudnorm`
 cannot measure that reliably. `gout stats` shows integrated LUFS, loudness range and true peak
 for every track file (and what it comes to after the track's gain), so you can balance tracks
 by numbers before touching the master.

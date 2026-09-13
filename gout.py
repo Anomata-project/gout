@@ -848,7 +848,8 @@ class Project:
 # --------------------------------------------------------------------------- master settings
 
 MASTER_DEFAULTS = {
-    "lufs": "off", "ceiling": "-1", "gain": "0", "fadein": "0", "fadeout": "0", "head": "0", "tail": "0",
+    "lufs": "off", "ceiling": "-1", "eq": "", "comp": "", "gain": "0",
+    "fadein": "0", "fadeout": "0", "head": "0", "tail": "0",
     "bits": "32f", "mp3": "320k", "title": "", "artist": "", "album": "", "year": "", "comment": "",
 }
 TAG_KEYS = ("title", "artist", "album", "year", "comment")
@@ -901,6 +902,13 @@ def parse_setting(key: str, value: str) -> tuple[str, str]:
         return key, v.lower()
     if key in TAG_KEYS:
         return key, value
+    if key in ("eq", "comp"):  # the master's own, same syntax as a track's
+        if v.lower() in ("off", "none", "clear", "flat", ""):
+            return key, ""
+        try:
+            return key, fmt_eq(parse_eq(v)) if key == "eq" else fmt_comp(parse_comp(v))
+        except ValueError as exc:
+            die(str(exc))
     die(f"unknown setting {key!r} — gout set (with nothing after it) lists them")
 
 
@@ -1023,6 +1031,19 @@ def eq_filters(bands: list[dict]) -> list[str]:
             name = "lowshelf" if b["type"] == "ls" else "highshelf"
             out.append(f"{name}=f={b['f']:g}:t=q:w={EQ_SHELF_Q}:g={b['g']:g}")
     return out
+
+
+MASTER_N = 0  # the track number the master answers to in eq/comp commands and the ui panel
+
+
+def master_track(project: "Project") -> dict:
+    """The master bus in the shape of a track row, for the eq/comp code and their curves."""
+    return {"n": MASTER_N, "name": "master", "file": MASTER_WAV, "kind": "wav",
+            "eq": setting(project, "eq"), "eq_on": 1, "comp": setting(project, "comp"), "comp_on": 1}
+
+
+def is_master(spec: str) -> bool:
+    return spec.lower() in ("master", "m", str(MASTER_N))
 
 
 def track_eq(t: dict) -> list[dict]:
@@ -1476,8 +1497,12 @@ def mix(project: Project, verbose: bool = False, mp3: bool = False) -> None:
               + ("" if tracks else " (no tracks yet)"))
         return
 
-    # pass 1: the sum, master gain and fades, float at the project rate
+    # pass 1: the sum, master eq and compressor, master gain and fades, float at the project rate
     post: list[str] = []
+    post += eq_filters(track_eq(master_track(project)))
+    master_comp = track_comp(master_track(project))
+    if master_comp is not None:
+        post.append(comp_filter(master_comp))
     gain = float(setting(project, "gain"))
     if gain:
         post.append(f"volume={gain:.2f}dB")
@@ -1971,12 +1996,21 @@ def cmd_eq(project: Project, args: Args) -> None:
         for name, (bands, what) in EQ_PRESETS.items():
             print(f"  {name:<8} {bands or 'flat':<38} {what}")
         return
-    t = project.track(pos[0])
+    master = is_master(pos[0])
+    t = master_track(project) if master else project.track(pos[0])
     words = pos[1:]
+    if master and words:
+        key, value = parse_setting("eq", " ".join(words) if words not in (["on"],) else t["eq"])
+        project.record(f"set eq {value}")
+        project.set("eq", value)
+        print(eq_line(master_track(project)))
+        autorender(project, args)
+        return
     if not words:
         print(eq_line(t))
         width = min(100, shutil.get_terminal_size((100, 24)).columns)
-        spectrum = project.spectrum(t["file"], project.tracks_dir / t["file"]) or None
+        path = project.master if master else project.tracks_dir / t["file"]
+        spectrum = (project.spectrum(t["file"], path) if path.exists() else b"") or None
         for text, _, kind in render_eq(project, t, width - 6, spectrum=spectrum)[1:]:
             print("      " + text)
         if spectrum:
@@ -2020,12 +2054,21 @@ def cmd_comp(project: Project, args: Args) -> None:
         for name, (line, what) in COMP_PRESETS.items():
             print(f"  {name:<8} {line or 'none':<26} {what}")
         return
-    t = project.track(pos[0])
+    master = is_master(pos[0])
+    t = master_track(project) if master else project.track(pos[0])
     words = pos[1:]
+    if master and words:
+        key, value = parse_setting("comp", " ".join(words) if words != ["on"] else t["comp"])
+        project.record(f"set comp {value}")
+        project.set("comp", value)
+        print(comp_line(master_track(project)))
+        autorender(project, args)
+        return
     if not words:
         print(comp_line(t))
         width = min(100, shutil.get_terminal_size((100, 24)).columns)
-        peaks = project.envelope(t["file"], project.tracks_dir / t["file"]) or None
+        path = project.master if master else project.tracks_dir / t["file"]
+        peaks = (project.envelope(t["file"], path) if path.exists() else b"") or None
         for text, _, kind in render_comp(t, min(width - 6, 64), peaks=peaks):
             print("      " + text)
         print("      · output = input   █ the compressor   ░ how often this track's peaks sit at that level")
@@ -2079,12 +2122,14 @@ def cmd_lp(project: Project, args: Args) -> None:
 
 
 def cmd_set(project: Project, args: Args) -> None:
-    pos = args.positionals(SET_USAGE, 0, 2)
+    pos = args.positionals(SET_USAGE, 0)
     if not pos:
         hints = {
             "autorender": "render master.wav after every change",
             "lufs": "loudness target: -14 (streaming) -16 (Apple) -23 (broadcast) or off",
             "ceiling": "true-peak ceiling in dBTP for the loudness step",
+            "eq": "master eq, same syntax as a track's: hp30 hs10k:+1, or a preset",
+            "comp": "master compressor: -16 2:1 a30 r300 k8, or a preset like glue",
             "gain": "master gain in dB, before the loudness step",
             "fadein": "e.g. 500ms", "fadeout": "e.g. 3s", "head": "silence before, e.g. 500ms",
             "tail": "silence after, e.g. 2s", "bits": "32f | 24 | 16 (dithered)",
@@ -2099,11 +2144,13 @@ def cmd_set(project: Project, args: Args) -> None:
                 value = fmt_ms(int(value))
             elif key in TAG_KEYS:
                 value = value or "-"
+            elif key in ("eq", "comp"):
+                value = value or "none"
             print(f"{key:<11} {value:<14} {hints.get(key, '')}")
         return
-    if len(pos) != 2:
+    if len(pos) < 2 or (len(pos) > 2 and pos[0].lower() not in ("eq", "comp") + TAG_KEYS):
         die(SET_USAGE)
-    key, value = parse_setting(pos[0].lower(), pos[1])
+    key, value = parse_setting(pos[0].lower(), " ".join(pos[1:]))  # eq, comp and tags may span words
     project.record(f"set {key} {value}")
     project.set(key, value)
     shown = fmt_ms(int(value)) if key in ("fadein", "fadeout", "head", "tail") and value != "0" else value
@@ -2177,7 +2224,8 @@ def cmd_stems(project: Project, args: Args) -> None:
         run_quiet(cmd, args.verbose)
         state = "" if is_heard(t, any_solo) else "  (muted or not soloed in the mix)"
         print(f"      {name:<26} {fmt_size((out_dir / name).stat().st_size):>10}{state}")
-    master_bits = [k for k in ("gain", "fadein", "fadeout", "head", "tail") if setting(project, k) not in ("0", "")]
+    master_bits = [k for k in ("eq", "comp", "gain", "fadein", "fadeout", "head", "tail")
+                   if setting(project, k) not in ("0", "")]
     lufs = setting(project, "lufs")
     if master_bits or lufs != "off":
         what = ", ".join(master_bits + (["the loudness target"] if lufs != "off" else []))
@@ -2518,6 +2566,7 @@ PROJECT
  sheet sh (or ctrl-e)                 parameters as a table
 MASTER set KEY VALUE
  lufs -14|off  ceiling -1  gain -3    loudness, dBTP, gain
+ eq warm  comp glue                   or: eq master hp30
  fadein 1s  fadeout 3s  head 1s  tail 2s
  bits 32f|24|16  mp3 320k|v0  title artist album year
 FLAGS  -N --no-mix skip the re-mix    -p DIR the project
@@ -2694,12 +2743,14 @@ class Tui:
                 top = 1 + len(rows)
 
         if right_x is not None and self.show_eq and self.eq_track is not None:
-            track = next((t for t in tracks if t["n"] == self.eq_track), None)
+            track = master_track(p) if self.eq_track == MASTER_N else \
+                next((t for t in tracks if t["n"] == self.eq_track), None)
             if track is None:
                 self.eq_track = None
             else:
                 height = 8 if h >= 32 else 6
-                peaks = p.envelope(track["file"], p.tracks_dir / track["file"]) or None
+                path = p.master if self.eq_track == MASTER_N else p.tracks_dir / track["file"]
+                peaks = (p.envelope(track["file"], path) if path.exists() else b"") or None
                 rows = render_track_panel(p, track, right_w - 1, height, self.spectrum_for(track), peaks,
                                           self.panel_prefer)
                 self.put(top, right_x, (" " + rows[0][0][:right_w - 16] + "   ctrl-g hides").ljust(right_w),
@@ -2729,7 +2780,10 @@ class Tui:
         scr.refresh()
 
     def spectrum_for(self, track: dict) -> bytes | None:
-        return self.project.spectrum(track["file"], self.project.tracks_dir / track["file"]) or None
+        path = self.project.master if track["n"] == MASTER_N else self.project.tracks_dir / track["file"]
+        if not path.exists():
+            return None
+        return self.project.spectrum(track["file"], path) or None
 
     def draw_cells(self, y: int, x: int, cells: str, kind: str, classes: str = "") -> None:
         import curses
@@ -2854,6 +2908,7 @@ class Tui:
             "lufs": "-14 | -16 | -23 | off", "ceiling": "dBTP", "gain": "dB",
             "fadein": "500ms", "fadeout": "3s", "head": "500ms", "tail": "2s",
             "bits": "32f | 24 | 16", "mp3": "320k | 192k | v0",
+            "eq": "hp30 hs10k:+1 | warm | off", "comp": "-16 2:1 a30 r300 k8 | glue | off",
         }
         head(f"project  {p.get('name')}")
         row("set:rate", "rate", str(p.rate), lambda v: ["set", "rate", v], hints["rate"])
@@ -3177,8 +3232,9 @@ class Tui:
                 self.busy = False
             self.log.extend(buf.getvalue().rstrip("\n").splitlines())
             if head in ("eq", "hp", "lp", "comp") and len(argv) > 1:
-                try:  # the panel follows the track you are working on
-                    self.eq_track, self.show_eq = self.project.track(argv[1])["n"], True
+                try:  # the panel follows the track (or the master) you are working on
+                    self.eq_track = MASTER_N if is_master(argv[1]) else self.project.track(argv[1])["n"]
+                    self.show_eq = True
                     self.panel_prefer = "comp" if head == "comp" else "eq"
                 except GoutError:
                     pass
@@ -3248,6 +3304,8 @@ MASTER   (gout set KEY VALUE)
                         whenever the ceiling allows, otherwise dynamic, and the mix line says which.
                         -14 streaming (Spotify, YouTube), -16 Apple Music and podcasts, -23 broadcast
   ceiling -1            true-peak ceiling in dBTP for that step (default -1)
+  eq hp30 hs10k:+1      master eq, and  comp -16 2:1 a30 r300 k8  the master compressor: same syntax
+                        and presets as a track's; also  gout eq master ...  and  gout comp master ...
   gain -3               master gain in dB before the loudness step
   fadein 500ms          fades on the sum;  fadeout 3s
   head 500ms  tail 2s   silence padded before and after
