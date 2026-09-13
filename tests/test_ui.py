@@ -200,13 +200,13 @@ class UiTest(GoutTest):
         ui.submit()
         head, pictures = panel()
         self.assertIn("eq hp80", head)
-        self.assertIn("ctrl-g hides", head)
+        self.assertTrue(head.endswith("ctrl-g"), head)
         self.assertGreater(pictures, 3)
 
         ui.handle("\x07")
         head, pictures = panel()
         self.assertIn("eq hp80", head)
-        self.assertIn("ctrl-g shows", head)
+        self.assertTrue(head.endswith("ctrl-g"), head)
         self.assertEqual(pictures, 0)
         self.assertEqual(project.get("ui_fx_pictures"), "off")
 
@@ -221,7 +221,6 @@ class UiTest(GoutTest):
 
         ui.handle("\x07")
         head, pictures = panel()
-        self.assertIn("ctrl-g hides", head)
         self.assertGreater(pictures, 3)
 
     def test_effect_panel_lets_go_of_an_effect_that_was_removed(self):
@@ -284,9 +283,10 @@ class UiTest(GoutTest):
         screen.w = 160
         ui.draw()
         rows = [screen.row(y) for y in range(screen.h)]
-        self.assertTrue(rows[0].endswith("ctrl-t hides"), rows[0])
+        self.assertTrue(rows[0].rstrip().endswith("  ctrl-t"), rows[0])
+        self.assertNotIn("hides", rows[0])
         cheat = next(row for row in rows if "│ cheat sheet  " in row)
-        self.assertTrue(cheat.endswith("ctrl-k hides"), cheat)
+        self.assertTrue(cheat.endswith("  ctrl-k"), cheat)
         ui.handle("\x14")
         ui.handle("\x0b")  # both hidden: the prompt's own title bar says how to get them back
         ui.draw()

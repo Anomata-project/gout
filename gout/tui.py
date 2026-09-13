@@ -232,7 +232,7 @@ class Tui:
                          else (f"  ■ {fmt_ms(where)}  space plays" if where else "  space plays"))
                 if self.render_proc is not None:
                     state += "   rendering master.wav…"
-                self.put(0, right_x, header_line(" timeline" + state, "ctrl-t hides ", right_w), self.palette.attr("header"))
+                self.put(0, right_x, header_line(" timeline" + state, "ctrl-t ", right_w), self.palette.attr("header"))
                 room = max(3, h - 2 - 6) if self.show_cheat else max(3, h - 1)  # the cheat sheet keeps six lines
                 if self.panel_track is not None:
                     room = max(3, room - ((10 if h >= 32 else 8) if self.show_panel else 1))
@@ -255,7 +255,7 @@ class Tui:
                 rows = (render_panel(p, track, right_w - 1, height, self.panel_kind) if self.show_panel
                         else [(panel_head(track, self.panel_kind), "", "head")])
                 who = "master" if self.panel_track == MASTER_N else f"{track['n']} {track['name']}"
-                hint = "ctrl-g hides " if self.show_panel else "ctrl-g shows "
+                hint = "ctrl-g "
                 self.put(top, right_x, header_line(f" {who}  " + rows[0][0], hint, right_w), self.palette.attr("header"))
                 for i, (text, classes, kind) in enumerate(rows[1:], 1):
                     if top + i >= h:
@@ -271,7 +271,7 @@ class Tui:
             self.cheat_scroll = max(0, min(self.cheat_scroll, max(0, len(sheet) - self.sheet_h)))
             pages = max(1, math.ceil(len(sheet) / self.sheet_h))
             page = min(pages, math.ceil((self.cheat_scroll + self.sheet_h) / self.sheet_h))
-            self.put(top, right_x, header_line(f" cheat sheet  {page}/{pages}  tab pages", "ctrl-k hides ", right_w),
+            self.put(top, right_x, header_line(f" cheat sheet  {page}/{pages}  tab pages", "ctrl-k ", right_w),
                      self.palette.attr("header"))
             for i, line in enumerate(sheet[self.cheat_scroll:self.cheat_scroll + self.sheet_h]):
                 self.put(top + 1 + i, right_x + 1, line, 0, right_w - 1)
