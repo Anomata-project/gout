@@ -405,6 +405,42 @@ class Formula:
         text = self.text.replace("**", "^")
         return re.sub(r"\s*\^\s*(\d+)", lambda m: m.group(1).translate(TO_SUPERSCRIPT), text)
 
+    def program(self) -> dict:
+        """The formula as data, for Newton's method written in another language (the web page):
+        {"poly": [[re, im], ...]} with the coefficients from z⁰ up for a polynomial (to run by
+        Horner's rule), otherwise {"steps": [...], "value": i, "slope": j}. Each step is ["z"],
+        ["num", re, im], ["neg", a], ["add"|"sub"|"mul"|"div"|"pow", a, b], ["powi", a, n] for a
+        whole power, or ["call", name, a]; a and b number earlier steps, shared where the value
+        and the slope have a part in common. Only numbers and names from FUNCTIONS go in."""
+        coeffs = coefficients(self.tree)
+        if coeffs is not None and max(coeffs) >= 1:
+            return {"poly": [[coeffs.get(k, 0j).real, coeffs.get(k, 0j).imag] for k in range(max(coeffs) + 1)]}
+        steps: list[list] = []
+        seen: dict = {}
+
+        def emit(node) -> int:
+            if node in seen:
+                return seen[node]
+            kind = node[0]
+            if kind == "num":
+                step = ["num", node[1].real, node[1].imag]
+            elif kind == "z":
+                step = ["z"]
+            elif kind == "neg":
+                step = ["neg", emit(node[1])]
+            elif kind == "call":
+                step = ["call", node[1], emit(node[2])]
+            elif kind == "pow" and is_num(node[2]) and node[2][1].imag == 0 and node[2][1].real == int(node[2][1].real):
+                step = ["powi", emit(node[1]), int(node[2][1].real)]  # as z ** 3 in source(): the integer power
+            else:
+                step = [kind, emit(node[1]), emit(node[2])]
+            steps.append(step)
+            seen[node] = len(steps) - 1
+            return seen[node]
+
+        value, slope = emit(self.tree), emit(self.slope_tree)
+        return {"steps": steps, "value": value, "slope": slope}
+
     def newton(self):
         """newton(points, limit, relax, eps) -> (steps, finals): Newton's method on every point at
         once, `points` changed in place; steps is limit for a point that never settled (or hit a

@@ -21,7 +21,7 @@ from .fx import effect, effects, GUTTER, resolve
 from .settings import MASTER_DEFAULTS, master_track, setting
 from .render import CHEAT_HEADINGS, cheat_layout, LABEL_W, panel_head, render_cheat, render_panel, render_timeline
 from .helptext import help_text
-from .commands import save_as, slot_of
+from .commands import chain_kinds, panel_target, save_as, settled_panel
 from .cli import aliases, command_table, run
 from .lineedit import LineEditor, path_candidates
 from .player import Player
@@ -979,55 +979,18 @@ class Tui:
                 self.close_screen()
 
     def chain_kinds(self) -> dict[int, list[str]]:
-        """The effect kinds on every track and the master, by track number (master: MASTER_N)."""
-        chains = {t["n"]: [i["kind"] for i in t["fx"]] for t in self.project.tracks()}
-        chains[MASTER_N] = [i["kind"] for i in master_track(self.project)["fx"]]
-        return chains
+        return chain_kinds(self.project)
 
     def settle_panel(self, before: dict[int, list[str]]) -> None:
-        """After a change: when the effect the panel shows was on its track and is gone now (fx
-        clear, fx N rm, KIND clear, undo, the sheet), show the first effect left there, or no
-        panel line when the chain is empty. A look at an effect the track never had (eq 3 on a
-        track without an eq) keeps showing it as none."""
-        if self.panel_track is None:
-            return
-        after = self.chain_kinds()
-        if self.panel_track not in after:
-            self.panel_track = None
-            return
-        if self.panel_kind not in before.get(self.panel_track, []) or self.panel_kind in after[self.panel_track]:
-            return
-        left = [kind for kind in after[self.panel_track] if effect(kind) is not None]
-        if left:
-            self.panel_kind = left[0]
-        else:
-            self.panel_track = None
+        """After a change: see commands.settled_panel."""
+        self.panel_track, self.panel_kind = settled_panel(before, self.chain_kinds(), self.panel_track,
+                                                          self.panel_kind)
 
     def follow(self, head: str, argv: list[str]) -> None:
         """Point the effect panel at what an effect command just touched."""
-        if len(argv) < 2 or argv[1].lower() in ("presets", "preset", "kinds", "effects"):
-            return
-        try:
-            t = master_track(self.project) if is_master(argv[1]) else self.project.track(argv[1])
-        except GoutError:
-            return
-        kind = None
-        if head == "fx":
-            if len(argv) > 3 and argv[2].lower() == "add":
-                eff = resolve(argv[3])
-                kind = eff.name if eff else None
-            elif len(argv) > 2:
-                try:
-                    kind = slot_of(t, argv[2])["kind"]
-                except GoutError:
-                    kind = None
-            elif t["fx"]:
-                kind = t["fx"][0]["kind"]
-        else:
-            eff = resolve(head)
-            kind = eff.name if eff else None
-        if kind:  # the pictures stay as ctrl-g left them
-            self.panel_track, self.panel_kind = t["n"], kind
+        target = panel_target(self.project, head, argv)
+        if target:  # the pictures stay as ctrl-g left them
+            self.panel_track, self.panel_kind = target
 
     def toggle(self, what: str) -> None:
         """Show or hide one section of the right panel; remembered per project."""
@@ -1117,7 +1080,7 @@ class Tui:
                 self.log.append("saveas NAME  (a bare name goes next to this project; a path goes where it says)")
             else:
                 self.save_as(argv[1])
-        elif head in ("ui", "tui", "rebuild", "new"):
+        elif head in ("ui", "tui", "rebuild", "new", "web"):
             self.log.append(f"{head}: run that from the shell")
         else:
             self.run_command(argv, head, is_effect)

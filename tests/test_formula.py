@@ -1,4 +1,5 @@
 import cmath
+import json
 
 from helpers import GoutTest, gout_attr
 
@@ -40,3 +41,42 @@ class FormulaTest(GoutTest):
             settled = [z for z in finals if z is not None]
             self.assertGreater(len(settled), len(points) * 0.8, text)
             self.assertTrue(all(any(abs(z - r) < 1e-6 for r in roots) or abs(z.real) > 3 for z in settled), text)
+
+    def test_the_program_computes_what_the_formula_does(self):
+        def run(program, z):
+            if "poly" in program:
+                w = sum(complex(*c) * z ** k for k, c in enumerate(program["poly"]))
+                d = sum(k * complex(*c) * z ** (k - 1) for k, c in enumerate(program["poly"]) if k)
+                return w, d
+            values = []
+            for step in program["steps"]:
+                op, args = step[0], step[1:]
+                get = lambda i: values[args[i]]
+                if op == "z":
+                    values.append(z)
+                elif op == "num":
+                    values.append(complex(args[0], args[1]))
+                elif op == "neg":
+                    values.append(-get(0))
+                elif op == "call":
+                    values.append(getattr(cmath, args[0])(values[args[1]]))
+                elif op == "powi":
+                    values.append(get(0) ** args[1])
+                else:
+                    a, b = get(0), get(1)
+                    values.append({"add": a + b, "sub": a - b, "mul": a * b, "div": a / b if b else None,
+                                   "pow": a ** b if a else None}[op])
+            return values[program["value"]], values[program["slope"]]
+
+        for text in ("z^3 + 7", "z^8 + 15z^4 - 16", "2z(z+1) - 3i", "sin(z)", "cosh(z) - 2", "z^z", "tan(z)/z",
+                     "sqrt(z) - 1", "(z-1)^(2+i)", "exp(z) - z^-2", "log(z)"):
+            formula = self.parse(text)
+            program = formula.program()
+            self.assertEqual(json.loads(json.dumps(program)), program, text)
+            for z in (complex(0.7, -0.4), complex(-1.3, 0.9)):
+                w, d = run(program, z)
+                self.assertAlmostEqual(w, formula.value(z), places=9, msg=text)
+                self.assertAlmostEqual(d, formula.slope(z), places=9, msg=text)
+        self.assertIn("poly", self.parse("(z-1)(z+1)^2").program())
+        steps = self.parse("sin(z) + sin(z)^2").program()["steps"]
+        self.assertEqual(sum(1 for s in steps if s == ["call", "sin", 0]), 1)  # shared, not written twice

@@ -158,6 +158,16 @@ def fit_layout(theme: dict, tracks: int, max_rows: int | None) -> tuple[int, int
     return 1, 1, 0, k
 
 
+def timeline_span(project: "Project", tracks: list[dict], width: int) -> tuple[int, int, int]:
+    """(first ms, last ms, wave columns) of a timeline `width` wide; column c starts at
+    t0 + c * (t1 - t0) / columns. For drawing a playhead without drawing the timeline again."""
+    master_ms = int(project.get("master_ms") or 0) if project.master.exists() else 0
+    head_ms = int(setting(project, "head"))
+    t0 = min(0, min((t["offset_ms"] for t in tracks), default=0))
+    t1 = max(max((t["offset_ms"] + t["length_ms"] for t in tracks), default=0), master_ms - head_ms, t0 + 1000)
+    return t0, t1, max(10, width - LABEL_W - 1)
+
+
 def render_timeline(project: "Project", width: int, styled: bool = False, playhead_ms: int | None = None,
                     max_rows: int | None = None, theme: dict | None = None) -> list[tuple[str, str, str, str, str]]:
     """Rows of (label, cells, kind, classes, label role) for a timeline `width` columns wide.
@@ -170,7 +180,6 @@ def render_timeline(project: "Project", width: int, styled: bool = False, playhe
     """
     theme = theme or load_theme(project.root)[0]
     tracks = project.tracks()
-    tw = max(10, width - LABEL_W - 1)
     if not tracks:
         return [("", "no tracks yet — add FILE", "note", "", "")]
     style = theme["wave_style"]
@@ -180,8 +189,7 @@ def render_timeline(project: "Project", width: int, styled: bool = False, playhe
     master_ms = int(project.get("master_ms") or 0) if project.master.exists() else 0
     head_ms = int(setting(project, "head"))
 
-    t0 = min(0, min(t["offset_ms"] for t in tracks))
-    t1 = max(max(t["offset_ms"] + t["length_ms"] for t in tracks), master_ms - head_ms, t0 + 1000)
+    t0, t1, tw = timeline_span(project, tracks, width)
     scale = tw / (t1 - t0)  # columns per millisecond
     dot_ms = 1 / (scale * per_cell)
 
@@ -358,6 +366,7 @@ COMMAND_SECTIONS = [
         ("sheet", "sh", "", "every parameter as a table (ctrl-e)"),
         ("colors", "", "[--init [--project]]", "color.json: colours and timeline layout"),
         ("addons", "", "", "the addon folder and what loaded"),
+        ("web", "wb", "[--port N] [--root DIR]", "the preview in a browser, from the shell"),
     ]),
     ("MASTER", "set KEY VALUE", [
         ("lufs", "", "-14 | -23 | off", "loudness target: -14 streaming, -16 Apple, -23 broadcast"),
@@ -517,12 +526,13 @@ def cheat_section_lines(heading: str, note: str, kind: str, rows: list[tuple], w
     return [line[:width] for line in lines + best]
 
 
-def cheat_layout(width: int) -> tuple[list[str], int | None]:
-    """The sheet's lines for this width, and where the second column starts (None for one)."""
+def cheat_layout(width: int, sections: list[tuple] | None = None) -> tuple[list[str], int | None]:
+    """The sheet's lines for this width, and where the second column starts (None for one).
+    `sections` in the shape of cheat_sections(), which is the default."""
     width = max(30, width)
     two = width >= 2 * CHEAT_COLUMN + CHEAT_GAP
     col_w = (width - CHEAT_GAP) // 2 if two else width
-    sections = cheat_sections()
+    sections = cheat_sections() if sections is None else sections
     commands = [r for _, _, kind, rows in sections if kind == "commands" for r in rows]
     name_w = min(10, max(len(r[0]) for r in commands), max(4, col_w // 8))
     short_w = min(4, max(len(r[1]) for r in commands))

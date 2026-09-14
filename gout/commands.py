@@ -597,6 +597,56 @@ def slot_of(t: dict, spec: str) -> dict:
     die(f"{owner_label(t)} has {len(items)} effect{'' if len(items) == 1 else 's'}; no slot {spec!r}\n{FX_USAGE}")
 
 
+def chain_kinds(project: Project) -> dict[int, list[str]]:
+    """The effect kinds on every track and the master, by track number (master: MASTER_N)."""
+    chains = {t["n"]: [i["kind"] for i in t["fx"]] for t in project.tracks()}
+    master = master_track(project)
+    chains[master["n"]] = [i["kind"] for i in master["fx"]]
+    return chains
+
+
+def panel_target(project: Project, head: str, argv: list[str]) -> tuple[int, str] | None:
+    """What an effect command just touched, for the effect panel: (track number, kind), or None."""
+    if len(argv) < 2 or argv[1].lower() in ("presets", "preset", "kinds", "effects"):
+        return None
+    try:
+        t = master_track(project) if is_master(argv[1]) else project.track(argv[1])
+    except GoutError:
+        return None
+    kind = None
+    if head == "fx":
+        if len(argv) > 3 and argv[2].lower() == "add":
+            eff = resolve(argv[3])
+            kind = eff.name if eff else None
+        elif len(argv) > 2:
+            try:
+                kind = slot_of(t, argv[2])["kind"]
+            except GoutError:
+                kind = None
+        elif t["fx"]:
+            kind = t["fx"][0]["kind"]
+    else:
+        eff = resolve(head)
+        kind = eff.name if eff else None
+    return (t["n"], kind) if kind else None
+
+
+def settled_panel(before: dict[int, list[str]], after: dict[int, list[str]], track: int | None,
+                  kind: str) -> tuple[int | None, str]:
+    """The panel after a change. When the effect it showed was on its track and is gone now (fx
+    clear, fx N rm, KIND clear, undo, the sheet): the first effect left there, or no panel when
+    the chain is empty. A look at an effect the track never had (eq 3 on a track without an eq)
+    keeps showing it as none."""
+    if track is None:
+        return None, kind
+    if track not in after:
+        return None, kind
+    if kind not in before.get(track, []) or kind in after[track]:
+        return track, kind
+    left = [k for k in after[track] if effect(k) is not None]
+    return (track, left[0]) if left else (None, kind)
+
+
 def print_kinds() -> None:
     """Every effect there is, built in or from an addon. Needs no project."""
     rows = [("/".join((eff.name, *eff.aliases)), eff) for eff in effects().values()]
@@ -1085,6 +1135,22 @@ def cmd_ui(project: Project, args: Args) -> None:
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         die("the ui needs a terminal")
     run_tui(project)
+
+
+def cmd_web(root_hint: Path | None, args: Args) -> None:
+    usage = "gout web [--host ADDR] [--port N] [--root DIR] [--downloads DIR] [--trust-proxy] [-q]"
+    host = args.value("--host", default="127.0.0.1")
+    port = args.value("--port", default="8321")
+    root = args.value("--root")
+    downloads = args.value("--downloads")
+    trust_proxy = args.flag("--trust-proxy")
+    quiet = args.flag("--quiet", "-q")
+    args.positionals(usage, 0, 0)
+    if not port.isdigit() or int(port) > 65535:
+        die(f"bad port {port!r}\nusage: {usage}")
+    from .web import default_root, serve  # the server sits above the commands, like the ui
+    serve(host, int(port), Path(root) if root else default_root(), Path(downloads) if downloads else None,
+          trust_proxy, quiet)
 
 
 def run_tui(project) -> None:

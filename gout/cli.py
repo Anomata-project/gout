@@ -1,6 +1,7 @@
 """Command dispatch and the entry point."""
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -37,6 +38,7 @@ from .commands import (
     cmd_ui,
     cmd_undo,
     cmd_view,
+    cmd_web,
     effect_commands,
     print_kinds,
     run_tui,
@@ -54,7 +56,7 @@ BASE_PROJECT_COMMANDS = {
 
 
 FREE_COMMANDS = {"new": cmd_new, "rebuild": cmd_rebuild, "cheat": cmd_cheat, "addons": cmd_addons,
-                 "colors": cmd_colors}
+                 "colors": cmd_colors, "web": cmd_web}
 
 
 def command_table() -> dict[str, tuple[str, ...]]:
@@ -103,6 +105,8 @@ def run(argv: list[str], project: Project | None = None) -> int:
         return 0
 
     head, rest = argv[0], argv[1:]
+    if head in ("web", "wb") and project is None:
+        os.environ["GOUT_NO_ADDONS"] = "1"  # the web preview has the built-in effects only; set before they load
     head = aliases().get(head, head)
     if head in ("-h", "--help", "help"):
         print(help_text(), end="")
