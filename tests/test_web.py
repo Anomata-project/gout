@@ -255,6 +255,10 @@ class WebTest(GoutTest):
         self.assertIn(".c-m{color:#f5c242;font-weight:bold}", css)   # the master's wave, from color.json's defaults
         self.assertIn(".c-0{color:#5fafd7;font-weight:bold}", css)    # the first track colour
         self.assertIn("--track-5:#5fd7af", css)
+        head = self.call("HEAD", "")
+        self.assertEqual((head[0], head[2]), (200, b""))
+        self.assertGreater(int(head[1]["Content-Length"]), 1000)
+        self.assertEqual(self.call("HEAD", "api/info")[0], 405)  # the api is not for HEAD: mix.mp3 would render
         for bad in ("../web.py", "api/../../web.py", "downloads/x", "index.htm", ".hidden.js", "webpage/app.js"):
             status, _, raw = self.call("GET", bad)
             self.assertIn(status, (401, 404), bad)  # an api path asks for a key first; nothing is served

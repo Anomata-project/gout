@@ -715,6 +715,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         self.route("GET")
 
+    def do_HEAD(self) -> None:  # link checkers and uptime monitors: the page's files, never the api
+        self.route("HEAD")
+
     def do_POST(self) -> None:
         self.route("POST")
 
@@ -752,6 +755,8 @@ class Handler(BaseHTTPRequestHandler):
         for name, value in (headers or {}).items():
             self.send_header(name, value)
         self.end_headers()
+        if self.command == "HEAD":
+            return
         with open(path, "rb") as f:
             shutil.copyfileobj(f, self.wfile, 1 << 16)
 
@@ -775,9 +780,9 @@ class Handler(BaseHTTPRequestHandler):
         url = urlsplit(self.path)
         path, query = url.path, parse_qs(url.query)
         try:
-            if path.startswith("/api/"):
+            if path.startswith("/api/") and method != "HEAD":
                 self.api(method, path[len("/api/"):], query)
-            elif method == "GET":
+            elif method in ("GET", "HEAD") and not path.startswith("/api/"):
                 self.static(path)
             else:
                 raise Refused(405, "error: method not allowed")

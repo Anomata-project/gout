@@ -483,7 +483,7 @@
     $("days").textContent = limits.days;
     if (p && p.expires) {
       const day = new Date(p.expires * 1000).toLocaleDateString(undefined, { day: "numeric", month: "long" });
-      $("expires").textContent = ` (this one on ${day}, unless you use it before)`;
+      $("expires").textContent = ` (yours on ${day}, unless you use it before)`;
     }
   }
 
