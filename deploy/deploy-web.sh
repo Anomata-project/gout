@@ -29,7 +29,7 @@ git archive --format=tar.gz --prefix=gout/ -o "$TMP/gout.tar.gz" HEAD bin gout L
 echo "Deploying gout web preview $COMMIT to $DOMAIN..."
 scp -q "$TMP/gout.tar.gz" deploy/gout-web.service deploy/gout.anomata.eu.nginx "$SERVER:/tmp/"
 
-ssh "$SERVER" bash -s -- "$COMMIT" "$DOMAIN" "${1:-}" <<'REMOTE'
+ssh "$SERVER" bash -s -- "$COMMIT" "$DOMAIN" "${1:---plain}" <<'REMOTE'  # ssh drops an empty argument
 set -euo pipefail
 COMMIT="$1"; DOMAIN="$2"; TLS="$3"
 LIVE=/var/www/gout
