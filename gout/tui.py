@@ -14,7 +14,7 @@ import threading
 import time
 from pathlib import Path
 
-from .core import __version__, detached, fmt_ms, fmt_pan, gout_command, GoutError, is_master, MASTER_N, MASTER_WAV, \
+from .core import __version__, bar, detached, fmt_ms, fmt_pan, gout_command, GoutError, is_master, MASTER_N, MASTER_WAV, \
     parse_time, stop_process
 from . import analysis
 from .model import audible, timeline
@@ -25,6 +25,7 @@ from .helptext import help_text
 from .commands import save_as, slot_of
 from .cli import aliases, command_table, run
 from .lineedit import LineEditor, path_candidates
+from . import core
 from .player import Player
 from .screens import screen_for_key, screen_named, ScreenContext, screens
 from .window import TerminalWindow
@@ -103,6 +104,7 @@ class Tui:
         self.sheet_h = 10
         self.sheet_len = 0
         self.busy = False
+        self.progress_line: tuple | None = None  # (what, fraction, status) a long command reports (gout video)
         self.running = True
 
     # ---- the command line
@@ -218,10 +220,14 @@ class Tui:
         prompt = "… " if self.busy else "> "
         room = max(1, left_w - len(prompt) - 1)
         text, cursor = self.line.text, self.line.cursor
+        if self.busy and self.progress_line:  # a long command's progress where the typing would be
+            text = progress_text(*self.progress_line, room)
+            cursor = min(len(text), room - 1)
         first = max(0, cursor - room + 1)  # scroll sideways to keep the cursor in view
         shown = text[first:first + room]
         self.put(prompt_y, 0, prompt, self.palette.attr("suggestion") if self.busy else self.palette.attr("prompt"))
-        self.put(prompt_y, len(prompt), shown, curses.A_DIM if self.busy else curses.A_BOLD)
+        self.put(prompt_y, len(prompt), shown, self.palette.attr("prompt") if self.busy and self.progress_line
+                 else curses.A_DIM if self.busy else curses.A_BOLD)
         if not self.busy and cursor == len(text):
             ghost = self.line.suggestion()[:max(0, room - len(shown))]
             if ghost:
@@ -1140,6 +1146,26 @@ class Tui:
             self.run_command(argv, head, is_effect)
         del self.log[:-2000]
 
+    def show_progress(self, what: str, fraction: float, status: str) -> bool:
+        """Draw a long command's progress on the prompt line (core.progress_hook). True when esc or
+        ctrl-c asks to stop it."""
+        import curses
+        self.progress_line = (what, fraction, status)
+        self.draw()
+        stop = False
+        self.scr.nodelay(True)
+        try:
+            while True:
+                try:
+                    key = self.scr.get_wch()
+                except curses.error:
+                    break
+                if key == "\x03" or (key == "\x1b" and not self.read_escape()):
+                    stop = True
+        finally:
+            self.scr.nodelay(False)
+        return stop
+
     def run_command(self, argv: list[str], head: str, is_effect: bool) -> None:
         """Run a gout command against the project, its output into the log."""
         self.busy = True
@@ -1147,6 +1173,7 @@ class Tui:
         before = self.chain_kinds()
         playing = self.playing_state()
         buf = io.StringIO()
+        core.progress_hook = self.show_progress
         try:
             with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
                 run(argv, self.project)
@@ -1156,12 +1183,28 @@ class Tui:
             buf.write(f"error: {type(exc).__name__}: {exc}\n")
         finally:
             self.busy = False
+            core.progress_hook = None
+            self.progress_line = None
         self.log.extend(buf.getvalue().rstrip("\n").splitlines())
         if is_effect:
             self.follow(head, argv)
         self.settle_panel(before)
         self.hear_changes(playing)
         del self.log[:-2000]
+
+
+def progress_text(what: str, fraction: float, status: str, room: int) -> str:
+    """A progress line that fits room: the bar shrinks first, then the clock time, the name and the
+    words go, the percentage and the time left last."""
+    short = status.split(",")[0] if "left" in status else ("timing" if "working" in status else status)
+    percent = f"{round(100 * fraction):3d}%"
+    for head, state, stop in ((what + " ", status, "  esc stops"), (what + " ", short, "  esc stops"),
+                              ("", short, "  esc stops"), ("", short, "  esc")):
+        tail = f" {percent}  {state}{stop}"
+        width = min(28, room - 1 - len(head) - len(tail) - 2)
+        if width >= 6:
+            return f"{head}{bar(fraction, width)}{tail}"
+    return f"{percent} {short}"[:room]
 
 
 def run_tui(project: Project) -> None:

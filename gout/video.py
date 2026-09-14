@@ -29,7 +29,8 @@ import threading
 import time
 from pathlib import Path
 
-from .core import detached, die, fmt_ms, gout_command, stop_process
+from . import core
+from .core import bar, detached, die, fmt_clock, gout_command, stop_process
 from .theme import DEFAULTS, NAMES, load_theme, parse_color
 
 COLS, ROWS = 160, 45
@@ -42,6 +43,7 @@ TITLE_FROM, TITLE_UNTIL, TITLE_WIPE = 0.5, 6.5, 0.6  # seconds of video: in from
 COVER_SECONDS = 6.0  # --cover shows the image this long, to the nearest drum hit
 RAMP = " .:-=+*#%@"  # the fractal's characters, faint to full: the title is drawn in them
 BOX = "\x00"  # a cell that is black even over an image
+LATIN = "".join(chr(c) for c in range(0xC0, 0x100)) + "–—‘’“”…€"  # å ä ö é ü and friends, dashes, quotes
 EXTRA_GLYPHS = "█▓▒░━│·▶■●"  # what gout's own pictures use besides ASCII
 FONT_CANDIDATES = {
     "darwin": ["/System/Library/Fonts/Menlo.ttc", "/System/Library/Fonts/Monaco.ttf"],
@@ -133,9 +135,10 @@ class Atlas:
     """Every character gout draws, once, as 8-bit coverage from ffmpeg's drawtext; glyphs in a colour
     are made on first use and kept."""
 
-    def __init__(self, cell_w: int = CELL_W, cell_h: int = CELL_H, font: Path | None = None):
+    def __init__(self, cell_w: int = CELL_W, cell_h: int = CELL_H, font: Path | None = None, extra: str = ""):
         self.cell_w, self.cell_h = cell_w, cell_h
-        self.chars = [chr(c) for c in range(32, 127)] + list(EXTRA_GLYPHS)
+        base = [chr(c) for c in range(32, 127)] + list(EXTRA_GLYPHS + LATIN)
+        self.chars = base + sorted(set(extra) - set(base) - {"\n", "\t", BOX})  # the title's own letters too
         self.index = {c: i for i, c in enumerate(self.chars)}
         self.coverage = self.draw(font or find_font())
         self.cache: dict[tuple[str, tuple[int, int, int]], list[bytes]] = {}
@@ -255,7 +258,7 @@ class Encoder:
 
     def fail(self) -> None:
         self.errors.seek(0)
-        said = self.errors.read().decode(errors="replace").strip().splitlines()
+        said = self.errors.read().decode(errors="replace").strip().splitlines()  # before abort closes it
         self.abort()
         die("ffmpeg could not write the video: " + (said[-1] if said else "it stopped"))
 
@@ -266,6 +269,7 @@ class Encoder:
             pass
         if self.proc.wait() != 0:
             self.fail()
+        self.errors.close()
         self.part.replace(self.out)
 
     def abort(self) -> None:
@@ -275,27 +279,51 @@ class Encoder:
             pass
         self.proc.kill()
         self.proc.wait()
+        self.errors.close()
         self.part.unlink(missing_ok=True)
 
 
 class Progress:
-    """A line that counts frames and the time left, when stdout is a terminal."""
+    """Frames done as a bar, with the time left and when it will be ready once the speed is known:
+    on the terminal's line, or through core.progress_hook when the ui runs the command (which also
+    lets esc stop it: the hook says so, and this raises KeyboardInterrupt)."""
 
-    def __init__(self, total: int):
-        self.total, self.started, self.shown = total, time.monotonic(), 0.0
+    def __init__(self, total: int, what: str = "video"):
+        self.total, self.what = total, what
+        self.shown = 0.0
+        self.first: tuple[float, int] | None = None  # (when, frames) at the first frame: startup is not speed
         self.live = sys.stdout.isatty()
+
+    def status(self, done: int, now: float, clock: float | None = None) -> str:
+        """The time left and when it will be ready, once the speed is known."""
+        if self.first is None and done:
+            self.first = (now, done)
+        if done >= self.total:
+            return "done"
+        if self.first is not None and done - self.first[1] >= 10 and now - self.first[0] >= 2:
+            left = (now - self.first[0]) / (done - self.first[1]) * (self.total - done)
+            ready = time.strftime("%H:%M", time.localtime((clock if clock is not None else time.time()) + left))
+            return f"{fmt_clock(left)} left, ready at {ready}"
+        return "working out the time"
+
+    def text(self, done: int, now: float, clock: float | None = None, width: int = 28) -> str:
+        fraction = done / max(1, self.total)
+        return f"{bar(fraction, width)} {round(100 * fraction):3d}%  {self.status(done, now, clock)}"
 
     def update(self, done: int) -> None:
         now = time.monotonic()
-        if not self.live or (now - self.shown < 0.5 and done < self.total):
+        if now - self.shown < 0.25 and done < self.total:
             return
         self.shown = now
-        left = (now - self.started) / max(1, done) * (self.total - done)
-        print(f"\r      frame {done}/{self.total}  {100 * done // max(1, self.total)}%  {fmt_ms(left * 1000)} left  ",
-              end="", flush=True)
+        hook = core.progress_hook
+        if hook is not None:
+            if hook(self.what, done / max(1, self.total), self.status(done, now)):
+                raise KeyboardInterrupt
+        elif self.live:
+            print(f"\r      {self.text(done, now)}  ", end="", flush=True)
 
     def close(self) -> None:
-        if self.live:
+        if self.live and core.progress_hook is None:
             print()
 
 
@@ -365,16 +393,18 @@ class ScreenFrames:
         worker = (frame - self.first) % self.count
         item = self.queues[worker].get()
         if item is None or item[0] != frame:
-            self.stop()
             err = self.errors[worker]
             err.seek(0)
             said = [line for line in err.read().decode(errors="replace").splitlines() if line.strip()]
+            self.stop()
             die(f"drawing frame {frame} failed: " + (said[-1] if said else "the worker stopped"))
         return item[1]
 
     def stop(self) -> None:
         for proc in self.procs:
             stop_process(proc)
+        for errors in self.errors:
+            errors.close()
 
 
 def worker_main() -> int:

@@ -152,6 +152,24 @@ def fmt_time(seconds: float) -> str:
     return f"{sign}{h:02d}:{m:02d}:{s:02d}.{ms:03d}"
 
 
+progress_hook = None  # set by the ui while it runs a command: hook(what, fraction, status) -> True to stop it
+
+
+def fmt_clock(seconds: float) -> str:
+    """7:32, or 1:02:03 past an hour."""
+    total = max(0, round(seconds))
+    hours, rest = divmod(total, 3600)
+    return f"{hours}:{rest // 60:02d}:{rest % 60:02d}" if hours else f"{rest // 60}:{rest % 60:02d}"
+
+
+def bar(fraction: float, width: int = 28) -> str:
+    """A bar in eighths of a character: ▕████▌      ▏"""
+    eighths = round(max(0.0, min(1.0, fraction)) * width * 8)
+    full, part = divmod(eighths, 8)
+    inside = "█" * full + ("▏▎▍▌▋▊▉"[part - 1] if part else "")
+    return "▕" + inside.ljust(width) + "▏"
+
+
 def fmt_ms(ms: int) -> str:
     return fmt_time(ms / 1000)
 

@@ -1119,7 +1119,8 @@ def cmd_video(project: Project, args: Args) -> None:
                               first=next((t[0] for t in tasks), frames))
     print(f"video {target.name}  {width}x{height} {FPS} fps  {fmt_ms(seconds * 1000)}  {what}"
           + (f"  ({count} processes drawing)" if source else "") + "  (ctrl-c stops)", flush=True)
-    atlas, colours = (Atlas(), class_colours(project.root)) if source is not None or title is not None else (None, None)
+    atlas, colours = ((Atlas(extra=title_text + artist), class_colours(project.root)) if source is not None or title is not None
+                      else (None, None))
     encoder = Encoder(target, project.master, width, height, FPS)
     progress = Progress(frames)
     try:

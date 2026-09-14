@@ -46,6 +46,10 @@ class VideoTest(GoutTest):
         atlas = Atlas()
         self.assertTrue(any(any(row) for row in atlas.glyph("@", (255, 255, 255))))
         self.assertIs(atlas.glyph(" ", (255, 255, 255)), atlas.blank)
+        question = atlas.glyph("?", (255, 255, 255))
+        for letter in "äÖå–":  # a name with them must not come out as ?
+            self.assertNotEqual(atlas.glyph(letter, (255, 255, 255)), question)
+        self.assertNotEqual(Atlas(extra="ŁŻ").glyph("Ł", (255, 255, 255)), question)  # the title's own letters
         palette = colours(None)
         self.assertEqual(palette["1"], (0x87, 0xd7, 0x87))  # the second track colour
         frame = compose([("@", "1"), ("", "")], atlas, palette, 2, 2)
@@ -163,3 +167,51 @@ class VideoTest(GoutTest):
         wiping = title.over(rows, 0.8)  # half way in: the right part of the box not yet
         self.assertEqual(wiping[top][0][right], "-")
         self.assertIs(title.over(rows, 6.6), rows)  # and gone
+
+    def test_progress_shows_a_bar_and_the_time_left(self):
+        bar, fmt_clock, Progress = gout_attr("core", "bar"), gout_attr("core", "fmt_clock"), gout_attr("video", "Progress")
+        self.assertEqual(bar(0.5, 4), "▕██  ▏")
+        self.assertEqual(bar(1 / 16, 2), "▕▏ ▏")  # an eighth of the two characters
+        self.assertEqual((fmt_clock(452), fmt_clock(3723)), ("7:32", "1:02:03"))
+        progress = Progress(100)
+        self.assertIn("working out the time", progress.text(1, 100.0))  # the first frame: startup, not speed
+        line = progress.text(51, 110.0, clock=0.0)  # 50 frames in 10 s: 49 more take 9.8 s
+        self.assertIn(" 51%  0:10 left, ready at ", line)
+        self.assertTrue(line.startswith("▕██████████████"))
+
+    def test_the_ui_shows_the_progress_and_esc_stops_the_video(self):
+        from test_ui import FakeScreen
+        import os
+        root = self.project("song", "tone.wav")
+        cover = self.tmp / "cover.png"
+        ffmpeg("-f", "lavfi", "-i", "color=c=blue:s=64x64:d=1", "-frames:v", "1", str(cover))
+        for key, value in {**self.more_env, "GOUT_ADDONS": str(self.addons), "GOUT_PLAYER": "null"}.items():
+            os.environ[key] = value
+        try:
+            screen = FakeScreen(30, 120)
+            ui = gout_attr("tui", "Tui")(gout_attr("project", "Project")(root), screen)
+            seen = []
+            show = ui.show_progress
+
+            def watch(what, fraction, status):
+                screen.queue.append("\x1b")  # esc, pressed while it renders
+                stop = show(what, fraction, status)
+                seen.append(next(screen.row(y) for y in range(30) if "video ▕" in screen.row(y)))
+                return stop
+
+            ui.show_progress = watch
+            ui.input = f"video {cover}"
+            ui.submit()
+        finally:
+            os.environ.pop("GOUT_VIDEO_GRID", None)
+        self.assertIn("esc stops", seen[0])
+        fit = gout_attr("tui", "progress_text")
+        for room in (120, 60, 40, 24, 12):
+            text = fit("video", 0.42, "7:32 left, ready at 19:08", room)
+            self.assertLessEqual(len(text), room - 1 if room > 12 else room)
+            self.assertIn("42%", text)
+        self.assertIn("ready at 19:08  esc stops", fit("video", 0.42, "7:32 left, ready at 19:08", 120))
+        self.assertIn("7:32 left  esc", fit("video", 0.42, "7:32 left, ready at 19:08", 40))
+        self.assertTrue(any("video stopped" in line for line in ui.log))
+        self.assertFalse(any(p.suffix == ".mp4" for p in root.iterdir()))  # neither the video nor a part file
+        self.assertFalse(ui.busy)
