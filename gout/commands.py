@@ -40,7 +40,8 @@ from .render import effect_picture, LABEL_W, render_cheat, render_timeline
 from .player import Player
 from .recorder import (choose_backend, current_input, default_output, find_input, level_db, list_inputs,
                        load_settings, meter, Recorder, save_settings)
-from .engine import duplex_available, Engine, install_hint
+from .engine import (calibration, CLICK_TIMES, click_offsets, duplex_available, Engine, install_hint, output_for,
+                     save_calibration)
 
 
 class Args:
@@ -876,7 +877,7 @@ def cmd_record(project: Project, args: Args) -> None:
         recorder = Recorder(path, project.rate, device, backend, first, count, max_frames).start()
     else:
         recorder = Engine(path, project.rate, device, backend, first, count, max_frames, play,
-                          default_output(backend)).start()
+                          output_for(backend)).start()
     which = f"channels {first}+{first + 1}" if stereo else f"channel {first}"
     how = "playing from there" if play is not None else "not playing"
     print(f"rec   {device.label}, {which} -> {TRACK_DIR}/{path.name} at {fmt_ms(at_ms)}, {how}"
@@ -925,6 +926,76 @@ def keep_take(project: Project, recorder, track_name: str, at_ms: int, ended: bo
     autorender(project, args)
 
 
+def cmd_calibrate(root_hint: Path | None, args: Args) -> None:
+    """Play clicks and record them: the latency outside the buffers for this input and output,
+    which every take recorded along with the project is lined up with from then on."""
+    import statistics
+    import tempfile
+    spec = args.value("--in", "-i")
+    channel = args.value("--channel", "-c", default="1")
+    args.positionals("gout record calibrate [-i INPUT] [-c N]", 0, 0)
+    if not channel.isdigit() or int(channel) < 1:
+        die(f"-c takes the input channel to record, 1 or more, not {channel!r}")
+    backend = choose_backend()
+    if not duplex_available(backend):
+        die(f"calibrating plays and records at once, which needs PortAudio ({install_hint()})")
+    device, note = current_input(list_inputs(backend), spec)
+    if note:
+        print(f"calib {note}")
+    output = output_for(backend)
+    folder = Path(tempfile.mkdtemp(prefix="gout-calibrate-"))
+    try:
+        engine = Engine(folder / "clicks.wav", DEFAULT_RATE, device, backend, int(channel), 1,
+                        output_name=output, clicks=CLICK_TIMES)
+        print(f"calib {len(CLICK_TIMES)} clicks through {output}, recorded from {device.label}, channel {channel}:"
+              " the microphone near the speaker, or a cable from the output to the input", flush=True)
+        engine.start()
+        try:
+            while engine.running():
+                time.sleep(0.1)
+        except KeyboardInterrupt:
+            engine.stop()
+            die("calibration stopped")
+        engine.stop()
+        if not engine.result:
+            die(f"the clicks were not recorded: {engine.complaint() or 'no answer from the engine'}")
+        rate = engine.rate
+        take = array_of_take(folder / "clicks.wav")
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+    offsets, above = click_offsets(take, rate, CLICK_TIMES)
+    if len(offsets) < 8:
+        heard = ("nothing came back" if not take or max(max(take), -min(take)) == 0 else
+                 f"heard {len(offsets)} of {len(CLICK_TIMES)} clicks clearly above the noise")
+        die(f"{heard}: turn the speaker up, put the microphone closer, or use a cable (gout inputs: the right input?)")
+    spread = max(offsets) - min(offsets)
+    if spread > 0.002 * rate:
+        die(f"the clicks came back up to {spread * 1000 / rate:.1f} ms apart: too much echo or noise to trust;"
+            " try closer, somewhere quieter, or with a cable")
+    key = engine.key()
+    before = calibration(key)
+    constant = statistics.median_low(offsets) - int(engine.result.get("lag", 0))
+    save_calibration(key, constant, rate, spread)
+    was = f"; it was {before * 1000 / rate:.1f} ms" if before is not None else ""
+    print(f"calib {constant * 1000 / rate:.1f} ms outside the buffers ({len(offsets)} of {len(CLICK_TIMES)} clicks,"
+          f" within {spread * 1000 / rate:.1f} ms{was})")
+    print(f"      takes recorded from {device.label} while playing through {output} are lined up with it from now on")
+    if engine.clipped:
+        print("      the clicks clipped the input: turn it down a little and calibrate again")
+
+
+def array_of_take(path: Path):
+    """The samples of a mono take TakeWriter wrote."""
+    from array import array
+    from .media import FLOAT_WAV_HEADER
+    data = array("f")
+    raw = path.read_bytes()[FLOAT_WAV_HEADER:]
+    data.frombytes(raw[:len(raw) // 4 * 4])
+    if sys.byteorder == "big":
+        data.byteswap()
+    return data
+
+
 def cmd_inputs(root_hint: Path | None, args: Args) -> None:
     """The inputs gout can record from here, and which one it uses; N picks one for this computer."""
     (spec,) = args.positionals("gout inputs [N | NAME | default]   (N or NAME: record from that input on this"
@@ -955,7 +1026,12 @@ def cmd_inputs(root_hint: Path | None, args: Args) -> None:
         print(f"  {mark} {k:>2}  {item.label:<44} {channels:>5}{'  default' if item.default else ''}")
         if args.verbose:
             print(f"          {item.name}")
-    print("       gout inputs N picks one for this computer; gout record -i N uses one once; -v shows names")
+    for key, value in sorted((load_settings().get("calibration") or {}).items()):
+        if key.startswith(f"{current.name} -> ") and isinstance(value, dict):
+            output, _, where = key.split(" -> ", 1)[1].rpartition(" @ ")
+            print(f"       calibrated with {output} ({where.split(' / ')[0]}): {value.get('ms')} ms ({value.get('date')})")
+    print("       gout inputs N picks one for this computer; gout record -i N uses one once; -v shows names;"
+          " gout record calibrate lines takes up")
 
 
 def cmd_stems(project: Project, args: Args) -> None:

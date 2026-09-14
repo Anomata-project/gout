@@ -330,6 +330,7 @@ COMMAND_SECTIONS = [
         ("play", "pl", "[FROM] [-r]", "hear it; live when master.wav is out of date"),
         ("record", "rec", "[FROM] [-t 30s] [-n NAME] [-d]", "a new track while the project plays; -d without"),
         ("inputs", "in", "[N | default]", "what can be recorded; N picks one"),
+        ("record", "rec", "calibrate [-i INPUT]", "clicks out and back in: takes land on time"),
     ]),
     ("EFFECTS", "in order per track; TRACK can be master", [
         ("fx", "f", "TRACK", "the chain, numbered"),

@@ -141,6 +141,25 @@ class RecordAlongTest(GoutTest):
         self.assertIn("not playing", out)
         self.assertEqual((self.tracks()["dry"]["offset_ms"], self.tracks()["dry"]["in_ms"]), (0, 0))
 
+    def test_calibrating_puts_takes_on_time(self):
+        root = self.project("song", "click.wav")
+        self.recorder = "loopback:960:1"
+        out = self.gout("record", "calibrate").stdout
+        self.assertIn("20.0 ms outside the buffers (10 of 10 clicks, within 0.0 ms)", out)
+        table = json.loads((self.tmp / "config" / "gout" / "recording.json").read_text())["calibration"]
+        self.assertEqual(table["loopback -> default @ 48000 Hz / 2048"]["samples"], 960)
+        self.assertIn("calibrated with default (48000 Hz): 20.0 ms", self.gout("inputs").stdout)
+        self.assertIn("(calibrated)", self.gout("record", "-t", "3s").stdout)
+        self.gout("stems")
+        self.assertAlmostEqual(peak_time(root / "stems" / "02-rec.wav"), 2.0, delta=0.0006)  # to the ms the timeline has
+        self.cwd = self.tmp  # no project needed; the short name
+        self.assertIn("it was 20.0 ms", self.gout("rec", "calibrate").stdout)
+        self.recorder = "null"
+        self.assertIn("nothing came back", self.gout("record", "calibrate", ok=False).stderr)
+        self.recorder = "loopback:960"
+        self.more_env["GOUT_PORTAUDIO"] = "none"
+        self.assertIn("needs PortAudio", self.gout("record", "calibrate", ok=False).stderr)
+
     def test_without_portaudio_or_anything_to_play_it_records_without_playing(self):
         self.project("song")
         self.recorder = "loopback:960"
@@ -320,6 +339,25 @@ class InputListTest(GoutTest):
             self.assertEqual(gout_attr("portaudio", "library_candidates")(), [])
         finally:
             del os.environ["GOUT_PORTAUDIO"]
+
+    def test_finding_the_clicks_in_a_take(self):
+        from array import array
+        import random
+        offsets_of, times = gout_attr("engine", "click_offsets"), gout_attr("engine", "CLICK_TIMES")
+        shape = gout_attr("engine", "click_shape")()
+        rate, lag = 48000, 1234
+        rng = random.Random(1)
+        take = array("f", [rng.uniform(-0.002, 0.002) for _ in range(int((times[-1] + 1) * rate))])
+        for k, t in enumerate(times):
+            if k == 3:
+                continue  # one click lost
+            at = round(t * rate) + lag
+            for i, v in enumerate(shape):
+                take[at + i] += 0.3 * v  # quieter than played: a microphone
+        offsets, above = offsets_of(take, rate, times)
+        self.assertEqual(len(offsets), len(times) - 1)
+        self.assertLessEqual(max(abs(o - lag) for o in offsets), 1)  # noise moves the half-level crossing a sample
+        self.assertGreater(above, 50)
 
     def test_the_meter(self):
         meter = gout_attr("recorder", "meter")

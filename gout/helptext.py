@@ -32,9 +32,14 @@ PROJECT
                                   rec, or NAME. ctrl-c stops, -t stops after LENGTH. Mono from channel 1
                                   of the input, -c N from channel N, -s stereo from N and N+1. The take
                                   lines up with what played: the latency is measured every take and
-                                  soft-trimmed off. -d records without playing; so does gout without
-                                  PortAudio (gout version says). undo deletes the take; a take a crash
-                                  cut short is still a file, and gout scan registers it. In the ui: not yet
+                                  soft-trimmed off, to within half a millisecond once calibrated. -d
+                                  records without playing; so does gout without PortAudio (gout version
+                                  says). undo deletes the take; a take a crash cut short is still a
+                                  file, and gout scan registers it. In the ui: not yet
+  gout record calibrate [-i INPUT] [-c N]  play 10 clicks and record them, once per input and output
+                                  (headphones and speakers count as different outputs): the microphone
+                                  near the speaker, or a cable from the output to the input. Kept for
+                                  this computer; every later take is lined up with it
   gout inputs in [N | NAME | default]  what gout can record from here, and on Linux what each output
                                   plays; N or NAME picks one for this computer, default goes back to
                                   the system's. Capture: pw-record, parecord or arecord (Linux), ffmpeg

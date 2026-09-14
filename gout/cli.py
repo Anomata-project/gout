@@ -27,6 +27,7 @@ from .commands import (
     cmd_pan,
     cmd_play,
     cmd_record,
+    cmd_calibrate,
     cmd_inputs,
     cmd_rebuild,
     cmd_rm,
@@ -132,6 +133,9 @@ def run(argv: list[str], project: Project | None = None) -> int:
     need_tools()
     if head == "fx" and [w.lower() for w in rest] in (["kinds"], ["effects"]):
         print_kinds()  # listing the effects needs no project
+        return 0
+    if head == "record" and rest[:1] == ["calibrate"]:  # per computer, so no project needed
+        cmd_calibrate(root_hint, Args(rest[1:]))
         return 0
     if head in FREE_COMMANDS:
         FREE_COMMANDS[head](root_hint, Args(rest))

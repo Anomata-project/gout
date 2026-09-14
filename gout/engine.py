@@ -33,12 +33,14 @@ from pathlib import Path
 
 from . import portaudio
 from .core import detached, die, GoutError, gout_command, stop_process
-from .recorder import check_channels, Input, is_fake, load_settings, save_settings, TakeWriter
+from .recorder import check_channels, default_output, Input, is_fake, load_settings, save_settings, TakeWriter
 
 BLOCK = 2048  # frames per read and write; a calibration holds for one block size
 AHEAD_SECONDS = 4.0  # decoded playback kept ready
 LEVEL_EVERY = 0.1
 CLICK_LENGTH = 48  # samples of each calibration click
+CLICK_TIMES = [1.0 + 0.75 * k for k in range(10)]  # a second of quiet first, to hear the noise
+CLICK_WINDOW = 0.65  # seconds after each click to look for it
 
 
 def duplex_available(backend: str) -> bool:
@@ -279,19 +281,55 @@ class PlaySource:
             self.proc.wait()
 
 
-def click_train(times: list[float], rate: int) -> array:
-    """Stereo clicks at -6 dBFS: one cycle of a sine CLICK_LENGTH samples long at each time."""
+def click_shape() -> list[float]:
+    """One calibration click: a cycle of a sine CLICK_LENGTH samples long at -6 dBFS."""
     import math
+    return [0.5 * math.sin(2 * math.pi * k / CLICK_LENGTH) for k in range(CLICK_LENGTH)]
+
+
+def click_train(times: list[float], rate: int) -> array:
+    """Stereo clicks at the times, with half a second of silence after the last."""
     end = int((max(times) + 0.5) * rate)
     frames = array("f", bytes(8 * end))
-    shape = [0.5 * math.sin(2 * math.pi * k / CLICK_LENGTH) for k in range(CLICK_LENGTH)]
     for t in times:
         at = int(round(t * rate))
-        for k, value in enumerate(shape):
+        for k, value in enumerate(click_shape()):
             frames[2 * (at + k)] = frames[2 * (at + k) + 1] = value
     if sys.byteorder == "big":
         frames.byteswap()
     return frames
+
+
+def onset(values, fraction: float = 0.5) -> int:
+    """The first sample reaching fraction of the loudest one: where a click starts, whatever its level."""
+    top = max(max(values), -min(values))
+    return next(i for i, v in enumerate(values) if abs(v) >= fraction * top)
+
+
+def click_offsets(take: array, rate: int, times: list[float]) -> tuple[list[int], float]:
+    """How many samples after it was played each click came back in the take, for the clicks heard
+    well above the noise before the first one; and how far above that noise the loudest click was."""
+    quiet = take[int(0.1 * rate):int((times[0] - 0.1) * rate)]
+    floor = max(max(quiet), -min(quiet)) if quiet else 0.0
+    reference = onset(array("f", click_shape()))  # as float32, like the take: rounding moves the crossing
+    offsets, loudest = [], 0.0
+    for t in times:
+        start = int(round(t * rate))
+        window = take[start:start + int(CLICK_WINDOW * rate)]
+        if not window:
+            continue
+        top = max(max(window), -min(window))
+        loudest = max(loudest, top)
+        if top >= max(8 * floor, 1e-4):
+            offsets.append(onset(window) - reference)
+    return offsets, (loudest / floor if floor else float("inf"))
+
+
+def output_for(backend: str) -> str:
+    """The output a take plays to, as calibrations name it."""
+    if backend in ("pw-record", "parecord") and os.environ.get("PULSE_SINK"):
+        return os.environ["PULSE_SINK"]
+    return default_output(backend)
 
 
 class FakeStream:
