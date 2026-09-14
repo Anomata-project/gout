@@ -29,6 +29,15 @@ class MixTest(GoutTest):
                 self.assertAlmostEqual(peak_time(root / "master.wav"), 2.0,
                                        delta=0.0001 if fixture.endswith("wav") else 0.001)
 
+    def test_a_sum_louder_than_0_lufs_still_reaches_the_target(self):
+        root = self.project("song", "tone.wav")  # 6 s at -18 dBFS
+        self.gout("gain", "1", "12")
+        self.gout("set", "gain", "24")  # about +14 LUFS before the loudness step; loudnorm takes 0 at most
+        self.gout("set", "lufs", "-14")
+        out = self.gout("mix").stdout
+        self.assertIn("linear", out)
+        self.assertAlmostEqual(loudness(root / "master.wav"), -14.0, delta=0.5)
+
     def test_mute_leaves_nothing_audible(self):
         root = self.project("song", "click.wav")
         self.gout("mute", "1")

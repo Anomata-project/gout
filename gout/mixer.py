@@ -172,6 +172,7 @@ def mix(project: Project, verbose: bool = False, mp3: bool = False) -> None:
     cmd += ["-filter_complex", graph, "-map", "[mix]", "-ar", str(project.rate), "-c:a", "pcm_f32le", str(raw)]
     how = ""
     target = None
+    down = 0  # dB turned down before loudnorm
     try:
         run_quiet(cmd, verbose)
 
@@ -194,10 +195,15 @@ def mix(project: Project, verbose: bool = False, mp3: bool = False) -> None:
                 how = f"gain {g:+.1f} dB (plain gain: under 3 s)"
             else:
                 lra = max(7, min(50, math.ceil(measured["lra"]) + 1))
+                # loudnorm takes a measured loudness and threshold up to 0 LUFS only: a sum louder than
+                # that (float, so nothing clipped) is turned down first, and its measurements with it
+                down = max(0, math.ceil(max(measured["i"], measured["thresh"]) + 1))
+                if down:
+                    chain.append(f"volume=-{down}dB")
                 # loudnorm reads a measured LRA of exactly 0 as "unknown" and refuses linear mode
-                chain.append(f"loudnorm=I={target}:TP={ceiling}:LRA={lra}:measured_I={measured['i']}"
-                             f":measured_TP={measured['tp']}:measured_LRA={max(measured['lra'], 0.01)}"
-                             f":measured_thresh={measured['thresh']}:offset={measured['offset']}"
+                chain.append(f"loudnorm=I={target}:TP={ceiling}:LRA={lra}:measured_I={measured['i'] - down}"
+                             f":measured_TP={measured['tp'] - down}:measured_LRA={max(measured['lra'], 0.01)}"
+                             f":measured_thresh={measured['thresh'] - down}:offset={measured['offset']}"
                              f":linear=true:print_format=json")
                 how = "loudnorm"
         head, tail = int(setting(project, "head")), int(setting(project, "tail"))
@@ -224,7 +230,7 @@ def mix(project: Project, verbose: bool = False, mp3: bool = False) -> None:
             match = re.search(r"\{\s*\"input_i\".*?\}", result.stderr, re.S)
             info = json.loads(match.group(0)) if match else {}
             mode = info.get("normalization_type", "?")
-            delta = float(info.get("output_i", 0)) - float(info.get("input_i", 0))
+            delta = float(info.get("output_i", 0)) - float(info.get("input_i", 0)) - down  # with the turn-down
             how = (f"linear gain {delta:+.1f} dB" if mode == "linear"
                    else f"dynamic: the ceiling stopped a plain gain of {target - measured['i']:+.1f} dB")
         final.replace(project.master)
