@@ -1,16 +1,22 @@
 #!/bin/bash
 # Deploy gout's web preview to gout.anomata.eu: this branch (web-version) as the gout-web service
-# behind nginx, on the server the other anomata apps use. The projects people make live in
+# behind nginx. The projects people make live in
 # /var/lib/gout-web and stay across deploys; the code goes to /var/www/gout.
 #
 #   deploy/deploy-web.sh          upload, install, restart, check (and roll back if it does not answer)
 #   deploy/deploy-web.sh --tls    the same, then ask Let's Encrypt for https (once DNS points here)
 set -euo pipefail
 
-SERVER="user@your-server"
 DOMAIN="gout.anomata.eu"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$HERE"
+
+# the ssh login for the server stays out of git: $GOUT_DEPLOY_SERVER, or one line in deploy/server
+SERVER="${GOUT_DEPLOY_SERVER:-$(cat deploy/server 2>/dev/null || true)}"
+if [ -z "$SERVER" ]; then
+    echo "ERROR: say where to deploy: echo user@host > deploy/server (it is not committed), or set GOUT_DEPLOY_SERVER"
+    exit 1
+fi
 
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
 if [ "$BRANCH" != "web-version" ]; then

@@ -20,7 +20,8 @@ CLAUDE.md
 notes/
 .claude/
 
-# secrets never belong in a public repository
+# secrets never belong in a public repository (deploy/server: the ssh login for deploy-web.sh)
+deploy/server
 .env
 .env.*
 *.pem
