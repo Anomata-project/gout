@@ -1,6 +1,8 @@
+import re
 import shutil
+import subprocess
 
-from helpers import (REPO, GoutTest, dc_offset, duration, ffmpeg, harmonic_db, loudness, samples,
+from helpers import (REPO, GoutTest, dc_offset, duration, ffmpeg, gout_attr, harmonic_db, loudness, samples,
                      stereo_correlation, thd_db, peak_db)
 
 EXAMPLES = REPO / "examples" / "addons"
@@ -185,3 +187,52 @@ class ExampleAddonTest(GoutTest):
         for name in ("chorus", "distortion", "saturation", "tremolo"):
             self.assertIn(name, report)
         self.assertNotIn("not loaded", report)
+
+    def test_the_guide_builds_a_phaser_that_keeps_its_level(self):
+        guide = (REPO / "docs" / "addons.md").read_text()
+        blocks = re.findall(r"```python\n(.*?)```", guide, re.S)
+        (phaser,) = [b for b in blocks if "class Phaser" in b]
+        (bars,) = [b for b in blocks if "class Bars" in b]
+        (self.addons / "phaser.py").write_text(phaser)
+        (self.addons / "bars.py").write_text(bars)
+        report = self.gout("addons").stdout
+        self.assertIn("phaser.py                phaser", report)
+        self.assertIn("bars (screen, ctrl-b)", report)
+        root = self.project("song", "noise.wav")
+        self.gout("mix")
+        dry = loudness(root / "master.wav")
+        for line in (["swirl"], ["jet"], ["0.5hz", "d90", "t3"], ["2hz", "d0", "t5"]):
+            self.gout("phaser", "1", *line)
+            self.gout("mix")
+            self.assertAlmostEqual(loudness(root / "master.wav"), dry, delta=1, msg=" ".join(line))
+        self.assertIn("phaser 2hz d0 t5", self.gout("fx", "1").stdout)
+        self.assertIn("the delay is 1.5 to 5 ms", self.gout("ph", "1", "t1", ok=False).stderr)
+        self.assertIn("fast and deep", self.gout("phaser", "presets").stdout)
+
+    def test_an_addon_says_which_api_it_needs_and_examples_copy_in(self):
+        (self.addons / "future.py").write_text("def register(gout):\n    gout.requires(gout.version + 1)\n")
+        (self.addons / "now.py").write_text("from gout.fx import Effect\n\nclass Now(Effect):\n    name = 'now'\n"
+                                            "    def parse(self, text):\n        return {}\n    def format(self, params):\n"
+                                            "        return ''\n\ndef register(gout):\n    gout.requires(1)\n"
+                                            "    gout.add_effect(Now())\n")
+        report = self.gout("addons").stdout
+        self.assertIn("future.py                not loaded: it needs gout's addon API 2, and this gout has 1: "
+                      "update gout", report)
+        self.assertIn("now.py                   now", report)
+
+        (self.addons / "tremolo.py").write_text("# my own tremolo\n")
+        copied = self.gout("addons", "examples").stdout
+        self.assertIn("tremolo.py               already there, kept as it is", copied)
+        self.assertIn("fractal.py               copied", copied)
+        self.assertEqual((self.addons / "tremolo.py").read_text(), "# my own tremolo\n")
+        self.assertEqual((self.addons / "chorus.py").read_text(), (EXAMPLES / "chorus.py").read_text())
+        self.gout("addons", "nonsense", ok=False)
+
+    def test_gout_runs_itself_again(self):
+        gout_command = gout_attr("core", "gout_command")
+        result = subprocess.run([*gout_command(), "version"], capture_output=True, text=True, env=self.env(),
+                                cwd=self.tmp)
+        self.assertEqual(result.stdout.strip(), f"gout {gout_attr('core', '__version__')}")
+        arrows = gout_attr("tui", "ARROW_NAMES")
+        self.assertEqual((arrows[b"kLFT5"], arrows[b"kRIT3"], arrows[b"CTL_LEFT"], arrows[b"ALT_RIGHT"]),
+                         ("left", "right", "left", "right"))

@@ -1,6 +1,7 @@
 """Full-screen play for gout: the song as a Newton fractal, moving with the music.
 
-Install it by copying this file into your addon folder:
+Install it with `gout addons examples`, which copies the examples into your addon folder, or
+by hand:
 
     mkdir -p ~/.config/gout/addons && cp examples/addons/fractal.py ~/.config/gout/addons/
 
@@ -311,4 +312,5 @@ class Fractal(Screen):
 
 
 def register(gout):
+    gout.requires(1)  # the addon API this file is written for (docs/addons.md)
     gout.add_screen(Fractal())

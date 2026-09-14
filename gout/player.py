@@ -13,12 +13,11 @@ from __future__ import annotations
 
 import os
 import shutil
-import signal
 import subprocess
 import time
 from pathlib import Path
 
-from .core import die
+from .core import detached, die, stop_process
 
 BACKENDS = ("ffplay", "pw-cat", "paplay", "aplay")
 RATE = 48000
@@ -68,7 +67,7 @@ class Player:
 
     def start(self) -> "Player":
         self.backend = choose_backend()
-        quiet = {"stdin": subprocess.DEVNULL, "stderr": subprocess.DEVNULL, "start_new_session": True}
+        quiet = {"stdin": subprocess.DEVNULL, "stderr": subprocess.DEVNULL, **detached()}
         ffmpeg = ["ffmpeg", "-hide_banner", "-loglevel", "quiet", "-nostdin"]
         raw = ["-f", "s16le", "-ac", "2", "-ar", str(RATE), "-"]
         if self.backend.startswith("file:"):  # for tests: write what would be heard, as fast as possible
@@ -90,7 +89,7 @@ class Player:
                 "aplay": ["aplay", "-q", "-t", "raw", "-f", "S16_LE", "-c", "2", "-r", str(RATE)],
             }[self.backend]
             player = subprocess.Popen(sink, stdin=decoder.stdout, stdout=subprocess.DEVNULL,
-                                      stderr=subprocess.DEVNULL, start_new_session=True)
+                                      stderr=subprocess.DEVNULL, **detached())
             decoder.stdout.close()  # the sink owns the pipe now
             self.procs = [decoder, player]
         self.t0 = time.monotonic()
@@ -117,11 +116,7 @@ class Player:
 
     def stop(self) -> None:
         for proc in self.procs:
-            if proc.poll() is None:
-                try:
-                    os.killpg(proc.pid, signal.SIGTERM)
-                except (ProcessLookupError, PermissionError):
-                    pass
+            stop_process(proc)
         for proc in self.procs:
             try:
                 proc.wait(timeout=2)

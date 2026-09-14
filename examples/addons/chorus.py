@@ -1,6 +1,7 @@
 """A stereo chorus for gout: copies of the sound, slightly delayed and gently wobbling in time.
 
-Install it by copying this file into your addon folder:
+Install it with `gout addons examples`, which copies the examples into your addon folder, or
+by hand:
 
     mkdir -p ~/.config/gout/addons && cp examples/addons/chorus.py ~/.config/gout/addons/
 
@@ -118,4 +119,5 @@ class Chorus(Effect):
 
 
 def register(gout):
+    gout.requires(1)  # the addon API this file is written for (docs/addons.md)
     gout.add_effect(Chorus())

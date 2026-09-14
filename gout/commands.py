@@ -24,6 +24,7 @@ from .core import (
     MASTER_WAV,
     on_off,
     parse_ms,
+    resource_dir,
     run_quiet,
     SIDECAR,
     STEMS_DIR,
@@ -1093,16 +1094,40 @@ def run_tui(project) -> None:
     start(project)
 
 
+def copy_examples(folder: Path) -> None:
+    """The example addons that come with gout into the addon folder; files already there stay."""
+    examples = resource_dir() / "examples" / "addons"
+    found = sorted(examples.glob("*.py")) if examples.is_dir() else []
+    if not found:
+        die(f"this gout has no example addons with it (looked in {examples})")
+    folder.mkdir(parents=True, exist_ok=True)
+    for src in found:
+        dst = folder / src.name
+        if dst.exists():
+            print(f"       {src.name:<24} already there, kept as it is")
+        else:
+            shutil.copy2(src, dst)
+            print(f"       {src.name:<24} copied")
+    print("       docs/addons.md in gout's source tells how to write your own")
+
+
 def cmd_addons(root_hint: Path | None, args: Args) -> None:
     """Where addons are read from, what loaded, and what the project here uses but lacks."""
     from .addons import addon_dir, REPORT
-    args.positionals("gout addons")
-    effects()
+    (what,) = args.positionals("gout addons [examples]   (examples: copy the example addons into the folder)",
+                               0, 1) or [None]
     folder = addon_dir()
-    state = "" if folder.is_dir() else "  (does not exist yet: mkdir -p it and copy addons in)"
+    if what == "examples":
+        print(f"addons {folder}")
+        copy_examples(folder)
+        return
+    if what is not None:
+        die("usage: gout addons [examples]")
+    effects()
+    state = "" if folder.is_dir() else "  (does not exist yet: gout addons examples makes it, with the examples in)"
     print(f"addons {folder}{state}")
     if not REPORT and folder.is_dir():
-        print("       no addon files there; examples/addons/tremolo.py in the gout checkout is one to copy")
+        print("       no addon files there; gout addons examples copies the ones that come with gout")
     for entry in REPORT:
         if entry["error"]:
             print(f"  {entry['file'].name:<24} not loaded: {entry['error']}")

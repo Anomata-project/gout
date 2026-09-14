@@ -27,7 +27,6 @@ colours from color.json, "m" the master's, a space the terminal's own.
 """
 from __future__ import annotations
 
-import os
 import re
 from pathlib import Path
 
@@ -101,9 +100,9 @@ class ScreenContext:
 
 
 def config_file(name: str) -> Path:
-    """A settings file for a screen, next to color.json: ~/.config/gout/NAME."""
-    base = os.environ.get("XDG_CONFIG_HOME") or "~/.config"
-    return Path(base).expanduser() / "gout" / name
+    """A settings file for a screen, next to color.json: ~/.config/gout/NAME (%APPDATA%\\gout on Windows)."""
+    from .core import config_home
+    return config_home() / name
 
 
 _SCREENS: dict[str, Screen] = {}

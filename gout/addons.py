@@ -26,7 +26,10 @@ import os
 import sys
 from pathlib import Path
 
+from .core import config_home
 from .fx import register
+
+API_VERSION = 1  # what AddonApi offers; raised when addons can rely on something new (docs/addons.md)
 
 REPORT: list[dict] = []  # one entry per file tried: file, effects, screens, error
 
@@ -35,12 +38,19 @@ def addon_dir() -> Path:
     env = os.environ.get("GOUT_ADDONS")
     if env:
         return Path(env).expanduser()
-    base = os.environ.get("XDG_CONFIG_HOME") or "~/.config"
-    return Path(base).expanduser() / "gout" / "addons"
+    return config_home() / "addons"
 
 
 class AddonApi:
     """What an addon's register() receives."""
+
+    version = API_VERSION
+
+    def requires(self, version: int) -> None:
+        """gout.requires(N) first in register(): a gout older than addon API N says so and
+        skips the addon, instead of failing somewhere inside it."""
+        if version > API_VERSION:
+            raise ValueError(f"it needs gout's addon API {version}, and this gout has {API_VERSION}: update gout")
 
     def __init__(self, source: str):
         self.source = source

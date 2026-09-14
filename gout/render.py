@@ -357,7 +357,7 @@ COMMAND_SECTIONS = [
         ("split", "sp", "50 | +5 | -5", "left pane width in the ui"),
         ("sheet", "sh", "", "every parameter as a table (ctrl-e)"),
         ("colors", "", "[--init [--project]]", "color.json: colours and timeline layout"),
-        ("addons", "", "", "the addon folder and what loaded"),
+        ("addons", "", "[examples]", "the addon folder and what loaded; examples copies the examples in"),
     ]),
     ("MASTER", "set KEY VALUE", [
         ("lufs", "", "-14 | -23 | off", "loudness target: -14 streaming, -16 Apple, -23 broadcast"),
