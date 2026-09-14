@@ -1034,9 +1034,10 @@ def cmd_inputs(root_hint: Path | None, args: Args) -> None:
           " gout record calibrate lines takes up")
 
 
-VIDEO_USAGE = ("gout video IMAGE [-o FILE]                          a still image with the song\n"
-               "       gout video SCREEN [CHOICE... | all] [-e 10s] [-o FILE]  a screen moving with the song, e.g.\n"
-               "       gout video fractal 3 1 0  (a new choice every 10 s, on the nearest drum hit)")
+VIDEO_USAGE = ("gout video IMAGE [-T] [-o FILE]                          a still image with the song\n"
+               "       gout video SCREEN [CHOICE... | all] [-e 10s] [-c IMAGE] [-T] [-o FILE]  a screen moving with the song,\n"
+               "       e.g. gout video fractal 3 1 0 -c cover.jpg  (the cover first, a new fractal every 10 s on a drum hit;\n"
+               "       the title and artist from set title / set artist at the start unless -T)")
 
 
 def cmd_video(project: Project, args: Args) -> None:
@@ -1045,18 +1046,22 @@ def cmd_video(project: Project, args: Args) -> None:
     import math
     from .analysis import FRAME_MS, project_features
     from .screens import ScreenContext, screen_named
-    from .video import (CELL_H, CELL_W, compose, cut_points, class_colours, Atlas, Encoder, EVERY_MS, FPS, grid,
-                        picture, Progress, schedule, ScreenFrames, workers)
+    from .video import (CELL_H, CELL_W, compose, COVER_SECONDS, cut_points, class_colours, Atlas, Encoder, EVERY_MS, FPS,
+                        grid, picture, Progress, schedule, ScreenFrames, Title, TITLE_UNTIL, workers)
     out = args.value("--out", "-o")
     every = args.value("--every", "-e")
+    cover = args.value("--cover", "-c")
+    no_title = args.flag("--no-title", "-T")
     words = args.positionals(VIDEO_USAGE, 1)
     target = Path(out).expanduser() if out else project.root / "master.mp4"
     image = Path(words[0]).expanduser()
     screen = None if image.is_file() else screen_named(words[0])
     if screen is None and not image.is_file():
         die(f"no such image or screen: {words[0]}\nusage: {VIDEO_USAGE}")
-    if screen is None and len(words) > 1:
+    if screen is None and (len(words) > 1 or cover):
         die(f"an image takes nothing after it\nusage: {VIDEO_USAGE}")
+    if cover and not Path(cover).expanduser().is_file():
+        die(f"no such image: {cover}")
     every_ms = parse_ms(every) if every else EVERY_MS
     if every_ms < 1000:
         die("-e: a choice lasts a second at least")
@@ -1084,6 +1089,12 @@ def cmd_video(project: Project, args: Args) -> None:
     cols, rows = grid()
     width, height = cols * CELL_W, rows * CELL_H
     frames = math.ceil(seconds * FPS)
+    title_text, artist = setting(project, "title"), setting(project, "artist")
+    title = None if no_title or not (title_text or artist) else Title(title_text, artist, cols, rows,
+                                                                      until=min(TITLE_UNTIL, seconds / 2))
+    if not no_title and title is None:
+        print("video no title: gout set title TEXT (and set artist TEXT) puts one at the start")
+    cover_until = -1.0
     if screen is None:
         what, source = image.name, None
         still = picture(image, width, height)
@@ -1096,15 +1107,31 @@ def cmd_video(project: Project, args: Args) -> None:
         if len(choices) > 1:
             what += f", {len(cuts)} changes about every {fmt_ms(every_ms)}"
         tasks = schedule(frames, FPS, head_ms, cuts, choices)
-        atlas, colours = Atlas(), class_colours(project.root)
-        source = ScreenFrames(project, screen.name, tasks, cols, rows, round(seconds * 1000) - head_ms, count)
+        if cover:
+            still = picture(Path(cover).expanduser(), width, height)
+            wanted = min(COVER_SECONDS, seconds / 3) * 1000 - head_ms  # a short song still gets its screen
+            cover_until = (cut_points(features.values["onset"], round(wanted), round(wanted) + 2001, FRAME_MS)[:1]
+                           or [wanted])[0] / 1000 + head_ms / 1000
+            what += f", after {Path(cover).name} for {cover_until:.1f} s"
+            tasks = [task for task in tasks if task[0] / FPS >= cover_until]
+            count = max(1, min(count, len(tasks)))
+        source = ScreenFrames(project, screen.name, tasks, cols, rows, round(seconds * 1000) - head_ms, count,
+                              first=next((t[0] for t in tasks), frames))
     print(f"video {target.name}  {width}x{height} {FPS} fps  {fmt_ms(seconds * 1000)}  {what}"
           + (f"  ({count} processes drawing)" if source else "") + "  (ctrl-c stops)", flush=True)
+    atlas, colours = (Atlas(), class_colours(project.root)) if source is not None or title is not None else (None, None)
     encoder = Encoder(target, project.master, width, height, FPS)
     progress = Progress(frames)
     try:
         for done in range(frames):
-            encoder.write(still if source is None else compose(source.rows(done), atlas, colours, cols, rows))
+            at = done / FPS
+            on_title = title is not None and at < title.until
+            if source is None or at < cover_until:
+                frame = compose(title.over([], at), atlas, colours, cols, rows, background=still) if on_title else still
+            else:
+                rows_now = source.rows(done)
+                frame = compose(title.over(rows_now, at) if on_title else rows_now, atlas, colours, cols, rows)
+            encoder.write(frame)
             progress.update(done + 1)
     except (KeyboardInterrupt, GoutError) as exc:
         if source is not None:

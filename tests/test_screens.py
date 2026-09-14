@@ -93,6 +93,7 @@ class ScreenTest(GoutTest):
         project = Project(self.cwd)
         ctx = ScreenContext(project)
         ctx.features = gout_attr("analysis", "project_features")(project)
+        ctx.offline = True  # no resolution that adapts to a busy machine: the same moment, the same picture
         fractal = load_fractal().Fractal()
         fractal.command(ctx, [])
 

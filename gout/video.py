@@ -38,6 +38,10 @@ FPS = 25
 EVERY_MS = 10000  # a screen changes its choice this often
 SEARCH_MS = 1000  # looking this far either side of the mark for a drum hit
 HIT = 0.3  # the onset level (0 .. 1) that counts as a hit
+TITLE_FROM, TITLE_UNTIL, TITLE_WIPE = 0.5, 6.5, 0.6  # seconds of video: in from the left, then gone
+COVER_SECONDS = 6.0  # --cover shows the image this long, to the nearest drum hit
+RAMP = " .:-=+*#%@"  # the fractal's characters, faint to full: the title is drawn in them
+BOX = "\x00"  # a cell that is black even over an image
 EXTRA_GLYPHS = "█▓▒░━│·▶■●"  # what gout's own pictures use besides ASCII
 FONT_CANDIDATES = {
     "darwin": ["/System/Library/Fonts/Menlo.ttc", "/System/Library/Fonts/Monaco.ttf"],
@@ -198,7 +202,8 @@ def compose(rows: list[tuple[str, str]], atlas: Atlas, colours: dict, cols: int,
                 start = y * atlas.cell_h * len(blank_row)
                 lines.append(background[start:start + atlas.cell_h * len(blank_row)])
             continue
-        cells = [atlas.glyph(ch, colours.get(cls, fg)) if ch != " " else None for ch, cls in zip(text, classes)]
+        cells = [None if ch == " " else atlas.blank if ch == BOX else atlas.glyph(ch, colours.get(cls, fg))
+                 for ch, cls in zip(text, classes)]
         for py in range(atlas.cell_h):
             if background is None:
                 lines.append(b"".join(atlas.blank[py] if c is None else c[py] for c in cells))
@@ -332,8 +337,9 @@ class ScreenFrames:
     """The rows of every frame from worker processes, handed out in order. Each worker draws every
     n-th frame and waits while gout catches up, so the rows in memory stay few."""
 
-    def __init__(self, project, screen_name: str, tasks: list, cols: int, rows: int, length_ms: int, count: int):
-        self.count = count
+    def __init__(self, project, screen_name: str, tasks: list, cols: int, rows: int, length_ms: int, count: int,
+                 first: int = 0):
+        self.count, self.first = count, first
         self.procs, self.queues, self.errors = [], [], []
         for j in range(count):
             errors = tempfile.TemporaryFile()
@@ -356,10 +362,11 @@ class ScreenFrames:
         q.put(None)
 
     def rows(self, frame: int) -> list:
-        item = self.queues[frame % self.count].get()
+        worker = (frame - self.first) % self.count
+        item = self.queues[worker].get()
         if item is None or item[0] != frame:
             self.stop()
-            err = self.errors[frame % self.count]
+            err = self.errors[worker]
             err.seek(0)
             said = [line for line in err.read().decode(errors="replace").splitlines() if line.strip()]
             die(f"drawing frame {frame} failed: " + (said[-1] if said else "the worker stopped"))
@@ -391,3 +398,117 @@ def worker_main() -> int:
         sys.stdout.write(json.dumps([frame, [[text, classes] for text, classes in rows]]) + "\n")
         sys.stdout.flush()
     return 0
+
+
+# ---- the title
+
+def wrap(words: list[str], width: int) -> list[str]:
+    lines: list[str] = []
+    for word in words:
+        if lines and len(lines[-1]) + 1 + len(word) <= width:
+            lines[-1] += " " + word
+        else:
+            lines.append(word)
+    return lines
+
+
+def split_title(title: str) -> tuple[str, str]:
+    """The name to draw big and what follows it after a dash or a colon, to write under it."""
+    for mark in (" – ", " — ", " - ", ": "):
+        if mark in title:
+            name, _, rest = title.partition(mark)
+            return name.strip(), rest.strip()
+    return title.strip(), ""
+
+
+class Title:
+    """The title drawn big in the fractal's characters (ffmpeg draws it, gout reads the coverage of
+    every cell back as one of RAMP), on a black box in the middle of the grid. What follows a dash
+    or a colon in the title goes under it in plain characters, and the artist under that."""
+
+    def __init__(self, title: str, artist: str, cols: int, rows: int, font: Path | None = None,
+                 until: float = TITLE_UNTIL):
+        self.cols, self.rows, self.until = cols, rows, until
+        self.cells: dict[tuple[int, int], tuple[str, str]] = {}  # (x, y) -> (character, class)
+        name, subtitle = split_title(title)
+        big = self.big_text(name, font or find_font()) if name else []
+        plain = [(line[:cols - 4], cls) for line, cls in ((subtitle, "m"), (artist.strip(), " ")) if line]
+        height = len(big) + (1 if big and plain else 0) + 2 * len(plain) - (1 if plain else 0)
+        top = max(1, (rows - height) // 2)
+        for y, line in enumerate(big):
+            for x, ch in enumerate(line):
+                if ch != " ":
+                    self.cells[(x, top + y)] = (ch, "m")
+        y = top + len(big) + (1 if big else 0)
+        for line, cls in plain:
+            left = (cols - len(line)) // 2
+            for x, ch in enumerate(line):
+                self.cells[(left + x, y)] = (ch, cls)
+            y += 2
+        if self.cells:
+            xs, ys = [x for x, _ in self.cells], [y for _, y in self.cells]
+            self.box = (max(0, min(xs) - 3), max(0, min(ys) - 1), min(cols - 1, max(xs) + 3), min(rows - 1, max(ys) + 1))
+        else:
+            self.box = None
+
+    def big_text(self, title: str, font: Path) -> list[str]:
+        """The title in RAMP characters, as large as fits two thirds of the grid, in up to three lines."""
+        pixels_w, pixels_h = self.cols * 2, self.rows * 4  # two by four pixels a cell: a cell is twice as tall as wide
+        size, lines = 8, [title]
+        for size in range(64, 7, -2):
+            lines = wrap(title.split(), max(1, int(pixels_w * 0.9 / (size * 0.6))))
+            if len(lines) <= 3 and max(len(l) for l in lines) * size * 0.6 <= pixels_w * 0.9 \
+                    and len(lines) * size * 1.25 <= pixels_h * 0.7:
+                break
+        stroke = max(1, size // 20)  # thin strokes cover too little of a cell to read at video size
+        folder = Path(tempfile.mkdtemp(prefix="gout-title-"))
+        try:
+            shutil.copy(font, folder / f"font{font.suffix}")
+            top = (pixels_h - len(lines) * size * 1.25) / 2
+            filters = []
+            for i, line in enumerate(lines):
+                (folder / f"t{i}.txt").write_text(line, encoding="utf-8")
+                filters.append(f"drawtext=fontfile=font{font.suffix}:textfile=t{i}.txt:expansion=none:fontsize={size}"
+                               f":fontcolor=white:borderw={stroke}:bordercolor=white:x=(w-tw)/2"
+                               f":y={round(top + i * size * 1.25)}:y_align=font")
+            result = subprocess.run(
+                ["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", f"color=c=black:s={pixels_w}x{pixels_h}:d=0.04",
+                 "-vf", ",".join(filters), "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+                capture_output=True, cwd=folder)
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
+        image = result.stdout
+        if len(image) != pixels_w * pixels_h:
+            return []
+        out = []
+        for y in range(self.rows):
+            line = []
+            for x in range(self.cols):
+                total = sum(image[(4 * y + dy) * pixels_w + 2 * x + dx] for dy in range(4) for dx in range(2))
+                cover = (total / (8 * 255)) ** 0.6  # a cell half covered reads as more than half
+                line.append(RAMP[min(len(RAMP) - 1, round(cover * (len(RAMP) - 1)))])
+            out.append("".join(line))
+        while out and not out[0].strip():
+            out.pop(0)
+        while out and not out[-1].strip():
+            out.pop()
+        return out
+
+    def over(self, rows: list, seconds: float) -> list:
+        """The rows with the title on them at this moment of the video: wiped in from the left from
+        TITLE_FROM, gone at until (TITLE_UNTIL, or earlier in a short song)."""
+        if self.box is None or not TITLE_FROM <= seconds < self.until:
+            return rows
+        left, top, right, bottom = self.box
+        shown = left + round((right - left + 1) * min(1.0, (seconds - TITLE_FROM) / TITLE_WIPE))
+        out = []
+        for y in range(self.rows):
+            text, classes = rows[y] if y < len(rows) else ("", "")
+            if not top <= y <= bottom:
+                out.append((text, classes))
+                continue
+            text, classes = list(text[:self.cols].ljust(self.cols)), list(classes[:self.cols].ljust(self.cols))
+            for x in range(left, min(shown, right + 1)):
+                text[x], classes[x] = self.cells.get((x, y), (BOX, " "))
+            out.append(("".join(text), "".join(classes)))
+        return out

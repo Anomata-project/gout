@@ -122,3 +122,44 @@ class VideoTest(GoutTest):
         self.assertIn("fractal.py               updated", out)
         self.assertEqual((self.addons / "fractal.py.bak").read_text(), "# an older copy\n")
         self.assertFalse((self.addons / "tremolo.py.bak").exists())  # the same file stays as it is
+
+    def test_the_title_over_the_cover_then_the_fractal(self):
+        shutil.copy(REPO / "examples" / "addons" / "fractal.py", self.addons / "fractal.py")
+        self.more_env["GOUT_VIDEO_WORKERS"] = "2"
+        root = self.beat_project()
+        cover = self.tmp / "cover.png"
+        ffmpeg("-f", "lavfi", "-i", "color=c=red:s=480x288:d=1", "-frames:v", "1", str(cover))
+        out = self.gout("video", "fractal", "classic", "-c", str(cover)).stdout
+        self.assertIn("no title: gout set title", out)
+        self.assertIn("after cover.png", out)
+        video = root / "master.mp4"
+        self.assertGreater(pixel(frame_at(video, 1.0, 480, 288), 480, 240, 144)[0], 200)  # the cover first
+        self.assertLess(pixel(frame_at(video, 5.5, 480, 288), 480, 240, 144)[0], 200)  # then the fractal
+        self.gout("set", "title", "Hey – a subtitle")
+        self.gout("set", "artist", "Somebody")
+        out = self.gout("video", str(cover)).stdout
+        self.assertNotIn("no title", out)
+        with_title, after = frame_at(video, 2.0, 480, 288), frame_at(video, 4.0, 480, 288)  # a 6 s song: gone at 3 s
+        middle = [pixel(with_title, 480, x, y) for x in range(100, 380, 4) for y in range(110, 180, 4)]
+        self.assertTrue(any(max(p) < 30 for p in middle))  # the black box
+        self.assertTrue(any(p[0] > 150 and p[1] > 100 and p[2] < 120 for p in middle))  # gold letters on it
+        self.assertEqual(pixel(after, 480, 240, 144)[1] < 40, True)  # gone again: the red cover
+        self.gout("video", str(cover), "-T")  # no title
+
+    def test_the_title_is_big_with_what_follows_the_dash_under_it(self):
+        split, Title = gout_attr("video", "split_title"), gout_attr("video", "Title")
+        self.assertEqual(split("Northern Road – slow dance"), ("Northern Road", "slow dance"))
+        self.assertEqual(split("Plain"), ("Plain", ""))
+        title = Title("Hää – slow", "Me", 80, 24)
+        left, top, right, bottom = title.box
+        rows = [("-" * 80, "1" * 80)] * 24
+        self.assertIs(title.over(rows, 0.2), rows)  # not yet
+        full = title.over(rows, 3.0)
+        big = "".join(text for text, _ in full[top:bottom + 1])
+        self.assertTrue(any(ch in big for ch in "#%@"))  # drawn in the fractal's characters
+        self.assertIn("slow", big)
+        self.assertIn("Me", big)
+        self.assertEqual(full[0], rows[0])  # rows outside the box stay
+        wiping = title.over(rows, 0.8)  # half way in: the right part of the box not yet
+        self.assertEqual(wiping[top][0][right], "-")
+        self.assertIs(title.over(rows, 6.6), rows)  # and gone
