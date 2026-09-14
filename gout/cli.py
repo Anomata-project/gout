@@ -40,6 +40,7 @@ from .commands import (
     cmd_trim,
     cmd_ui,
     cmd_undo,
+    cmd_video,
     cmd_view,
     effect_commands,
     print_kinds,
@@ -53,7 +54,7 @@ BASE_PROJECT_COMMANDS = {
     "mute": cmd_mute, "solo": cmd_solo, "gain": cmd_gain, "pan": cmd_pan, "fx": cmd_fx,
     "set": cmd_set, "stats": cmd_stats, "mix": cmd_mix, "undo": cmd_undo, "dump": cmd_dump,
     "saveas": cmd_saveas, "stems": cmd_stems, "import": cmd_import,
-    "view": cmd_view, "ui": cmd_ui, "play": cmd_play, "record": cmd_record,
+    "view": cmd_view, "ui": cmd_ui, "play": cmd_play, "record": cmd_record, "video": cmd_video,
 }
 
 

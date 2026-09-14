@@ -1034,6 +1034,46 @@ def cmd_inputs(root_hint: Path | None, args: Args) -> None:
           " gout record calibrate lines takes up")
 
 
+VIDEO_USAGE = "gout video IMAGE [-o FILE]   (a still image with the song, black bars around it)"
+
+
+def cmd_video(project: Project, args: Args) -> None:
+    """An mp4 of the song for YouTube and the like: master.wav with a picture."""
+    import math
+    from .video import CELL_H, CELL_W, Encoder, FPS, grid, picture, Progress
+    out = args.value("--out", "-o")
+    (what,) = args.positionals(VIDEO_USAGE, 1, 1)
+    target = Path(out) if out else project.root / "master.mp4"
+    image = Path(what).expanduser()
+    if not image.is_file():
+        die(f"no such image: {what}\nusage: {VIDEO_USAGE}")
+    if not project.master_is_current():
+        print(f"video rendering {MASTER_WAV} first")
+        mix(project)
+    if not project.master.exists():
+        die("nothing audible to make a video of")
+    seconds = probe(project.master)["duration"]
+    cols, rows = grid()
+    width, height = cols * CELL_W, rows * CELL_H
+    frames = math.ceil(seconds * FPS)
+    frame = picture(image, width, height)
+    print(f"video {target.name}  {width}x{height} {FPS} fps  {fmt_ms(seconds * 1000)}  {image.name} with {MASTER_WAV}"
+          "  (ctrl-c stops)", flush=True)
+    encoder = Encoder(target, project.master, width, height, FPS)
+    progress = Progress(frames)
+    try:
+        for done in range(1, frames + 1):
+            encoder.write(frame)
+            progress.update(done)
+    except KeyboardInterrupt:
+        encoder.abort()
+        progress.close()
+        die("video stopped; nothing written")
+    progress.close()
+    encoder.finish()
+    print(f"      {target}  {fmt_size(target.stat().st_size)}")
+
+
 def cmd_stems(project: Project, args: Args) -> None:
     """One file per track, processed as in the mix, all the same length from 0:00."""
     audible_only = args.flag("--audible", "-A")

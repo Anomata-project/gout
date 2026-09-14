@@ -44,6 +44,9 @@ PROJECT
                                   plays; N or NAME picks one for this computer, default goes back to
                                   the system's. Capture: pw-record, parecord or arecord (Linux), ffmpeg
                                   (macOS, Windows); GOUT_RECORDER picks one (null records silence)
+  gout video vd IMAGE [-o FILE]   an mp4 for YouTube: the image, fitted with black bars, with {MASTER_WAV}
+                                  (rendered first when out of date); 1920x1080, H.264 and AAC 320k,
+                                  written to master.mp4 in the project unless -o names a file
   gout view  v                    print the timeline once: the master first, then each track as a
                                   waveform (braille dots from the real highest and lowest points)
   gout colors [--init [--project]]  the 25 colour and layout settings from color.json: which file is in

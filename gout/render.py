@@ -347,6 +347,7 @@ COMMAND_SECTIONS = [
         ("view", "v", "[-w COLS]", "print the timeline"),
         ("saveas", "sa", "NAME | PATH", "copy the whole project"),
         ("stems", "sm", "[DIR] [-A]", "one wav per track"),
+        ("video", "vd", "IMAGE [-o FILE]", "master.mp4 for YouTube: the image and the song"),
         ("dump", "dp", "", "the state as json"),
         ("import", "im", "FILE.json [-s | -t]", "apply such a json: settings, tracks or both"),
         ("rebuild", "rb", "[-f]", "gout.db again from master/ and gout.json"),
