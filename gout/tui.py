@@ -358,14 +358,25 @@ class Tui:
     def play_position_ms(self) -> int:
         if self.player is None:
             return self.playhead_ms
-        return round((self.player.position() - head_seconds(self.project)) * 1000)
+        head = 0.0 if self.player.live else head_seconds(self.project)  # only master.wav has the head padding
+        return round((self.player.position() - head) * 1000)
+
+    def playing_state(self) -> str | None:
+        """What is playing, to compare after a command; None when nothing plays."""
+        return self.project.state_fingerprint() if self.player is not None else None
+
+    def hear_changes(self, before: str | None) -> None:
+        """A player plays the project as it was when it started, so after a change it starts again
+        from where it is: live while master.wav is out of date, and the change is heard at once."""
+        if before is not None and self.player is not None and self.project.state_fingerprint() != before:
+            self.start_playing(self.play_position_ms(), again=True)
 
     def check_player(self) -> None:
         if self.player is not None and not self.player.running():
             self.player = None
             self.playhead_ms = 0  # played to the end: back to the start
 
-    def start_playing(self, from_ms: int | None = None) -> None:
+    def start_playing(self, from_ms: int | None = None, again: bool = False) -> None:
         """Play from the playhead (or from_ms): master.wav when it matches the project, the project
         streamed live when it does not, so a change is heard at once."""
         self.stop_playing(keep=False)
@@ -389,7 +400,10 @@ class Tui:
         self.log.extend(buf.getvalue().rstrip("\n").splitlines())
         self.player = player
         how = "live, as the project is now" if player.live else MASTER_WAV
-        self.log.append(f"play  {how} from {fmt_ms(self.playhead_ms)}  ({player.backend}; space stops)")
+        if again:
+            self.log.append(f"play  again from {fmt_ms(self.playhead_ms)} with the change ({'live' if player.live else MASTER_WAV})")
+        else:
+            self.log.append(f"play  {how} from {fmt_ms(self.playhead_ms)}  ({player.backend}; space stops)")
 
     # ---- rendering in the background
 
@@ -724,6 +738,7 @@ class Tui:
         rows = self.sheet_rows
         done = failed = 0
         before = self.chain_kinds()
+        playing = self.playing_state()
         buf = io.StringIO()
         for r in rows:
             if not r["id"] or r["id"] not in self.edits:
@@ -752,6 +767,7 @@ class Tui:
             except GoutError as exc:
                 buf.write(f"error: {exc}\n")
             self.log.extend(buf.getvalue().rstrip("\n").splitlines())
+        self.hear_changes(playing)
         self.sheet_status = f"applied {done}" + (f", {failed} failed — see the ! rows" if failed else "")
         if close and not failed:
             self.sheet_close()
@@ -1129,6 +1145,7 @@ class Tui:
         self.busy = True
         self.draw()
         before = self.chain_kinds()
+        playing = self.playing_state()
         buf = io.StringIO()
         try:
             with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
@@ -1143,6 +1160,7 @@ class Tui:
         if is_effect:
             self.follow(head, argv)
         self.settle_panel(before)
+        self.hear_changes(playing)
         del self.log[:-2000]
 
 

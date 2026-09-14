@@ -69,3 +69,32 @@ class PlayTest(GoutTest):
         ui.submit()  # quitting stops playback
         self.assertIsNone(ui.player)
         self.assertFalse(ui.running)
+
+    def test_a_change_while_playing_is_heard_at_once(self):
+        root = self.project("song", "tone.wav")  # 6 s
+        self.gout("set", "head", "1s")
+        self.gout("mix")
+        os.environ["GOUT_PLAYER"] = "null"
+        os.environ["GOUT_ADDONS"] = str(self.addons)
+        project = gout_attr("project", "Project")(root)
+        ui = gout_attr("tui", "Tui")(project, FakeScreen(30, 120))
+        ui.input = "play 1s"
+        ui.submit()
+        self.assertFalse(ui.player.live)  # master.wav is current
+        time.sleep(0.6)
+        first = ui.player
+        ui.input = "ls"  # nothing changes: the same playback goes on
+        ui.submit()
+        self.assertIs(ui.player, first)
+        ui.input = "eq 1 hs7k:+4"
+        ui.submit()
+        self.assertIsNot(ui.player, first)  # started again, with the eq
+        self.assertTrue(ui.player.live)
+        self.assertIn("again from", ui.log[-1])
+        self.assertGreaterEqual(ui.play_position_ms(), 1500)  # where it was, not the head padding off
+        self.assertLess(ui.play_position_ms(), 2500)
+        playing = ui.player
+        ui.handle("\x15")  # ctrl-u: undo is a change too
+        self.assertIsNot(ui.player, playing)
+        ui.input = "quit"
+        ui.submit()
