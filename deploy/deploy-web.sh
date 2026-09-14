@@ -81,6 +81,7 @@ if [ -z "$ok" ]; then
 fi
 
 nginx -t -q && systemctl reload nginx
+sleep 2  # the reload is not done when systemctl returns
 if [ "$TLS" = "--tls" ]; then
     certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos --redirect
 fi
