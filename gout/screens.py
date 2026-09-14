@@ -73,6 +73,18 @@ class Screen:
         tab. True when the screen used it."""
         return False
 
+    def choices(self) -> list[str]:
+        """What the screen can switch between, by name: gout video NAME all goes through them in turn.
+        None by default."""
+        return []
+
+    def pick(self, ctx: "ScreenContext", word: str) -> None:
+        """Switch to one of choices(), or anything command() takes, for a video: without remembering it
+        as the user's choice. Raise ValueError when it is not one. By default: command(ctx, [word])."""
+        lines, ok = self.command(ctx, [word])
+        if not ok:
+            raise ValueError("; ".join(lines) or f"{self.name} cannot show {word!r}")
+
 
 class ScreenContext:
     """What a screen may know: where the song is and how it sounds there."""
@@ -84,6 +96,7 @@ class ScreenContext:
         self.length_ms = 0
         self.features = None         # analysis.Features once the song has been listened to
         self.note = ""               # shown in the status line: listening, or what went wrong
+        self.offline = False         # True while a video is drawn: take the time needed, the same moment gives the same picture
 
     def band(self, name: str, window_ms: float = 100) -> float:
         """low, mid, high, level or onset: 0 .. 1, averaged over the last window_ms."""

@@ -44,9 +44,13 @@ PROJECT
                                   plays; N or NAME picks one for this computer, default goes back to
                                   the system's. Capture: pw-record, parecord or arecord (Linux), ffmpeg
                                   (macOS, Windows); GOUT_RECORDER picks one (null records silence)
-  gout video vd IMAGE [-o FILE]   an mp4 for YouTube: the image, fitted with black bars, with {MASTER_WAV}
-                                  (rendered first when out of date); 1920x1080, H.264 and AAC 320k,
-                                  written to master.mp4 in the project unless -o names a file
+  gout video vd IMAGE | SCREEN [CHOICE... | all] [-e 10s] [-o FILE]
+                                  an mp4 for YouTube with {MASTER_WAV} (rendered first when out of date):
+                                  an image fitted with black bars, or a screen moving with the song,
+                                  frame by frame: gout video fractal 3 1 0, gout video fractal all
+                                  (a new choice every 10 s or -e, cut on the nearest drum hit).
+                                  1920x1080 25 fps, H.264 and AAC 320k, to master.mp4 unless -o. A
+                                  fractal video takes about 3 times the song's length on 4 cores
   gout view  v                    print the timeline once: the master first, then each track as a
                                   waveform (braille dots from the real highest and lowest points)
   gout colors [--init [--project]]  the 25 colour and layout settings from color.json: which file is in

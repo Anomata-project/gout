@@ -27,6 +27,9 @@ The music moves it: the bass bends the method (a relaxed Newton step, z - a·w/w
 and pushes the rotation, the overall level zooms in, hits and highs make it denser, and the mids
 trade the basins' colours as they go by. It is also a template for writing your own screen: one
 Screen subclass and a register() function.
+
+gout video fractal 3 1 0 (or all) draws it into a video, changing preset every 10 s on a drum hit:
+choices() and pick() are what the video uses, and ctx.offline says a video is being drawn.
 """
 import cmath
 import json
@@ -205,6 +208,23 @@ class Fractal(Screen):
         lines.append(f"fractal: w = {formula.pretty}; add it to {FILE} to keep it")
         return lines, True
 
+    def choices(self):
+        """The preset names, for gout video fractal all."""
+        if not self.presets:
+            self.load()
+        return [p["name"] for p in self.presets]
+
+    def pick(self, ctx, word):
+        """A preset by key or name, or a formula, without remembering it (for a video)."""
+        if not self.presets:
+            self.load()
+        found = self.find(word)
+        if found is not None:
+            self.choose(found, remember=False)
+            return
+        self.custom = {"name": "custom", "formula": parse(word), "about": "", "zoom": None, "center": None}
+        self.reset()
+
     def status(self, ctx):
         p = self.preset()
         label = "custom" if self.custom is not None else f"{KEYS[self.current] if self.current < 10 else ''} {p['name']}".strip()
@@ -231,16 +251,29 @@ class Fractal(Screen):
     # ---- drawing
 
     def root_of(self, z, tolerance):
-        """The index of the root z settled on, adding it when it is new."""
+        """The colour index of the root z settled on. The roots a first look finds come first, in a
+        fixed order; one found later takes a colour from where it is, so the colours are the same
+        whatever order frames are drawn in (a video draws them in several processes at once)."""
         cell = (round(z.real / tolerance), round(z.imag / tolerance))
         index = self.root_cells.get(cell)
         if index is None:
             index = next((i for i, r in enumerate(self.roots) if abs(r - z) < 5 * tolerance), None)
             if index is None:
-                self.roots.append(z)
-                index = len(self.roots) - 1
+                spot = (round(z.real / (50 * tolerance)), round(z.imag / (50 * tolerance)))
+                index = len(self.roots) + (spot[0] * 7 + spot[1] * 13) % 10
             self.root_cells[cell] = index
         return index
+
+    def seed_roots(self, p):
+        """The roots a coarse look over the view finds, ordered by angle around the centre, then distance."""
+        center, half = self.framing
+        _, finals = p["formula"].newton()(cell_points(64, 32, center, half * 1.5, 0.0), 40, 1.0, half * 2e-4)
+        found = []
+        for z in finals:
+            if z is not None and all(abs(z - r) >= 5 * half * 1e-3 for r in found):
+                found.append(z)
+        found.sort(key=lambda z: (round(cmath.phase(z - center), 3), round(abs(z - center), 3)))
+        self.roots, self.root_cells = found, {}
 
     def frame_for(self, p):
         """Where to look: the preset's own center and zoom, or around the roots a first look finds."""
@@ -259,6 +292,7 @@ class Fractal(Screen):
                     center = sum(found) / len(found)
                 spread = max((abs(r - center) for r in found), default=1.0)
                 self.framing = (center, max(0.6, spread * 1.7))
+            self.seed_roots(p)
         return self.framing
 
     def frame(self, ctx, width, height):
@@ -285,7 +319,9 @@ class Fractal(Screen):
         steps, finals = p["formula"].newton()(points, LIMIT, relax, half * 2e-4)
         spent = time.monotonic() - began
         budget = 1 / self.fps
-        if spent > 1.4 * budget and self.step < 3:
+        if getattr(ctx, "offline", False):
+            self.step = 1  # a video waits for every column; the same moment gives the same picture
+        elif spent > 1.4 * budget and self.step < 3:
             self.step += 1
         elif spent < 0.4 * budget and self.step > 1:
             self.step -= 1

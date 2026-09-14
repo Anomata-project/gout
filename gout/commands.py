@@ -1034,19 +1034,47 @@ def cmd_inputs(root_hint: Path | None, args: Args) -> None:
           " gout record calibrate lines takes up")
 
 
-VIDEO_USAGE = "gout video IMAGE [-o FILE]   (a still image with the song, black bars around it)"
+VIDEO_USAGE = ("gout video IMAGE [-o FILE]                          a still image with the song\n"
+               "       gout video SCREEN [CHOICE... | all] [-e 10s] [-o FILE]  a screen moving with the song, e.g.\n"
+               "       gout video fractal 3 1 0  (a new choice every 10 s, on the nearest drum hit)")
 
 
 def cmd_video(project: Project, args: Args) -> None:
-    """An mp4 of the song for YouTube and the like: master.wav with a picture."""
+    """An mp4 of the song for YouTube and the like: master.wav with a picture, or with a screen
+    such as the fractal drawn frame by frame."""
     import math
-    from .video import CELL_H, CELL_W, Encoder, FPS, grid, picture, Progress
+    from .analysis import FRAME_MS, project_features
+    from .screens import ScreenContext, screen_named
+    from .video import (CELL_H, CELL_W, compose, cut_points, class_colours, Atlas, Encoder, EVERY_MS, FPS, grid,
+                        picture, Progress, schedule, ScreenFrames, workers)
     out = args.value("--out", "-o")
-    (what,) = args.positionals(VIDEO_USAGE, 1, 1)
-    target = Path(out) if out else project.root / "master.mp4"
-    image = Path(what).expanduser()
-    if not image.is_file():
-        die(f"no such image: {what}\nusage: {VIDEO_USAGE}")
+    every = args.value("--every", "-e")
+    words = args.positionals(VIDEO_USAGE, 1)
+    target = Path(out).expanduser() if out else project.root / "master.mp4"
+    image = Path(words[0]).expanduser()
+    screen = None if image.is_file() else screen_named(words[0])
+    if screen is None and not image.is_file():
+        die(f"no such image or screen: {words[0]}\nusage: {VIDEO_USAGE}")
+    if screen is None and len(words) > 1:
+        die(f"an image takes nothing after it\nusage: {VIDEO_USAGE}")
+    every_ms = parse_ms(every) if every else EVERY_MS
+    if every_ms < 1000:
+        die("-e: a choice lasts a second at least")
+    choices = words[1:]
+    if screen is not None:
+        if [w.lower() for w in choices] == ["all"]:
+            choices = screen.choices()
+            if not choices:
+                die(f"the {screen.name} screen has no list to go through{older_example_hint(screen)}")
+        ctx = ScreenContext(project)
+        for word in dict.fromkeys(choices):  # every choice checked before minutes of work
+            try:
+                screen.pick(ctx, word)
+            except ValueError as exc:
+                die(f"{screen.name} {word}: {exc}")
+        hint = older_example_hint(screen)
+        if hint:
+            print(f"video {hint.strip(' ()')}")
     if not project.master_is_current():
         print(f"video rendering {MASTER_WAV} first")
         mix(project)
@@ -1056,22 +1084,47 @@ def cmd_video(project: Project, args: Args) -> None:
     cols, rows = grid()
     width, height = cols * CELL_W, rows * CELL_H
     frames = math.ceil(seconds * FPS)
-    frame = picture(image, width, height)
-    print(f"video {target.name}  {width}x{height} {FPS} fps  {fmt_ms(seconds * 1000)}  {image.name} with {MASTER_WAV}"
-          "  (ctrl-c stops)", flush=True)
+    if screen is None:
+        what, source = image.name, None
+        still = picture(image, width, height)
+    else:
+        features = project_features(project)  # works out and caches the analysis before the workers read it
+        head_ms = int(setting(project, "head"))
+        cuts = cut_points(features.values["onset"], every_ms, features.length_ms, FRAME_MS) if len(choices) > 1 else []
+        count = min(workers(), frames)
+        what = f"the {screen.name} screen" + (f": {' '.join(choices)}" if choices else "")
+        if len(choices) > 1:
+            what += f", {len(cuts)} changes about every {fmt_ms(every_ms)}"
+        tasks = schedule(frames, FPS, head_ms, cuts, choices)
+        atlas, colours = Atlas(), class_colours(project.root)
+        source = ScreenFrames(project, screen.name, tasks, cols, rows, round(seconds * 1000) - head_ms, count)
+    print(f"video {target.name}  {width}x{height} {FPS} fps  {fmt_ms(seconds * 1000)}  {what}"
+          + (f"  ({count} processes drawing)" if source else "") + "  (ctrl-c stops)", flush=True)
     encoder = Encoder(target, project.master, width, height, FPS)
     progress = Progress(frames)
     try:
-        for done in range(1, frames + 1):
-            encoder.write(frame)
-            progress.update(done)
-    except KeyboardInterrupt:
+        for done in range(frames):
+            encoder.write(still if source is None else compose(source.rows(done), atlas, colours, cols, rows))
+            progress.update(done + 1)
+    except (KeyboardInterrupt, GoutError) as exc:
+        if source is not None:
+            source.stop()
         encoder.abort()
         progress.close()
-        die("video stopped; nothing written")
+        die(str(exc) if isinstance(exc, GoutError) else "video stopped; nothing written")
     progress.close()
     encoder.finish()
     print(f"      {target}  {fmt_size(target.stat().st_size)}")
+
+
+def older_example_hint(screen) -> str:
+    """When a screen's addon file is a copy of an example that has changed since: how to update it."""
+    source = Path(screen.source)
+    example = resource_dir() / "examples" / "addons" / source.name
+    if source.is_file() and example.is_file() and source.read_bytes() != example.read_bytes():
+        return (f" ({source.name} differs from the one that comes with gout; gout addons examples --update"
+                f" brings the new one and keeps yours as {source.name}.bak)")
+    return ""
 
 
 def cmd_stems(project: Project, args: Args) -> None:
@@ -1344,8 +1397,9 @@ def run_tui(project) -> None:
     start(project)
 
 
-def copy_examples(folder: Path) -> None:
-    """The example addons that come with gout into the addon folder; files already there stay."""
+def copy_examples(folder: Path, update: bool = False) -> None:
+    """The example addons that come with gout into the addon folder; files already there stay, or
+    with update are replaced when they differ, the old one kept as NAME.py.bak."""
     examples = resource_dir() / "examples" / "addons"
     found = sorted(examples.glob("*.py")) if examples.is_dir() else []
     if not found:
@@ -1353,8 +1407,13 @@ def copy_examples(folder: Path) -> None:
     folder.mkdir(parents=True, exist_ok=True)
     for src in found:
         dst = folder / src.name
-        if dst.exists():
-            print(f"       {src.name:<24} already there, kept as it is")
+        if dst.exists() and update and dst.read_bytes() != src.read_bytes():
+            shutil.copy2(dst, dst.with_name(dst.name + ".bak"))
+            shutil.copy2(src, dst)
+            print(f"       {src.name:<24} updated; the old one is {dst.name}.bak")
+        elif dst.exists():
+            print(f"       {src.name:<24} already there, kept as it is" + ("" if update else
+                  " (--update replaces it when it differs)"))
         else:
             shutil.copy2(src, dst)
             print(f"       {src.name:<24} copied")
@@ -1364,12 +1423,13 @@ def copy_examples(folder: Path) -> None:
 def cmd_addons(root_hint: Path | None, args: Args) -> None:
     """Where addons are read from, what loaded, and what the project here uses but lacks."""
     from .addons import addon_dir, REPORT
-    (what,) = args.positionals("gout addons [examples]   (examples: copy the example addons into the folder)",
-                               0, 1) or [None]
+    update = args.flag("--update", "-u")
+    (what,) = args.positionals("gout addons [examples [-u]]   (examples: copy the example addons into the folder;"
+                               " -u: replace ones that differ, keeping a .bak)", 0, 1) or [None]
     folder = addon_dir()
     if what == "examples":
         print(f"addons {folder}")
-        copy_examples(folder)
+        copy_examples(folder, update)
         return
     if what is not None:
         die("usage: gout addons [examples]")

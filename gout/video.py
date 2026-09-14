@@ -6,25 +6,38 @@ character gout needs once, in a monospace font, into a glyph atlas; gout pastes 
 coloured as color.json colours the terminal, onto black frames of 160 by 45 characters, 12 by 24
 pixels each (1920 by 1080), and pipes the raw frames into ffmpeg next to master.wav.
 
+A screen (gout video fractal 3 1 0) is drawn by worker processes, `gout _video`, each given every
+n-th frame: which choice to show and the moment of the song. They send the rows back as JSON lines,
+and gout turns them into pixels in order. A screen switches between its choices every 10 s, at the
+strongest drum hit within a second of the mark when there is one.
+
 GOUT_FONT names the font file when the system's monospace font is not the one wanted or cannot be
-found. GOUT_VIDEO_GRID=COLSxROWS makes a smaller grid (the tests use it).
+found. GOUT_VIDEO_GRID=COLSxROWS makes a smaller grid and GOUT_VIDEO_WORKERS=N sets the number of
+worker processes (the tests use both).
 """
 from __future__ import annotations
 
+import bisect
+import json
 import os
+import queue
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
-from .core import die, fmt_ms
+from .core import detached, die, fmt_ms, gout_command, stop_process
 from .theme import DEFAULTS, NAMES, load_theme, parse_color
 
 COLS, ROWS = 160, 45
 CELL_W, CELL_H = 12, 24
 FPS = 25
+EVERY_MS = 10000  # a screen changes its choice this often
+SEARCH_MS = 1000  # looking this far either side of the mark for a drum hit
+HIT = 0.3  # the onset level (0 .. 1) that counts as a hit
 EXTRA_GLYPHS = "█▓▒░━│·▶■●"  # what gout's own pictures use besides ASCII
 FONT_CANDIDATES = {
     "darwin": ["/System/Library/Fonts/Menlo.ttc", "/System/Library/Fonts/Monaco.ttf"],
@@ -279,3 +292,102 @@ class Progress:
     def close(self) -> None:
         if self.live:
             print()
+
+
+# ---- screens
+
+def workers() -> int:
+    wanted = os.environ.get("GOUT_VIDEO_WORKERS", "")
+    if wanted.isdigit() and int(wanted) > 0:
+        return int(wanted)
+    return max(1, (os.cpu_count() or 2) - 1)
+
+
+def cut_points(onset: list[float], every_ms: int, end_ms: int, frame_ms: int) -> list[int]:
+    """When a screen changes choice, in project ms: every every_ms, moved to the strongest hit within
+    SEARCH_MS of the mark when one reaches HIT. Nothing in the last two seconds."""
+    cuts: list[int] = []
+    target = every_ms
+    while target < end_ms - 2000:
+        lo = max(target - SEARCH_MS, cuts[-1] + every_ms // 2 if cuts else 0)
+        hi = min(end_ms, target + SEARCH_MS)
+        window = onset[lo // frame_ms:hi // frame_ms]
+        best = max(range(len(window)), key=window.__getitem__) if window else -1
+        cuts.append(lo // frame_ms * frame_ms + best * frame_ms if best >= 0 and window[best] >= HIT else target)
+        target += every_ms
+    return cuts
+
+
+def schedule(frames: int, fps: int, head_ms: int, cuts: list[int], words: list[str]) -> list[tuple[int, str | None, float]]:
+    """(frame, the choice to show, project ms) for every frame of the video."""
+    tasks = []
+    for frame in range(frames):
+        ms = frame * 1000 / fps - head_ms
+        word = words[bisect.bisect_right(cuts, ms) % len(words)] if words else None
+        tasks.append((frame, word, ms))
+    return tasks
+
+
+class ScreenFrames:
+    """The rows of every frame from worker processes, handed out in order. Each worker draws every
+    n-th frame and waits while gout catches up, so the rows in memory stay few."""
+
+    def __init__(self, project, screen_name: str, tasks: list, cols: int, rows: int, length_ms: int, count: int):
+        self.count = count
+        self.procs, self.queues, self.errors = [], [], []
+        for j in range(count):
+            errors = tempfile.TemporaryFile()
+            proc = subprocess.Popen([*gout_command(), "_video"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                    stderr=errors, text=True, encoding="utf-8", **detached())
+            job = {"project": str(project.root), "screen": screen_name, "cols": cols, "rows": rows,
+                   "length_ms": length_ms, "tasks": tasks[j::count]}
+            proc.stdin.write(json.dumps(job) + "\n")
+            proc.stdin.close()
+            q: queue.Queue = queue.Queue(maxsize=4)
+            threading.Thread(target=self.listen, args=(proc, q), daemon=True).start()
+            self.procs.append(proc)
+            self.queues.append(q)
+            self.errors.append(errors)
+
+    @staticmethod
+    def listen(proc, q) -> None:
+        for line in proc.stdout:
+            q.put(json.loads(line))
+        q.put(None)
+
+    def rows(self, frame: int) -> list:
+        item = self.queues[frame % self.count].get()
+        if item is None or item[0] != frame:
+            self.stop()
+            err = self.errors[frame % self.count]
+            err.seek(0)
+            said = [line for line in err.read().decode(errors="replace").splitlines() if line.strip()]
+            die(f"drawing frame {frame} failed: " + (said[-1] if said else "the worker stopped"))
+        return item[1]
+
+    def stop(self) -> None:
+        for proc in self.procs:
+            stop_process(proc)
+
+
+def worker_main() -> int:
+    """gout _video: draw the frames of a job (see ScreenFrames) and print their rows."""
+    from .analysis import project_features
+    from .project import Project
+    from .screens import ScreenContext, screens
+    job = json.loads(sys.stdin.readline())
+    project = Project(Path(job["project"]))
+    screen = screens()[job["screen"]]
+    ctx = ScreenContext(project)
+    ctx.features = project_features(project)
+    ctx.offline, ctx.playing, ctx.length_ms = True, True, job["length_ms"]
+    showing = object()
+    for frame, word, ms in job["tasks"]:
+        if word != showing and word is not None:
+            screen.pick(ctx, word)
+        showing = word
+        ctx.position_ms = ms
+        rows = screen.frame(ctx, job["cols"], job["rows"])
+        sys.stdout.write(json.dumps([frame, [[text, classes] for text, classes in rows]]) + "\n")
+        sys.stdout.flush()
+    return 0

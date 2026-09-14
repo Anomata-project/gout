@@ -348,6 +348,7 @@ COMMAND_SECTIONS = [
         ("saveas", "sa", "NAME | PATH", "copy the whole project"),
         ("stems", "sm", "[DIR] [-A]", "one wav per track"),
         ("video", "vd", "IMAGE [-o FILE]", "master.mp4 for YouTube: the image and the song"),
+        ("video", "vd", "fractal 3 1 0 | all [-e 10s]", "the fractal with the song, a new one on a hit"),
         ("dump", "dp", "", "the state as json"),
         ("import", "im", "FILE.json [-s | -t]", "apply such a json: settings, tracks or both"),
         ("rebuild", "rb", "[-f]", "gout.db again from master/ and gout.json"),

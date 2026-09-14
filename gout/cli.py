@@ -111,6 +111,9 @@ def run(argv: list[str], project: Project | None = None) -> int:
     if head == "_engine":  # the process that plays and records at once (engine.py), not for people
         from .engine import child_main
         return child_main()
+    if head == "_video":  # a process drawing video frames of a screen (video.py), not for people
+        from .video import worker_main
+        return worker_main()
     head = aliases().get(head, head)
     if head in ("-h", "--help", "help"):
         print(help_text(), end="")

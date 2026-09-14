@@ -216,6 +216,24 @@ Other keys go to `key_pressed(ctx, key)`, which returns `True` when it used the 
 class in `gout/screens.py` documents each. `gout.screens.config_file("bars.json")` is the place
 for a settings file, next to `color.json`.
 
+### Screens in videos
+
+`gout video bars` draws a screen into an mp4 with the song, frame by frame, in several processes
+at once (each with its own copy of the screen). Two things make that work well:
+
+- `ctx.offline` is `True` while a video is drawn. There is no time budget then, and the same
+  moment of the song should give the same picture, whichever process draws it and in whatever
+  order: keep state that changes how a frame looks (colours handed out as things are found, a
+  resolution that adapts to speed) the same from frame to frame. Read it with
+  `getattr(ctx, "offline", False)` to keep working in an older gout.
+- A screen that can show different things lists them in `choices()` and switches with
+  `pick(ctx, word)`, without remembering the choice as the user's own. `gout video bars a b c`
+  and `gout video bars all` then change between them every 10 s (`-e` sets it), on the nearest
+  drum hit. Without them, the words go to `command(ctx, words)`.
+
+The characters come out in a monospace font, coloured as the theme colours the terminal: ASCII
+and `█▓▒░━│·▶■●`; anything else shows as `?`.
+
 ## Rules gout keeps
 
 - Names, short names and shortcuts are lowercase letters, digits, `-` and `_`, up to 16
