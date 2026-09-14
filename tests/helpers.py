@@ -207,6 +207,7 @@ class GoutTest(unittest.TestCase):
         self.addons.mkdir()
         self.fx = Fixtures.dir()
         self.cwd = self.tmp
+        self.recorder = "null"
 
     def tearDown(self) -> None:
         if self.saved_xdg is None:
@@ -222,6 +223,7 @@ class GoutTest(unittest.TestCase):
         env = dict(os.environ)
         env["GOUT_ADDONS"] = str(self.addons)  # never the user's own addons
         env["GOUT_PLAYER"] = "null"  # play in real time, in silence
+        env["GOUT_RECORDER"] = self.recorder  # never the microphone: silence, or a file played as the input
         env["XDG_CONFIG_HOME"] = str(self.tmp / "config")
         env.pop("COLUMNS", None)
         env.pop("GNOME_TERMINAL_SERVICE", None)  # a test must not make the user's terminal fullscreen

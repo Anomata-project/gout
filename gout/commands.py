@@ -38,6 +38,7 @@ from .project import legacy_chain, Project
 from .mixer import autorender, live_source, mix, sounding_end, track_chain, track_head
 from .render import effect_picture, LABEL_W, render_cheat, render_timeline
 from .player import Player
+from .recorder import choose_backend, current_input, find_input, level_db, list_inputs, load_settings, meter, Recorder, save_settings
 
 
 class Args:
@@ -92,7 +93,8 @@ def cmd_new(root_hint: Path | None, args: Args) -> None:
     print(f"new   {project.root}  ({project.rate} Hz, tracks go in {TRACK_DIR}/)")
 
 
-def ingest(project: Project, src: Path, name: str | None, at_ms: int, verbose: bool) -> tuple[dict, bool]:
+def ingest(project: Project, src: Path, name: str | None, at_ms: int, verbose: bool,
+           verb: str = "add") -> tuple[dict, bool]:
     """Register src as a track; copies it into master/ unless it already lives there.
 
     Returns (track, created) where created says whether a new file was written.
@@ -134,7 +136,7 @@ def ingest(project: Project, src: Path, name: str | None, at_ms: int, verbose: b
     )
     project.envelope(dst.name, dst)  # so the timeline can draw it without a pause later
     how = "kept in" if dst == src else ("copied to" if ext == suffix else "converted to")
-    print(f"add   {track['n']:>2}  {track['name']:<16} {kind}  {info['channels']}ch  {info['sample_rate']} Hz"
+    print(f"{verb:<5} {track['n']:>2}  {track['name']:<16} {kind}  {info['channels']}ch  {info['sample_rate']} Hz"
           f"  {fmt_ms(track['length_ms'])}  at {fmt_ms(at_ms)}  ({how} {TRACK_DIR}/{dst.name})")
     return track, dst != src
 
@@ -822,6 +824,104 @@ def cmd_play(project: Project, args: Args) -> None:
               f"  (gout play {fmt_ms(max(0, where) * 1000)} carries on from there)")
         return
     print(("\n" if live else "") + "play  finished")
+
+
+RECORD_USAGE = "gout record [FROM] [-n NAME] [-i INPUT] [-c N] [-s] [-t LENGTH]   (ctrl-c stops)"
+
+
+def cmd_record(project: Project, args: Args) -> None:
+    """Record from an input into a new track at FROM, until ctrl-c or LENGTH."""
+    name = args.value("--name", "-n")
+    spec = args.value("--in", "-i")
+    channel = args.value("--channel", "-c", default="1")
+    length = args.value("--time", "-t")
+    stereo = args.flag("--stereo", "-s")
+    pos = args.positionals(RECORD_USAGE, 0, 1)
+    if not channel.isdigit() or int(channel) < 1:
+        die(f"-c takes the input channel to record, 1 or more, not {channel!r}")
+    at_ms = parse_ms(pos[0]) if pos else 0
+    max_frames = None
+    if length:
+        max_frames = round(parse_ms(length) * project.rate / 1000)
+        if max_frames <= 0:
+            die(f"-t {length}: record for longer than that")
+    backend = choose_backend()
+    device, note = current_input(list_inputs(backend), spec)
+    if note:
+        print(f"rec   {note}")
+    track_name = project.unique_name(name or "rec")
+    path = project.tracks_dir / f"{track_name}.wav"
+    first, count = int(channel), 2 if stereo else 1
+    recorder = Recorder(path, project.rate, device, backend, first, count, max_frames)
+    recorder.start()
+    which = f"channels {first}+{first + 1}" if stereo else f"channel {first}"
+    print(f"rec   {device.label}, {which} -> {TRACK_DIR}/{path.name} at {fmt_ms(at_ms)}"
+          f"  ({backend}; {'stops after ' + fmt_ms(parse_ms(length)) if length else 'ctrl-c stops'})", flush=True)
+    live = sys.stdout.isatty()
+    try:
+        while recorder.running():
+            if live:
+                print(f"\r      ● {fmt_ms(recorder.seconds() * 1000)}  {meter(recorder.take_peak())}  ",
+                      end="", flush=True)
+            time.sleep(0.1)
+    except KeyboardInterrupt:
+        pass
+    ended = recorder.ended_by_itself()
+    recorder.stop()
+    if live:
+        print()
+    keep_take(project, recorder, track_name, at_ms, ended, args)
+
+
+def keep_take(project: Project, recorder: Recorder, track_name: str, at_ms: int, ended: bool, args: Args) -> None:
+    """Register a finished take as a track (undo deletes its file), or remove an empty one."""
+    complaint = recorder.complaint()
+    if recorder.frames == 0:
+        recorder.path.unlink(missing_ok=True)
+        die("nothing was recorded" + (f": {recorder.backend} said {complaint}" if complaint else ""))
+    if ended and not recorder.backend.startswith("file:"):
+        print("rec   the input stopped by itself" + (f": {complaint}" if complaint else ""))
+    project.record(f"record {track_name}")
+    ingest(project, recorder.path, track_name, at_ms, args.verbose, verb="rec")
+    project.created([recorder.path.name])
+    db = level_db(recorder.top)
+    level = "silent" if db == float("-inf") else f"{db:.1f} dBFS"
+    advice = "  it clipped: turn the input down and record again" if recorder.clipped else (
+        "  very quiet: is it the right input? (gout inputs)" + (
+            " On macOS the terminal needs the microphone: System Settings, Privacy & Security, Microphone"
+            if recorder.backend == "avfoundation" else "") if recorder.top < 0.001 else "")
+    print(f"      peak {level}{advice}")
+    autorender(project, args)
+
+
+def cmd_inputs(root_hint: Path | None, args: Args) -> None:
+    """The inputs gout can record from here, and which one it uses; N picks one for this computer."""
+    (spec,) = args.positionals("gout inputs [N | NAME | default]   (N or NAME: record from that input on this"
+                               " computer; default: the system's own again)", 0, 1) or [None]
+    backend = choose_backend()
+    inputs = list_inputs(backend)
+    if spec == "default":
+        save_settings(input=None)
+        print("inputs gout record uses the system's default input again")
+    elif spec is not None:
+        chosen = find_input(inputs, spec)
+        save_settings(input=chosen.name)
+        print(f"inputs gout record uses {chosen.label} on this computer")
+    if not inputs:
+        print(f"inputs {backend}: no inputs found")
+        return
+    current, note = current_input(inputs)
+    picked = "picked for this computer" if load_settings().get("input") == current.name else "the system default"
+    print(f"inputs {backend}   * gout record uses this ({picked})")
+    if note:
+        print(f"       {note}")
+    for k, item in enumerate(inputs, 1):
+        mark = "*" if item.name == current.name else " "
+        channels = f"{item.channels} ch" if item.channels else ""
+        print(f"  {mark} {k:>2}  {item.label:<44} {channels:>5}{'  default' if item.default else ''}")
+        if args.verbose:
+            print(f"          {item.name}")
+    print("       gout inputs N picks one for this computer; gout record -i N uses one once; -v shows names")
 
 
 def cmd_stems(project: Project, args: Args) -> None:

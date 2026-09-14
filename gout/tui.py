@@ -1118,7 +1118,7 @@ class Tui:
                 self.log.append("saveas NAME  (a bare name goes next to this project; a path goes where it says)")
             else:
                 self.save_as(argv[1])
-        elif head in ("ui", "tui", "rebuild", "new"):
+        elif head in ("ui", "tui", "rebuild", "new", "record"):
             self.log.append(f"{head}: run that from the shell")
         else:
             self.run_command(argv, head, is_effect)

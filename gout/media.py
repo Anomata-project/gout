@@ -364,6 +364,17 @@ def mp3_frame_cut(src: Path, dst: Path, a_ms: int, b_ms: int, verbose: bool) -> 
     return round(head * 1000 / sr), round(k0 * frame_ms), round(k1 * frame_ms)
 
 
+FLOAT_WAV_HEADER = 44  # bytes; the RIFF size sits at 4 and the data size at 40
+
+
+def float_wav_header(channels: int, rate: int, data_bytes: int) -> bytes:
+    return (b"RIFF" + (36 + data_bytes).to_bytes(4, "little") + b"WAVE"
+            + b"fmt " + (16).to_bytes(4, "little") + (3).to_bytes(2, "little") + channels.to_bytes(2, "little")
+            + rate.to_bytes(4, "little") + (rate * channels * 4).to_bytes(4, "little")
+            + (channels * 4).to_bytes(2, "little") + (32).to_bytes(2, "little")
+            + b"data" + data_bytes.to_bytes(4, "little"))
+
+
 def write_float_wav(path: Path, chans: list[array], rate: int) -> None:
     frames = array("f", bytes(4 * len(chans[0]) * len(chans)))
     for c, data in enumerate(chans):
@@ -371,14 +382,8 @@ def write_float_wav(path: Path, chans: list[array], rate: int) -> None:
     if sys.byteorder == "big":
         frames.byteswap()
     body = frames.tobytes()
-    ch = len(chans)
-    header = (b"RIFF" + (36 + len(body)).to_bytes(4, "little") + b"WAVE"
-              + b"fmt " + (16).to_bytes(4, "little") + (3).to_bytes(2, "little") + ch.to_bytes(2, "little")
-              + rate.to_bytes(4, "little") + (rate * ch * 4).to_bytes(4, "little")
-              + (ch * 4).to_bytes(2, "little") + (32).to_bytes(2, "little")
-              + b"data" + len(body).to_bytes(4, "little"))
     tmp = path.with_name(path.name + ".part")
-    tmp.write_bytes(header + body)
+    tmp.write_bytes(float_wav_header(len(chans), rate, len(body)) + body)
     tmp.replace(path)
 
 

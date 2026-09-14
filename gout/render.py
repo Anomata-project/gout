@@ -328,6 +328,8 @@ COMMAND_SECTIONS = [
         ("pan", "p", "TRACK L30 | R30 | C", "every track starts at C"),
         ("mix", "x", "[-3] [-v]", "render master.wav; -3 also master.mp3"),
         ("play", "pl", "[FROM] [-r]", "hear it; live when master.wav is out of date"),
+        ("record", "rec", "[FROM] [-t 30s] [-n NAME]", "a new track from the input; ctrl-c stops"),
+        ("inputs", "in", "[N | default]", "what can be recorded; N picks one"),
     ]),
     ("EFFECTS", "in order per track; TRACK can be master", [
         ("fx", "f", "TRACK", "the chain, numbered"),
@@ -382,6 +384,8 @@ KEY_SECTIONS = [
         ("-H --hard  -c --clear", "trim: rewrite the file, or soft trim off"),
         ("-r --reencode", "cut exactly; play -r renders first"),
         ("-D --delete", "rm: delete the file too"),
+        ("-c --channel  -s --stereo", "record: input channel N; stereo from N and N+1"),
+        ("-i --in  -t --time", "record: another input once; how long"),
         ("-3 --mp3", "mix: also master.mp3"),
         ("-R --rate", "new: the sample rate"),
         ("-w --width", "view and cheat: columns"),

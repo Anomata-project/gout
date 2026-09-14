@@ -26,6 +26,8 @@ from .commands import (
     cmd_new,
     cmd_pan,
     cmd_play,
+    cmd_record,
+    cmd_inputs,
     cmd_rebuild,
     cmd_rm,
     cmd_saveas,
@@ -50,12 +52,12 @@ BASE_PROJECT_COMMANDS = {
     "mute": cmd_mute, "solo": cmd_solo, "gain": cmd_gain, "pan": cmd_pan, "fx": cmd_fx,
     "set": cmd_set, "stats": cmd_stats, "mix": cmd_mix, "undo": cmd_undo, "dump": cmd_dump,
     "saveas": cmd_saveas, "stems": cmd_stems, "import": cmd_import,
-    "view": cmd_view, "ui": cmd_ui, "play": cmd_play,
+    "view": cmd_view, "ui": cmd_ui, "play": cmd_play, "record": cmd_record,
 }
 
 
 FREE_COMMANDS = {"new": cmd_new, "rebuild": cmd_rebuild, "cheat": cmd_cheat, "addons": cmd_addons,
-                 "colors": cmd_colors}
+                 "colors": cmd_colors, "inputs": cmd_inputs}
 
 
 def command_table() -> dict[str, tuple[str, ...]]:
