@@ -12,7 +12,9 @@ picks channels itself: asked for fewer, PipeWire and PulseAudio mix the channels
 
 GOUT_RECORDER picks a capture program by name. GOUT_RECORDER=null records silence in real time;
 GOUT_RECORDER=file:/some/path.wav plays that file in real time as if it were the input, which is
-what the tests use, and the take ends where the file does.
+what the tests use, and the take ends where the file does. GOUT_RECORDER=loopback:SAMPLES[:BLOCKS]
+is for recording along with the project (engine.py): the input hears the output SAMPLES later, and
+the output starts BLOCKS blocks late, as real devices sometimes do.
 """
 from __future__ import annotations
 
@@ -65,12 +67,17 @@ def installed(backend: str) -> bool:
     return shutil.which("ffmpeg" if backend in FFMPEG_BACKENDS else backend) is not None
 
 
+def is_fake(backend: str) -> bool:
+    """A test input that needs no sound hardware (null, file:, loopback:)."""
+    return backend == "null" or backend.startswith(("file:", "loopback:"))
+
+
 def choose_backend() -> str:
     wanted = os.environ.get("GOUT_RECORDER", "").strip()
     if wanted:
-        if wanted == "null" or wanted.startswith("file:") or (wanted in backends() and installed(wanted)):
+        if is_fake(wanted) or (wanted in backends() and installed(wanted)):
             return wanted
-        die(f"GOUT_RECORDER={wanted}: use one of {', '.join(backends())}, null or file:PATH,"
+        die(f"GOUT_RECORDER={wanted}: use one of {', '.join(backends())}, null, file:PATH or loopback:SAMPLES,"
             " and it must be installed")
     for name in backends():
         if installed(name):
@@ -90,6 +97,8 @@ def output_of(cmd: list[str], stderr: bool = False) -> str:
 def list_inputs(backend: str) -> list[Input]:
     if backend == "null":
         return [Input("null", "silence (GOUT_RECORDER=null)", 2, default=True)]
+    if backend.startswith("loopback:"):
+        return [Input("loopback", "the output, heard back (GOUT_RECORDER=loopback)", 2, default=True)]
     if backend.startswith("file:"):
         path = Path(backend[5:])
         if not path.is_file():
@@ -267,15 +276,40 @@ def current_input(inputs: list[Input], spec: str | None = None) -> tuple[Input, 
 
 # ---- one take
 
-def capture_plan(backend: str, device: Input, rate: int, first: int, count: int) -> tuple[list[str], int, list[int]]:
-    """The capture command, how many channels it delivers, and which of them (0-based) to keep."""
+def default_output(backend: str) -> str:
+    """The name of the output the system plays to, which calibrations are kept for on Linux."""
+    if backend == "pw-record":
+        try:
+            objects = json.loads(output_of(["pw-dump"]) or "[]")
+        except json.JSONDecodeError:
+            objects = []
+        for obj in objects:
+            for entry in (obj.get("metadata") or []) if obj.get("type") == "PipeWire:Interface:Metadata" else []:
+                value = entry.get("value")
+                if entry.get("key") == "default.audio.sink" and isinstance(value, dict) and value.get("name"):
+                    return value["name"]
+    if backend in ("pw-record", "parecord") and shutil.which("pactl"):
+        found = re.search(r"^Default Sink:\s*(\S+)", output_of(["pactl", "info"]), re.M)
+        if found:
+            return found.group(1)
+    return "default"
+
+
+def check_channels(device: Input, first: int, count: int) -> list[int]:
+    """The channels to keep, 0-based, after checking the input has them."""
     last = first + count - 1
     if first < 1:
         die("channels count from 1")
     if device.channels and last > device.channels:
         die(f"{device.label} has {device.channels} channel{'' if device.channels == 1 else 's'}:"
             f" there is no channel {last}")
-    wanted = list(range(first - 1, last))
+    return list(range(first - 1, last))
+
+
+def capture_plan(backend: str, device: Input, rate: int, first: int, count: int) -> tuple[list[str], int, list[int]]:
+    """The capture command, how many channels it delivers, and which of them (0-based) to keep."""
+    wanted = check_channels(device, first, count)
+    last = first + count - 1
     if backend in ("pw-record", "parecord", "arecord"):
         stream = device.channels or max(2, last)
         mapped = bool(device.positions) and device.channels == stream
@@ -295,7 +329,7 @@ def capture_plan(backend: str, device: Input, rate: int, first: int, count: int)
     layout = "mono" if count == 1 else "stereo"
     pick = f"pan={layout}|" + "|".join(f"c{k}=c{c}" for k, c in enumerate(wanted))
     out = ["-af", pick, "-ar", str(rate), "-f", "f32le", "-"]
-    if backend == "null":
+    if backend == "null" or backend.startswith("loopback:"):  # nothing plays, so a loopback hears nothing
         return [*ffmpeg, "-re", "-f", "lavfi", "-i", f"anullsrc=r={rate}:cl={layout}", "-f", "f32le", "-"], count, list(range(count))
     if backend.startswith("file:"):
         return [*ffmpeg, "-re", "-i", device.name, *out], count, list(range(count))
@@ -318,84 +352,56 @@ def meter(peak: float, width: int = 20, floor_db: float = -60.0) -> str:
     return "█" * cells + "·" * (width - cells) + f" {figure} dB" + ("  CLIP" if peak >= CLIP else "")
 
 
-class Recorder:
-    """Records one take into path, a 32-bit float wav, until stop(), max_frames, or the input ends."""
+class TakeWriter:
+    """Appends frames to a 32-bit float wav and keeps its header up to date as it goes, so the file
+    plays whatever happens to gout. Picks channels out of interleaved raw frames and keeps levels."""
 
-    def __init__(self, path: Path, rate: int, device: Input, backend: str, first: int = 1, count: int = 1,
-                 max_frames: int | None = None):
-        self.path, self.rate, self.device, self.backend = path, rate, device, backend
-        self.count, self.max_frames = count, max_frames
-        self.args, self.stream, self.picks = capture_plan(backend, device, rate, first, count)
+    def __init__(self, path: Path, rate: int, stream_channels: int, picks: list[int], max_frames: int | None = None):
+        self.path, self.rate, self.stream, self.picks = path, rate, stream_channels, picks
+        self.count, self.max_frames = len(picks), max_frames
         self.frames = 0
         self.peak = 0.0  # since take_peak() last asked
         self.top = 0.0  # the whole take
         self.clipped = False
         self.full = False  # max_frames reached
-        self.error = ""
-        self.proc: subprocess.Popen | None = None
-        self.thread: threading.Thread | None = None
-        self.file = None
-        self.errlog = None
-        self.stopping = False
+        self.rest = b""
+        self.file = open(path, "wb")
+        self.file.write(float_wav_header(self.count, rate, 0))
+        self.header_at = time.monotonic()
 
-    def start(self) -> "Recorder":
-        self.file = open(self.path, "wb")
-        self.file.write(float_wav_header(self.count, self.rate, 0))
-        self.errlog = tempfile.TemporaryFile()
-        try:
-            self.proc = subprocess.Popen(self.args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                         stderr=self.errlog, **detached())
-        except OSError as exc:
-            self.file.close()
-            self.path.unlink(missing_ok=True)
-            die(f"{self.args[0]} did not start: {exc}")
-        self.thread = threading.Thread(target=self.pump, name="gout-record", daemon=True)
-        self.thread.start()
-        return self
-
-    def pump(self) -> None:
+    def write(self, data: bytes) -> bool:
+        """Take raw little-endian float frames (any amount); False once max_frames is reached."""
+        if self.full:
+            return False
         width = 4 * self.stream
-        rest = b""
-        written_header = time.monotonic()
-        try:
-            while True:
-                data = self.proc.stdout.read1(1 << 16)
-                if not data:
-                    break
-                data = rest + data
-                usable = len(data) // width * width
-                rest = data[usable:]
-                block = array("f")
-                block.frombytes(data[:usable])
-                if sys.byteorder == "big":
-                    block.byteswap()
-                frames = usable // width
-                if self.max_frames is not None and self.frames + frames >= self.max_frames:
-                    frames = self.max_frames - self.frames
-                    del block[frames * self.stream:]
-                    self.full = True
-                out = pick_channels(block, self.stream, self.picks)
-                if out:
-                    level = max(max(out), -min(out))
-                    self.peak = max(self.peak, level)
-                    self.top = max(self.top, level)
-                    self.clipped = self.clipped or level >= CLIP
-                if sys.byteorder == "big":
-                    out.byteswap()
-                self.file.write(out.tobytes())
-                self.frames += frames
-                if self.full:
-                    break
-                if time.monotonic() - written_header >= HEADER_EVERY:
-                    self.write_header()
-                    written_header = time.monotonic()
-        except (OSError, ValueError) as exc:  # a full disk, or the file closed under it
-            self.error = str(exc)
-        finally:
+        data = self.rest + bytes(data)
+        usable = len(data) // width * width
+        self.rest = data[usable:]
+        block = array("f")
+        block.frombytes(data[:usable])
+        if sys.byteorder == "big":
+            block.byteswap()
+        frames = usable // width
+        if self.max_frames is not None and self.frames + frames >= self.max_frames:
+            frames = self.max_frames - self.frames
+            del block[frames * self.stream:]
+            self.full = True
+        out = pick_channels(block, self.stream, self.picks)
+        if out:
+            level = max(max(out), -min(out))
+            self.peak = max(self.peak, level)
+            self.top = max(self.top, level)
+            self.clipped = self.clipped or level >= CLIP
+        if sys.byteorder == "big":
+            out.byteswap()
+        self.file.write(out.tobytes())
+        self.frames += frames
+        if time.monotonic() - self.header_at >= HEADER_EVERY:
             self.write_header()
-            stop_process(self.proc)
+        return not self.full
 
     def write_header(self) -> None:
+        self.header_at = time.monotonic()
         data = self.frames * self.count * 4
         try:
             self.file.flush()
@@ -408,6 +414,66 @@ class Recorder:
         except (OSError, ValueError):
             pass
 
+    def take_peak(self) -> float:
+        peak, self.peak = self.peak, 0.0
+        return peak
+
+    def close(self) -> None:
+        if not self.file.closed:
+            self.write_header()
+            self.file.close()
+
+
+class Recorder:
+    """Records one take into path through a capture program, without playing anything, until
+    stop(), max_frames, or the input ends."""
+
+    def __init__(self, path: Path, rate: int, device: Input, backend: str, first: int = 1, count: int = 1,
+                 max_frames: int | None = None):
+        self.path, self.rate, self.device, self.backend = path, rate, device, backend
+        self.max_frames = max_frames
+        self.args, self.stream, self.picks = capture_plan(backend, device, rate, first, count)
+        self.writer: TakeWriter | None = None
+        self.error = ""
+        self.proc: subprocess.Popen | None = None
+        self.thread: threading.Thread | None = None
+        self.errlog = None
+        self.stopping = False
+
+    def start(self) -> "Recorder":
+        self.writer = TakeWriter(self.path, self.rate, self.stream, self.picks, self.max_frames)
+        self.errlog = tempfile.TemporaryFile()
+        try:
+            self.proc = subprocess.Popen(self.args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                         stderr=self.errlog, **detached())
+        except OSError as exc:
+            self.writer.close()
+            self.path.unlink(missing_ok=True)
+            die(f"{self.args[0]} did not start: {exc}")
+        self.thread = threading.Thread(target=self.pump, name="gout-record", daemon=True)
+        self.thread.start()
+        return self
+
+    def pump(self) -> None:
+        try:
+            while True:
+                data = self.proc.stdout.read1(1 << 16)
+                if not data or not self.writer.write(data):
+                    break
+        except (OSError, ValueError) as exc:  # a full disk, or the file closed under it
+            self.error = str(exc)
+        finally:
+            self.writer.write_header()
+            stop_process(self.proc)
+
+    # what the command and the ui read while recording and after
+    frames = property(lambda self: self.writer.frames if self.writer else 0)
+    top = property(lambda self: self.writer.top if self.writer else 0.0)
+    clipped = property(lambda self: bool(self.writer and self.writer.clipped))
+    full = property(lambda self: bool(self.writer and self.writer.full))
+    correction_ms = 0
+    note = ""
+
     def running(self) -> bool:
         return self.thread is not None and self.thread.is_alive()
 
@@ -415,8 +481,7 @@ class Recorder:
         return self.frames / self.rate
 
     def take_peak(self) -> float:
-        peak, self.peak = self.peak, 0.0
-        return peak
+        return self.writer.take_peak() if self.writer else 0.0
 
     def stop(self) -> int:
         """Stop the capture, finish the file, and return the frames recorded."""
@@ -429,9 +494,8 @@ class Recorder:
                 self.proc.kill()
         if self.thread is not None:
             self.thread.join(timeout=5)
-        if self.file is not None and not self.file.closed:
-            self.write_header()
-            self.file.close()
+        if self.writer is not None:
+            self.writer.close()
         return self.frames
 
     def ended_by_itself(self) -> bool:

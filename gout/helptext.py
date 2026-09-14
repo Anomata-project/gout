@@ -26,12 +26,15 @@ PROJECT
                                   empty line plays and stops, left/right there move the playhead 5 s,
                                   play FROM / stop work at the prompt. Player: ffplay, else pw-cat,
                                   paplay or aplay; GOUT_PLAYER picks one (null plays in silence)
-  gout record rec [FROM] [-t LENGTH] [-n NAME] [-i INPUT] [-c N] [-s]
-                                  record from an input into a new track at FROM (default 0:00): a
-                                  32-bit float wav in {TRACK_DIR}/ called rec, or NAME. ctrl-c stops, -t stops
-                                  after LENGTH. Mono from channel 1 of the input, -c N from channel N,
-                                  -s stereo from N and N+1. undo deletes the take; a take a crash cut
-                                  short is still a file, and gout scan registers it. In the ui: not yet
+  gout record rec [FROM] [-t LENGTH] [-n NAME] [-i INPUT] [-c N] [-s] [-d]
+                                  record from an input into a new track at FROM (default 0:00) while
+                                  the project plays from there: a 32-bit float wav in {TRACK_DIR}/ called
+                                  rec, or NAME. ctrl-c stops, -t stops after LENGTH. Mono from channel 1
+                                  of the input, -c N from channel N, -s stereo from N and N+1. The take
+                                  lines up with what played: the latency is measured every take and
+                                  soft-trimmed off. -d records without playing; so does gout without
+                                  PortAudio (gout version says). undo deletes the take; a take a crash
+                                  cut short is still a file, and gout scan registers it. In the ui: not yet
   gout inputs in [N | NAME | default]  what gout can record from here, and on Linux what each output
                                   plays; N or NAME picks one for this computer, default goes back to
                                   the system's. Capture: pw-record, parecord or arecord (Linux), ffmpeg

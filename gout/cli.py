@@ -106,6 +106,9 @@ def run(argv: list[str], project: Project | None = None) -> int:
         return 0
 
     head, rest = argv[0], argv[1:]
+    if head == "_engine":  # the process that plays and records at once (engine.py), not for people
+        from .engine import child_main
+        return child_main()
     head = aliases().get(head, head)
     if head in ("-h", "--help", "help"):
         print(help_text(), end="")
@@ -117,6 +120,11 @@ def run(argv: list[str], project: Project | None = None) -> int:
         except ImportError as exc:
             print(f"gout: the terminal ui cannot start here: {exc}"
                   + ("  (pip install windows-curses)" if os.name == "nt" else ""))
+        from .engine import install_hint
+        from .portaudio import available, version
+        if not available():
+            print(f"gout: PortAudio: not found, so gout record does not play the project while recording"
+                  f" ({install_hint()})")
         return 0
     if head in ("quit", "clear", "split", "sheet", "stop") and project is None:
         die(f"{head} only means something inside the ui (gout, in a project)")

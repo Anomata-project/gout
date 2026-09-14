@@ -232,7 +232,7 @@ class ExampleAddonTest(GoutTest):
         gout_command = gout_attr("core", "gout_command")
         result = subprocess.run([*gout_command(), "version"], capture_output=True, text=True, env=self.env(),
                                 cwd=self.tmp)
-        self.assertEqual(result.stdout.strip(), f"gout {gout_attr('core', '__version__')}")
+        self.assertEqual(result.stdout.splitlines()[0], f"gout {gout_attr('core', '__version__')}")  # then warnings
         arrows = gout_attr("tui", "ARROW_NAMES")
         self.assertEqual((arrows[b"kLFT5"], arrows[b"kRIT3"], arrows[b"CTL_LEFT"], arrows[b"ALT_RIGHT"]),
                          ("left", "right", "left", "right"))

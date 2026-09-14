@@ -38,7 +38,9 @@ from .project import legacy_chain, Project
 from .mixer import autorender, live_source, mix, sounding_end, track_chain, track_head
 from .render import effect_picture, LABEL_W, render_cheat, render_timeline
 from .player import Player
-from .recorder import choose_backend, current_input, find_input, level_db, list_inputs, load_settings, meter, Recorder, save_settings
+from .recorder import (choose_backend, current_input, default_output, find_input, level_db, list_inputs,
+                       load_settings, meter, Recorder, save_settings)
+from .engine import duplex_available, Engine, install_hint
 
 
 class Args:
@@ -826,16 +828,28 @@ def cmd_play(project: Project, args: Args) -> None:
     print(("\n" if live else "") + "play  finished")
 
 
-RECORD_USAGE = "gout record [FROM] [-n NAME] [-i INPUT] [-c N] [-s] [-t LENGTH]   (ctrl-c stops)"
+RECORD_USAGE = "gout record [FROM] [-t LENGTH] [-n NAME] [-i INPUT] [-c N] [-s] [-d]   (ctrl-c stops)"
+
+
+def play_along(project: Project, from_ms: int) -> list[str] | None:
+    """ffmpeg arguments for what plays from from_ms (master.wav when current, else live), or None
+    when nothing is audible from there."""
+    try:
+        return player_for(project, from_ms).source_args()
+    except GoutError as exc:
+        print(f"rec   {exc}: recording without playing")
+        return None
 
 
 def cmd_record(project: Project, args: Args) -> None:
-    """Record from an input into a new track at FROM, until ctrl-c or LENGTH."""
+    """Record from an input into a new track at FROM while the project plays from FROM, until
+    ctrl-c or LENGTH. -d, or no PortAudio, records without playing."""
     name = args.value("--name", "-n")
     spec = args.value("--in", "-i")
     channel = args.value("--channel", "-c", default="1")
     length = args.value("--time", "-t")
     stereo = args.flag("--stereo", "-s")
+    dry = args.flag("--dry", "-d")
     pos = args.positionals(RECORD_USAGE, 0, 1)
     if not channel.isdigit() or int(channel) < 1:
         die(f"-c takes the input channel to record, 1 or more, not {channel!r}")
@@ -849,14 +863,24 @@ def cmd_record(project: Project, args: Args) -> None:
     device, note = current_input(list_inputs(backend), spec)
     if note:
         print(f"rec   {note}")
+    first, count = int(channel), 2 if stereo else 1
+    play = None
+    if not dry:
+        if duplex_available(backend):
+            play = play_along(project, at_ms)
+        else:
+            print(f"rec   the project does not play while recording without PortAudio ({install_hint()})")
     track_name = project.unique_name(name or "rec")
     path = project.tracks_dir / f"{track_name}.wav"
-    first, count = int(channel), 2 if stereo else 1
-    recorder = Recorder(path, project.rate, device, backend, first, count, max_frames)
-    recorder.start()
+    if play is None:
+        recorder = Recorder(path, project.rate, device, backend, first, count, max_frames).start()
+    else:
+        recorder = Engine(path, project.rate, device, backend, first, count, max_frames, play,
+                          default_output(backend)).start()
     which = f"channels {first}+{first + 1}" if stereo else f"channel {first}"
-    print(f"rec   {device.label}, {which} -> {TRACK_DIR}/{path.name} at {fmt_ms(at_ms)}"
-          f"  ({backend}; {'stops after ' + fmt_ms(parse_ms(length)) if length else 'ctrl-c stops'})", flush=True)
+    how = "playing from there" if play is not None else "not playing"
+    print(f"rec   {device.label}, {which} -> {TRACK_DIR}/{path.name} at {fmt_ms(at_ms)}, {how}"
+          f"  ({'stops after ' + fmt_ms(parse_ms(length)) if length else 'ctrl-c stops'})", flush=True)
     live = sys.stdout.isatty()
     try:
         while recorder.running():
@@ -873,8 +897,10 @@ def cmd_record(project: Project, args: Args) -> None:
     keep_take(project, recorder, track_name, at_ms, ended, args)
 
 
-def keep_take(project: Project, recorder: Recorder, track_name: str, at_ms: int, ended: bool, args: Args) -> None:
-    """Register a finished take as a track (undo deletes its file), or remove an empty one."""
+def keep_take(project: Project, recorder, track_name: str, at_ms: int, ended: bool, args: Args) -> None:
+    """Register a finished take as a track (undo deletes its file), or remove an empty one. A take
+    recorded along with the project starts its latency before FROM, soft-trimmed off, so what
+    was played at FROM lines up with FROM and trim -c keeps it lined up."""
     complaint = recorder.complaint()
     if recorder.frames == 0:
         recorder.path.unlink(missing_ok=True)
@@ -882,8 +908,13 @@ def keep_take(project: Project, recorder: Recorder, track_name: str, at_ms: int,
     if ended and not recorder.backend.startswith("file:"):
         print("rec   the input stopped by itself" + (f": {complaint}" if complaint else ""))
     project.record(f"record {track_name}")
-    ingest(project, recorder.path, track_name, at_ms, args.verbose, verb="rec")
+    track, _ = ingest(project, recorder.path, track_name, at_ms, args.verbose, verb="rec")
     project.created([recorder.path.name])
+    shift = recorder.correction_ms
+    if shift:
+        project.update(track["n"], offset_ms=at_ms - shift, in_ms=max(0, shift))
+    for line in recorder.note.splitlines():
+        print(f"      {line}")
     db = level_db(recorder.top)
     level = "silent" if db == float("-inf") else f"{db:.1f} dBFS"
     advice = "  it clipped: turn the input down and record again" if recorder.clipped else (
@@ -912,7 +943,10 @@ def cmd_inputs(root_hint: Path | None, args: Args) -> None:
         return
     current, note = current_input(inputs)
     picked = "picked for this computer" if load_settings().get("input") == current.name else "the system default"
-    print(f"inputs {backend}   * gout record uses this ({picked})")
+    from .portaudio import available, version
+    along = (f"PortAudio {version().removeprefix('PortAudio ').split(',')[0]} plays the project while recording"
+             if available() else f"no PortAudio, so the project does not play while recording ({install_hint()})")
+    print(f"inputs {backend}   * gout record uses this ({picked}); {along}")
     if note:
         print(f"       {note}")
     for k, item in enumerate(inputs, 1):

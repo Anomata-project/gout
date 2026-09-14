@@ -114,6 +114,78 @@ class RecordTest(GoutTest):
         self.assertIn("no input matches", self.gout("inputs", "7", ok=False).stderr)
 
 
+class RecordAlongTest(GoutTest):
+    def tracks(self) -> dict:
+        return {t["name"]: t for t in self.dump()["tracks"]}
+
+    def test_a_take_lines_up_with_what_played_however_late_the_output_starts(self):
+        root = self.project("song", "click.wav")  # the click at 2.000 s
+        self.recorder = "loopback:960:1"  # the input hears the output 20 ms later; the output starts a block late
+        out = self.gout("record", "-t", "3s").stdout  # nothing rendered: the project plays live
+        self.assertIn("playing from there", out)
+        self.assertIn("not calibrated", out)
+        self.gout("set", "head", "500ms")
+        self.gout("mix")
+        self.recorder = "loopback:960"  # the output on time now; master.wav plays from 1 s (0.5 s of head)
+        self.gout("record", "1s", "-t", "2.5s", "-n", "late")
+        rec, late = self.tracks()["rec"], self.tracks()["late"]
+        self.assertEqual((rec["offset_ms"], rec["in_ms"]), (-85, 85))  # two blocks of buffers taken off
+        self.assertEqual((late["offset_ms"], late["in_ms"]), (957, 43))  # one block
+        self.gout("stems")
+        for name in ("02-rec.wav", "03-late.wav"):  # the 20 ms outside the buffers is what calibration is for
+            self.assertAlmostEqual(peak_time(root / "stems" / name), 2.020, delta=0.001)
+        self.gout("undo")
+        self.gout("undo")
+        self.assertFalse((root / "master" / "late.wav").exists())
+        out = self.gout("record", "-d", "-t", "0.3s", "-n", "dry").stdout
+        self.assertIn("not playing", out)
+        self.assertEqual((self.tracks()["dry"]["offset_ms"], self.tracks()["dry"]["in_ms"]), (0, 0))
+
+    def test_without_portaudio_or_anything_to_play_it_records_without_playing(self):
+        self.project("song")
+        self.recorder = "loopback:960"
+        out = self.gout("record", "-t", "0.3s").stdout
+        self.assertIn("nothing to play", out)
+        self.assertIn("not playing", out)
+        self.gout("add", str(self.fx / "click.wav"))
+        self.more_env["GOUT_PORTAUDIO"] = "none"
+        out = self.gout("record", "-t", "0.3s").stdout
+        self.assertIn("without PortAudio", out)
+        self.assertIn("not playing", out)
+        self.assertEqual({(t["offset_ms"], t["in_ms"]) for n, t in self.tracks().items() if n != "click"}, {(0, 0)})
+        self.assertIn("PortAudio: not found", self.gout("version").stdout)
+        self.assertIn("no PortAudio", self.gout("inputs").stdout)
+
+    @unittest.skipIf(os.name == "nt", "signals")
+    def test_ctrl_c_and_a_crash_while_recording_along(self):
+        root = self.project("song", "tone.wav")
+        self.recorder = "loopback:0"
+
+        def start():
+            proc = subprocess.Popen([*gout_cmd(), "record"], cwd=root, env=self.env(),
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            self.assertIn("playing from there", proc.stdout.readline())
+            time.sleep(1.2)
+            return proc
+
+        proc = start()
+        proc.send_signal(signal.SIGINT)
+        out, err = proc.communicate(timeout=30)
+        self.assertEqual(proc.returncode, 0, err)
+        self.assertIn("in time with what played", out)
+        self.assertGreater(self.tracks()["rec"]["length_ms"], 900)
+
+        proc = start()
+        proc.kill()  # gout dies; the engine sees its stdin close and finishes the file
+        proc.communicate(timeout=30)
+        crashed = root / "master" / "rec-2.wav"
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and (not crashed.exists() or duration(crashed) < 0.4):
+            time.sleep(0.2)
+        self.assertGreater(duration(crashed), 0.4)
+        self.assertIn("rec-2", self.gout("scan").stdout)
+
+
 PW_DUMP = [
     {"type": "PipeWire:Interface:Metadata", "metadata": [
         {"subject": 0, "key": "default.audio.source", "type": "Spa:String:JSON", "value": {"name": "usb_in"}}]},
@@ -225,6 +297,29 @@ class InputListTest(GoutTest):
         chosen, note = current(inputs)
         self.assertEqual(chosen.name, "mic")
         self.assertIn("not here (gone)", note)
+
+    def test_picking_the_portaudio_device_for_an_input(self):
+        Device, pick = gout_attr("portaudio", "Device"), gout_attr("engine", "pick_input")
+
+        class Lib:
+            def Pa_GetDefaultInputDevice(self):
+                return 1
+
+        found = [Device(0, "Speakers (Realtek(R) Audio)", "MME", 0, 2, 48000, 0.1, 0.1),
+                 Device(1, "Microphone Array (Realtek(R) ", "MME", 2, 0, 44100, 0.1, 0.1),
+                 Device(2, "Microphone Array (Realtek(R) Audio)", "Windows DirectSound", 2, 0, 44100, 0.1, 0.1),
+                 Device(3, "Microphone Array (Realtek(R) Audio)", "Windows WASAPI", 2, 0, 48000, 0.1, 0.1),
+                 Device(4, "Line In (Scarlett 2i2 USB)", "MME", 2, 0, 48000, 0.1, 0.1)]
+        self.assertEqual(pick(Lib(), found, "Microphone Array (Realtek(R) Audio)").index, 3)  # WASAPI first
+        self.assertEqual(pick(Lib(), found[:2], "Microphone Array (Realtek(R) Audio)").index, 1)  # MME's 31 characters
+        self.assertEqual(pick(Lib(), found, "Line In (Scarlett 2i2 USB)").index, 4)
+        self.assertEqual(pick(Lib(), found, "default").index, 1)
+        self.assertEqual(pick(Lib(), found, "gone").index, 1)
+        os.environ["GOUT_PORTAUDIO"] = "none"
+        try:
+            self.assertEqual(gout_attr("portaudio", "library_candidates")(), [])
+        finally:
+            del os.environ["GOUT_PORTAUDIO"]
 
     def test_the_meter(self):
         meter = gout_attr("recorder", "meter")

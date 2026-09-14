@@ -328,7 +328,7 @@ COMMAND_SECTIONS = [
         ("pan", "p", "TRACK L30 | R30 | C", "every track starts at C"),
         ("mix", "x", "[-3] [-v]", "render master.wav; -3 also master.mp3"),
         ("play", "pl", "[FROM] [-r]", "hear it; live when master.wav is out of date"),
-        ("record", "rec", "[FROM] [-t 30s] [-n NAME]", "a new track from the input; ctrl-c stops"),
+        ("record", "rec", "[FROM] [-t 30s] [-n NAME] [-d]", "a new track while the project plays; -d without"),
         ("inputs", "in", "[N | default]", "what can be recorded; N picks one"),
     ]),
     ("EFFECTS", "in order per track; TRACK can be master", [
