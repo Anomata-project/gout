@@ -767,8 +767,19 @@
     },
   };
 
+  function closeDownload() {
+    const box = $("download-help");
+    if (box.hidden) return false;
+    box.hidden = true;
+    const button = document.querySelector(`.button.os[data-os="${box.dataset.os}"]`);
+    for (const b of document.querySelectorAll(".button.os")) b.setAttribute("aria-pressed", "false");
+    if (button) button.focus();
+    return true;
+  }
+
   function showDownload(os) {
     const box = $("download-help");
+    if (!box.hidden && box.dataset.os === os) return closeDownload();  // the same button again closes it
     const guide = INSTALL[os];
     const found = ui.info.installers || {};
     const el = (tag, className, text) => {
@@ -777,7 +788,15 @@
       if (text !== undefined) node.textContent = text;
       return node;
     };
-    box.replaceChildren(el("p", "", guide.title + (found.version ? ` (${found.version})` : "")));
+    const head = el("div", "head");
+    const close = el("button", "close", "✕");
+    close.type = "button";
+    close.title = "close";
+    close.setAttribute("aria-label", "close the install notes");
+    close.addEventListener("click", closeDownload);
+    head.append(el("p", "", guide.title + (found.version ? ` (${found.version})` : "")), close);
+    box.dataset.os = os;
+    box.replaceChildren(head);
     const row = el("p", "files");
     let any = false;
     for (const [key, label] of guide.files) {
