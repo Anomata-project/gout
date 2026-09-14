@@ -26,6 +26,7 @@ from .cli import aliases, command_table, run
 from .lineedit import LineEditor, path_candidates
 from .player import Player
 from .screens import screen_for_key, screen_named, ScreenContext, screens
+from .window import TerminalWindow
 from .theme import load_theme, Palette
 from .commands import head_seconds, player_for
 
@@ -78,6 +79,8 @@ class Tui:
         self.mode = "prompt"  # or "sheet": the parameter table, or "screen": an addon's full-screen view
         self.screen = None     # the open Screen
         self.screen_ctx: ScreenContext | None = None
+        self.status_until = 0.0  # the screen's status line shows until then (monotonic)
+        self.window = TerminalWindow()
         self.sheet_rows: list[dict] = []
         self.sheet_cur = 0
         self.sheet_top = 0
@@ -343,6 +346,7 @@ class Tui:
                     continue
                 self.handle(key)
         finally:
+            self.window.leave()
             self.stop_playing(keep=False)
             self.cancel_render()
 
@@ -862,16 +866,32 @@ class Tui:
     SCREEN_KEY_NAMES = {"KEY_UP": "up", "KEY_DOWN": "down", "KEY_PPAGE": "pgup", "KEY_NPAGE": "pgdn",
                         "KEY_HOME": "home", "KEY_END": "end", "KEY_ENTER": "enter", "KEY_BACKSPACE": "backspace"}
 
-    def open_screen(self, screen) -> None:
+    def open_screen(self, screen, words=()) -> None:
         import curses
         tracks = self.project.tracks()
+        ctx = ScreenContext(self.project)
+        try:
+            lines, go = screen.command(ctx, list(words))
+        except ValueError as exc:
+            self.log.append(f"{screen.name}: {exc}")
+            return
+        except Exception as exc:  # an addon must never take the ui down with it
+            self.log.append(f"error: {screen.name} screen: {type(exc).__name__}: {exc}")
+            return
+        self.log.extend(lines)
+        if not go:
+            return
         if not tracks:
             self.log.append(f"{screen.name}: no tracks yet, nothing to play")
             return
-        ctx = ScreenContext(self.project)
         ctx.length_ms = max((timeline(t)[1] for t in tracks), default=0)
         ctx.note = "listening to the song…"
         self.screen, self.screen_ctx, self.mode = screen, ctx, "screen"
+        if screen.fullscreen:
+            note = self.window.enter()
+            if note:
+                self.log.append(note)
+        self.status_until = time.monotonic() + screen.status_seconds
         plan = analysis.plan(self.project)  # the database here; the files in the background
 
         def listen() -> None:
@@ -890,6 +910,7 @@ class Tui:
 
     def close_screen(self) -> None:
         import curses
+        self.window.leave()
         self.mode, self.screen, self.screen_ctx = "prompt", None, None
         try:
             curses.curs_set(1)
@@ -901,15 +922,18 @@ class Tui:
         ctx, screen = self.screen_ctx, self.screen
         ctx.position_ms = float(self.play_position_ms())
         ctx.playing = self.player is not None
+        status = not ctx.playing or screen.status_seconds <= 0 or time.monotonic() < self.status_until
         try:
-            rows = screen.frame(ctx, w, max(1, h - 1))
+            rows = screen.frame(ctx, w, h)
         except Exception as exc:  # an addon must never take the ui down with it
             self.log.append(f"error: {screen.name} screen: {type(exc).__name__}: {exc}")
             self.close_screen()
             self.draw()
             return
-        for y, (text, classes) in enumerate(rows[:max(0, h - 1)]):
+        for y, (text, classes) in enumerate(rows[:h]):
             self.draw_cells(y, 0, text[:w], "screen", classes[:w])
+        if not status:  # only the picture
+            return
         state = "▶" if ctx.playing else "■"
         left = f" {screen.status(ctx)}   {state} {fmt_ms(round(ctx.position_ms))} / {fmt_ms(ctx.length_ms)}"
         if ctx.note:
@@ -920,6 +944,8 @@ class Tui:
     def handle_screen(self, key) -> None:
         import curses
         screen = self.screen
+        if key != curses.KEY_RESIZE:
+            self.status_until = time.monotonic() + screen.status_seconds  # a key brings the status line back
         if key == "\x1b":
             seq = self.read_escape()
             if not seq:
@@ -1040,8 +1066,8 @@ class Tui:
             self.stop_playing(keep=False)
             self.cancel_render()
             self.running = False
-        elif screen_named(head) is not None and len(argv) == 1:
-            self.open_screen(screen_named(head))
+        elif screen_named(head) is not None:
+            self.open_screen(screen_named(head), argv[1:])
         elif head in ("view", "timeline"):
             self.toggle("timeline")
         elif head == "cheat":

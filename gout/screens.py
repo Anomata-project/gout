@@ -27,7 +27,9 @@ colours from color.json, "m" the master's, a space the terminal's own.
 """
 from __future__ import annotations
 
+import os
 import re
+from pathlib import Path
 
 KEY_CODES = {  # keys a screen may take: nothing else in the ui uses them
     "ctrl-space": "\x00", "ctrl-b": "\x02", "ctrl-o": "\x0f", "ctrl-q": "\x11", "ctrl-r": "\x12",
@@ -48,7 +50,16 @@ class Screen:
     fps = 20                        # frames a second while playing
     help: tuple[tuple[str, str], ...] = ()   # (keys, what they do) for the cheat sheet
     play_on_open = True             # start the song when the screen opens
+    fullscreen = False              # ask the terminal window for fullscreen while open (GNOME Terminal)
+    status_seconds = 3.0            # the status line hides this long after opening or a key; 0 keeps it
     source = "built-in"             # or the addon file it came from
+
+    def command(self, ctx: "ScreenContext", words: list[str]) -> tuple[list[str], bool]:
+        """Called on every opening, with what was typed after the name (nothing for the key).
+        Returns lines for the log and whether to open. Raise ValueError to refuse with a message."""
+        if words:
+            return [f"{self.name} takes nothing after its name"], False
+        return [], True
 
     def frame(self, ctx: "ScreenContext", width: int, height: int) -> list[tuple[str, str]]:
         """`height` rows of (text, classes), each `width` characters (shorter rows are padded)."""
@@ -87,6 +98,12 @@ class ScreenContext:
         if self.features is None:
             return 0.0
         return self.features.total(name, self.position_ms)
+
+
+def config_file(name: str) -> Path:
+    """A settings file for a screen, next to color.json: ~/.config/gout/NAME."""
+    base = os.environ.get("XDG_CONFIG_HOME") or "~/.config"
+    return Path(base).expanduser() / "gout" / name
 
 
 _SCREENS: dict[str, Screen] = {}

@@ -1,5 +1,6 @@
 import curses
 import importlib.util
+import json
 import os
 import pty
 import select
@@ -93,6 +94,7 @@ class ScreenTest(GoutTest):
         ctx = ScreenContext(project)
         ctx.features = gout_attr("analysis", "project_features")(project)
         fractal = load_fractal().Fractal()
+        fractal.command(ctx, [])
 
         def frame(seconds):
             ctx.position_ms = seconds * 1000
@@ -105,13 +107,112 @@ class ScreenTest(GoutTest):
         self.assertNotEqual(bass, silence)
         self.assertNotEqual(hiss, silence)
         self.assertEqual(frame(1.6), silence)  # the same moment draws the same picture
-        self.assertEqual(fractal.status(ctx), "w = z³ + 7")
-        fractal.key_pressed(ctx, "up")
-        self.assertEqual(fractal.status(ctx), "w = z⁴ + 7")
-        self.assertNotEqual(frame(1.6), silence)
-        for _ in range(8):
-            fractal.key_pressed(ctx, "-")
-        self.assertEqual(fractal.status(ctx), "w = z⁴ - 2")  # it steps over 0
+        self.assertEqual(fractal.status(ctx), "1 seven  w = z³ + 7")
+        colours = set("".join(classes for _, classes in fractal.frame(ctx, 80, 24))) - {" "}
+        self.assertEqual(len(colours), 3)  # three roots, three colours
+        for key in "1234567890":  # every preset draws, with a colour per root it shows
+            fractal.key_pressed(ctx, key)
+            rows = fractal.frame(ctx, 60, 20)
+            self.assertGreaterEqual(len(set("".join(c for _, c in rows)) - {" "}), 2, fractal.status(ctx))
+        self.assertEqual(fractal.status(ctx), "0 ladder  w = cosh(z) - 2")
+
+    def test_fractal_presets_live_in_a_file_and_change_by_key_or_word(self):
+        Fractal = load_fractal().Fractal
+        path = self.tmp / "config" / "gout" / "fractal.json"
+        fractal = Fractal()
+        lines, go = fractal.command(None, [])
+        self.assertTrue(go)
+        self.assertTrue(path.exists())
+        self.assertIn("wrote the presets", lines[0])
+        self.assertEqual(len(json.loads(path.read_text())["presets"]), 10)
+        self.assertEqual(fractal.status(None), "1 seven  w = z³ + 7")
+
+        fractal.key_pressed(None, "5")
+        self.assertEqual(fractal.status(None), "5 rings  w = z⁸ + 15z⁴ - 16")
+        self.assertEqual(json.loads(path.read_text())["preset"], "rings")  # remembered
+        again = Fractal()
+        again.command(None, [])
+        self.assertEqual(again.status(None), "5 rings  w = z⁸ + 15z⁴ - 16")
+        again.key_pressed(None, "down")
+        self.assertEqual(again.status(None), "6 islands  w = z³ - 2z + 2")
+
+        lines, go = again.command(None, ["presets"])  # a list in the log, and it stays closed
+        self.assertFalse(go)
+        self.assertIn("cosh(z) - 2", "\n".join(lines))
+        self.assertTrue(again.command(None, ["classic"])[1])
+        self.assertEqual(again.status(None), "2 classic  w = z³ - 1")
+        self.assertTrue(again.command(None, ["9"])[1])
+        self.assertEqual(again.status(None), "9 waves  w = sin(z)")
+        lines, go = again.command(None, ["z^5", "-", "3z", "+", "1"])
+        self.assertTrue(go)
+        self.assertEqual(again.status(None), "custom  w = z⁵ - 3z + 1")
+        with self.assertRaisesRegex(ValueError, "unknown name 'x'"):
+            again.command(None, ["x^2"])
+
+        doc = json.loads(path.read_text())
+        doc["presets"] += [{"name": "mine", "formula": "z^4 - 3i"}, {"name": "bad", "formula": "z^^2"}]
+        doc["status_seconds"] = 0
+        path.write_text(json.dumps(doc))
+        lines, _ = again.command(None, ["mine"])
+        self.assertIn("bad", "\n".join(lines))
+        self.assertEqual(again.status(None), "mine  w = z⁴ - 3i")
+        self.assertEqual(again.status_seconds, 0)
+        self.assertEqual(len(again.frame(type("C", (), {"position_ms": 0, "band": lambda *a: 0.0,
+                                                        "travel": lambda *a: 0.0})(), 40, 12)), 12)
+
+        path.write_text("{ not json")
+        lines, _ = Fractal().command(None, [])
+        self.assertIn("unreadable", "\n".join(lines))
+
+    def test_fullscreen_finds_the_window_gout_runs_in_and_puts_it_back(self):
+        TerminalWindow = gout_attr("window", "TerminalWindow")
+
+        class Bus:
+            def __init__(self, ours, already=()):
+                self.ours, self.full, self.calls = ours, set(already), []
+
+            def run(self, args):
+                if args[0] == "introspect":
+                    return "node /org/gnome/Terminal/window {\n  node 1 {\n  };\n  node 2 {\n  };\n};\n"
+                path, method = args[args.index("--object-path") + 1], args[args.index("--method") + 1]
+                if method.endswith("Describe"):
+                    return f"((true, signature '', [<{'true' if path in self.full else 'false'}>]),)\n"
+                action = args[args.index("--method") + 2]
+                self.calls.append((path.rsplit("/", 1)[1], action))
+                (self.full.add if action == "enter-fullscreen" else self.full.discard)(path)
+                return "()\n"
+
+            def size(self):
+                return (200, 60) if f"/org/gnome/Terminal/window/{self.ours}" in self.full else (100, 30)
+
+        def window(bus):
+            return TerminalWindow({"GNOME_TERMINAL_SERVICE": ":1.9"}, run=bus.run, size=bus.size,
+                                  sleep=lambda s: None, wait_s=0.1)
+
+        bus = Bus(ours=2)  # the newest window is tried first
+        w = window(bus)
+        self.assertEqual(w.enter(), "")
+        self.assertEqual(bus.calls, [("2", "enter-fullscreen")])
+        w.leave()
+        self.assertEqual(bus.calls[-1], ("2", "leave-fullscreen"))
+
+        bus = Bus(ours=1)  # not the newest: that one is put back, then the next one tried
+        w = window(bus)
+        self.assertEqual(w.enter(), "")
+        self.assertEqual(bus.calls, [("2", "enter-fullscreen"), ("2", "leave-fullscreen"), ("1", "enter-fullscreen")])
+        w.leave()
+        bus.calls.clear()
+        w.enter()  # found once, remembered
+        self.assertEqual(bus.calls, [("1", "enter-fullscreen")])
+
+        bus = Bus(ours=1, already={"/org/gnome/Terminal/window/2"})  # a fullscreen window is left alone
+        w = window(bus)
+        self.assertEqual(w.enter(), "")
+        self.assertEqual(bus.calls, [])
+        w.leave()
+        self.assertEqual(bus.calls, [])
+
+        self.assertFalse(TerminalWindow({}).available())  # other terminals: nothing to ask
 
     def test_ctrl_space_opens_the_screen_and_esc_goes_back(self):
         register_screen = gout_attr("screens", "register_screen")
@@ -139,12 +240,12 @@ class ScreenTest(GoutTest):
         self.assertIsNotNone(ui.screen_ctx.features)
         ui.draw()
         status = screen.row(29)
-        self.assertIn("w = z³ + 7", status)
+        self.assertIn("1 seven  w = z³ + 7", status)
         self.assertIn("esc back to gout", status)
         self.assertEqual(len(screen.row(0)), 100)
-        ui.handle(curses.KEY_UP)
+        ui.handle(curses.KEY_DOWN)
         ui.draw()
-        self.assertIn("w = z⁴ + 7", screen.row(29))
+        self.assertIn("2 classic  w = z³ - 1", screen.row(29))
         ui.handle(" ")  # space stops, as in the daw
         self.assertIsNone(ui.player)
         ui.handle("\x1b")  # esc: back
@@ -159,6 +260,50 @@ class ScreenTest(GoutTest):
         ui.handle("\x00")  # and its key closes it
         self.assertEqual(ui.mode, "prompt")
         ui.stop_playing(keep=False)
+
+    def test_the_status_line_hides_while_playing_and_a_key_brings_it_back(self):
+        register_screen = gout_attr("screens", "register_screen")
+        registry = gout_attr("screens", "screens")()
+        registry.pop("fractal", None)
+        register_screen(load_fractal().Fractal(), "fractal.py")
+        self.addCleanup(registry.pop, "fractal", None)
+        saved = os.environ.get("GOUT_PLAYER")
+        os.environ["GOUT_PLAYER"] = "null"
+        self.addCleanup(lambda: os.environ.pop("GOUT_PLAYER") if saved is None else os.environ.update(GOUT_PLAYER=saved))
+        config = self.tmp / "config" / "gout" / "fractal.json"
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text(json.dumps({"preset": "star", "status_seconds": 0.2,
+                                      "presets": [{"name": "star", "formula": "z^5 - 1"}]}))
+
+        root = self.project("song", "tone.wav")
+        Project, Tui = gout_attr("project", "Project"), gout_attr("tui", "Tui")
+        screen = FakeScreen(20, 80)
+        ui = Tui(Project(root), screen)
+        ui.input = "fractal presets"  # a list, not the screen
+        ui.submit()
+        self.assertEqual(ui.mode, "prompt")
+        self.assertIn("z⁵ - 1", "\n".join(ui.log))
+        ui.input = "fractal w^2"
+        ui.submit()
+        self.assertEqual(ui.mode, "prompt")
+        self.assertIn("fractal: unknown name 'w'", ui.log[-1])
+        ui.input = "fractal star"
+        ui.submit()
+        self.assertEqual(ui.mode, "screen")
+        ui.draw()
+        self.assertIn("star  w = z⁵ - 1", screen.row(19))
+        time.sleep(0.3)
+        ui.draw()
+        self.assertNotIn("esc back to gout", screen.row(19))  # only the picture
+        ui.handle("c")
+        ui.draw()
+        self.assertIn("esc back to gout", screen.row(19))  # a key brings it back
+        time.sleep(0.3)
+        ui.handle(" ")  # paused: it stays
+        ui.draw()
+        self.assertIn("space plays", screen.row(19))
+        ui.handle("\x1b")
+        self.assertEqual(ui.mode, "prompt")
 
     def test_a_screen_that_fails_closes_and_says_why(self):
         Screen = gout_attr("screens", "Screen")

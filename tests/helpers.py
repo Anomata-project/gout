@@ -199,6 +199,8 @@ class GoutTest(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp(prefix="gout-test-"))
         self.saved_xdg = os.environ.get("XDG_CONFIG_HOME")
         os.environ["XDG_CONFIG_HOME"] = str(self.tmp / "config")  # never the user's own color.json
+        for name in ("GNOME_TERMINAL_SERVICE", "GNOME_TERMINAL_SCREEN"):  # never the user's own window
+            os.environ.pop(name, None)
         self.addons = self.tmp / "addons"
         self.addons.mkdir()
         self.fx = Fixtures.dir()
@@ -220,6 +222,8 @@ class GoutTest(unittest.TestCase):
         env["GOUT_PLAYER"] = "null"  # play in real time, in silence
         env["XDG_CONFIG_HOME"] = str(self.tmp / "config")
         env.pop("COLUMNS", None)
+        env.pop("GNOME_TERMINAL_SERVICE", None)  # a test must not make the user's terminal fullscreen
+        env.pop("GNOME_TERMINAL_SCREEN", None)
         return env
 
     def gout(self, *args: str, ok: bool = True, cwd: Path | None = None) -> subprocess.CompletedProcess:
