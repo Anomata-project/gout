@@ -8,7 +8,17 @@ The code is the `gout/` package; `bin/gout` runs it straight from the checkout.
 
 ## Install
 
-Needs `ffmpeg` and `ffprobe` on `PATH`.
+Installers for Windows, macOS and Linux (Ubuntu, Debian) are on the
+[releases page](https://github.com/Anomata-project/gout/releases/latest): open one, click through,
+and open **gout** from the Start menu, Launchpad or your applications. The Windows and macOS
+installers carry their own Python and ffmpeg; the Linux package has apt bring them. gout is not
+signed with a paid certificate, so Windows and macOS ask once whether you trust it; the release
+notes show the two clicks that answer.
+
+### From source
+
+Needs Python 3.9 or newer and `ffmpeg` and `ffprobe` on `PATH`. On Windows the terminal ui also
+needs `pip install windows-curses`.
 
 ```sh
 ./install.sh              # symlinks ~/.local/bin/gout -> ./bin/gout
@@ -16,7 +26,8 @@ Needs `ffmpeg` and `ffprobe` on `PATH`.
 
 The symlink points back at this checkout, so editing the package takes effect immediately.
 `pipx install .` and `pip install --user -e .` work too, or run `./bin/gout` or `python3 -m gout`
-in place.
+in place. `packaging/build.py` builds the installers; `.github/workflows/installers.yml` builds and
+tries them on every push and publishes them for a tag.
 
 ## A project
 
@@ -530,3 +541,9 @@ your own addons. `GOUT_KEEP_TEST_DIRS=1` keeps the temporary projects for a look
 ```
 
 Use the explicit units for nudges: `move 2 +500ms`, not `move 2 +0.5`.
+
+## License
+
+gout is free software: you can redistribute it and change it under the terms of the GNU General
+Public License, version 3 or (at your option) any later version. See `LICENSE`. Copyright 2026
+Anomata Project. [CONTRIBUTING.md](CONTRIBUTING.md) says how to take part.

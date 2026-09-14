@@ -7,9 +7,11 @@ name = "gout"
 version = "2.0.0"
 description = "A command-line DAW: stack wav/mp3 tracks on a timeline, mix to master.wav; also cuts mp3s by time or size."
 readme = "README.md"
+license = {text = "GPL-3.0-or-later"}
 requires-python = ">=3.9"
 classifiers = [
     "Environment :: Console",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
     "Programming Language :: Python :: 3",
     "Topic :: Multimedia :: Sound/Audio",
 ]

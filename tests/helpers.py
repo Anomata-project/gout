@@ -27,6 +27,8 @@ if str(REPO) not in sys.path:
 
 
 def gout_cmd() -> list[str]:
+    if os.environ.get("GOUT_TEST_COMMAND"):  # a built gout: CI runs the tests on the installers' program
+        return [os.environ["GOUT_TEST_COMMAND"]]
     launcher = REPO / "bin" / "gout"
     return [sys.executable, str(launcher if launcher.exists() else REPO / "gout.py")]
 

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=gout
+GenericName=Command-line DAW
+Comment=Stack tracks on a timeline, mix and play them, in a terminal
+Exec=gout-start
+Icon=gout
+Terminal=true
+Categories=AudioVideo;Audio;
+Keywords=music;audio;mixer;daw;mp3;wav;
