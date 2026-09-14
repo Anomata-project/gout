@@ -30,9 +30,19 @@ Screen subclass and a register() function.
 
 gout video fractal 3 1 0 (or all) draws it into a video, changing preset every 10 s on a drum hit:
 choices() and pick() are what the video uses, and ctx.offline says a video is being drawn.
+
+The zoom (zoom at the prompt, gout video zoom 3 1 0 or all) takes the same presets and dives in
+for as long as the song plays: towards a point Newton's method keeps coming back to every 2 or 3
+steps. Around such a point the picture repeats, a few times smaller each time, so once the view is
+100000 times deeper it quietly goes back up one repeat and carries on: the numbers never run out.
+Time pushes the zoom, the level and the bass push it harder, and in silence it only drifts. The
+bass does not bend the method here (that would move the edge away from the point). 1 .. 9 0 and
+up and down dive into another preset, + and - go nearer and further; zoom_preset in fractal.json
+remembers its choice.
 """
 import cmath
 import json
+import math
 import time
 
 from gout.formula import FormulaError, parse
@@ -83,6 +93,7 @@ class Fractal(Screen):
     summary = "full-screen play: a Newton fractal moving with the music (fractal presets, fractal.json)"
     fps = 20
     fullscreen = True
+    remembered = "preset"          # the key in fractal.json that holds the last choice
     help = (("1 .. 9 0", "fractal: pick one of the first ten presets"),
             ("↑ ↓", "fractal: the previous or next preset"),
             ("+ -", "fractal: zoom in and out"), ("c", "fractal: colours on and off"))
@@ -138,7 +149,7 @@ class Fractal(Screen):
             presets = [{"name": p["name"], "formula": parse(p["formula"]), "about": p["about"],
                         "zoom": p.get("zoom"), "center": complex(p["center"]) if "center" in p else None}
                        for p in PRESETS]
-        wanted = str(doc.get("preset", ""))
+        wanted = str(doc.get(self.remembered, doc.get("preset", "")))
         previous = self.presets[self.current]["name"] if self.presets else None
         self.presets = presets
         self.fullscreen = doc.get("fullscreen", True) is not False
@@ -153,8 +164,8 @@ class Fractal(Screen):
         path = config_file(FILE)
         try:
             doc = json.loads(path.read_text())
-            if isinstance(doc, dict) and doc.get("preset") != self.presets[self.current]["name"]:
-                doc["preset"] = self.presets[self.current]["name"]
+            if isinstance(doc, dict) and doc.get(self.remembered) != self.presets[self.current]["name"]:
+                doc[self.remembered] = self.presets[self.current]["name"]
                 tmp = path.with_suffix(".part")
                 tmp.write_text(json.dumps(doc, indent=2, ensure_ascii=False) + "\n")
                 tmp.replace(path)
@@ -196,7 +207,7 @@ class Fractal(Screen):
                 key = KEYS[i] if i < len(KEYS) else " "
                 mark = "▸" if i == self.current else " "
                 lines.append(f" {mark}{key} {p['name']:<10} {p['formula'].pretty:<22} {p['about']}")
-            lines.append(f"   fractal N, fractal NAME, or fractal FORMULA; the list lives in {config_file(FILE)}")
+            lines.append(f"   {self.name} N, {self.name} NAME, or {self.name} FORMULA; the list lives in {config_file(FILE)}")
             return lines, False
         found = self.find(text)
         if found is not None:
@@ -347,6 +358,186 @@ class Fractal(Screen):
         return rows
 
 
+# ---- the zoom: an endless dive into the same fractal
+
+DIVE = 0.12                    # e-folds of zoom a second, whatever plays
+LEVEL_PUSH = 0.25              # more for every second of full level
+BASS_PUSH = 0.1                # and of full bass
+LOOP_DEPTH = 1e-5              # the view never gets smaller than this part of the preset's view
+LOOP_RANGE = (4.0, 60.0)       # how much zoom one loop may take
+NO_LOOP_ZOOM = 30.0            # without a loop point the dive stops this deep
+
+
+def loop_points(formula, center, half):
+    """Points Newton's method keeps coming back to every 2 or 3 steps, pushing everything near
+    them away (a repelling cycle): [(z, multiplier, period)]. Around such a point the picture is
+    the same picture again `multiplier` times smaller, turned by its angle, which is what lets the
+    zoom go on for ever. Searched from a grid of starting points over the view, in a fixed order."""
+    f, slope = formula.value, formula.slope
+    h = half * 1e-6
+
+    def step(z):
+        return z - f(z) / slope(z)
+
+    def gain(z):  # the derivative of a Newton step: f f'' / f'^2, with f'' from the slope
+        return f(z) * (slope(z + h) - slope(z - h)) / (2 * h) / slope(z) ** 2
+
+    found = []
+    for period in (2, 3):
+        for sy in range(-4, 5):
+            for sx in range(-8, 9):
+                z = center + complex(sx * 0.18, sy * 0.2) * half
+                try:
+                    for _ in range(60):  # Newton's method on N^period(z) - z
+                        orbit = [z]
+                        for _ in range(period - 1):
+                            orbit.append(step(orbit[-1]))
+                        miss = step(orbit[-1]) - z
+                        if abs(miss) < 1e-13 * (1 + abs(z)):
+                            break
+                        multiplier = 1
+                        for w in orbit:
+                            multiplier *= gain(w)
+                        z -= miss / (multiplier - 1)
+                    orbit = [z]
+                    for _ in range(period):
+                        orbit.append(step(orbit[-1]))
+                    if abs(orbit[-1] - z) > 1e-10 * (1 + abs(z)):
+                        continue
+                    if min(abs(orbit[k + 1] - orbit[k]) for k in range(period)) < 1e-6 * half:
+                        continue  # a root: it stays where it is
+                    multiplier = 1
+                    for w in orbit[:-1]:
+                        multiplier *= gain(w)
+                except (ZeroDivisionError, OverflowError, ValueError):
+                    continue
+                if abs(multiplier) > 1 and all(abs(z - q[0]) > 1e-6 * half for q in found):
+                    found.append((z, multiplier, period))
+    return found
+
+
+def loop_point(formula, center, half):
+    """The loop point to dive into: in the middle part of the view, nearest its centre, with a loop
+    of 4x to 60x zoom when there is one. None when Newton's method has no such point in view."""
+    points = loop_points(formula, center, half)
+    for low, high, reach in (LOOP_RANGE + ((1.2, 0.7),), (1.5, 1000.0, (1.8, 1.0))):
+        near = [p for p in points if low <= abs(p[1]) <= high
+                and abs((p[0] - center).real) < reach[0] * half and abs((p[0] - center).imag) < reach[1] * half]
+        if near:
+            return min(near, key=lambda p: (round(abs(p[0] - center) / half, 3), round(cmath.phase(p[0] - center), 3)))
+    return None
+
+
+def gone_by(ctx, band, since_ms):
+    """How much of a band went by between since_ms and now (ctx.travel at two moments)."""
+    now = ctx.travel(band)
+    at, ctx.position_ms = ctx.position_ms, since_ms
+    before = ctx.travel(band)
+    ctx.position_ms = at
+    return now - before
+
+
+class Zoom(Fractal):
+    """The fractal's presets, zooming in for as long as the song plays."""
+    name = "zoom"
+    aliases = ("zm",)
+    key = ""
+    summary = "full-screen play: an endless zoom into the fractal, pushed by the music (zoom presets)"
+    remembered = "zoom_preset"
+    help = (("1 .. 9 0", "zoom: dive into one of the first ten presets"),
+            ("↑ ↓", "zoom: the previous or next preset"),
+            ("+ -", "zoom: nearer and further"), ("c", "zoom: colours on and off"))
+
+    def reset(self):
+        super().reset()
+        self.loop = None           # (point, multiplier, period) or () when there is none
+        self.since = None          # project ms the dive began, taken from the first frame after a choice
+        self.depth = 0.0           # e-folds of zoom so far, for the status line
+
+    def loop_for(self, p):
+        if self.loop is None:
+            center, half = self.frame_for(p)
+            self.loop = loop_point(p["formula"], center, half) or ()
+        return self.loop
+
+    def status(self, ctx):
+        return f"{super().status(ctx)}  ×{math.exp(self.depth):.3g}"
+
+    def frame(self, ctx, width, height):
+        p = self.preset()
+        t = ctx.position_ms / 1000
+        high, level, onset = ctx.band("high", 80), ctx.band("level", 400), ctx.band("onset", 60)
+        center0, half0 = self.frame_for(p)
+        loop = self.loop_for(p)
+        if getattr(ctx, "offline", False):
+            since = getattr(ctx, "choice_ms", 0.0)  # every process drawing a video agrees on when the dive began
+        else:
+            if self.since is None or ctx.position_ms < self.since:  # opened, a new choice, or moved back before the dive
+                self.since = ctx.position_ms
+            since = self.since
+        depth = (DIVE * max(0.0, t - since / 1000) + LEVEL_PUSH * gone_by(ctx, "level", since)
+                 + BASS_PUSH * gone_by(ctx, "low", since) - math.log(self.zoom_factor))
+        if not loop:
+            depth = min(depth, math.log(NO_LOOP_ZOOM))
+        self.depth = depth
+        depth -= math.log(1.25 - 0.45 * level)  # the level breathes in and out on top, as in the fractal
+        theta = 0.06 * t + 0.5 * ctx.travel("low") + 0.15 * ctx.travel("high")
+        target, multiplier, period = loop or (center0, 0, 0)
+        half = half0 * math.exp(-depth)
+        center = target + (center0 - target) * math.exp(-2 * max(0.0, depth))  # the loop point comes to the middle
+        extra = 12
+        if loop:
+            floor = half0 * LOOP_DEPTH
+            if half < floor:  # deeper than the loop depth: the same picture a whole number of loops up
+                loops = math.ceil(math.log(floor / half) / math.log(abs(multiplier)))
+                half *= abs(multiplier) ** loops
+                theta += loops * cmath.phase(multiplier)
+            extra = 6 + math.ceil(period * math.log(max(1.0, half0 / half)) / math.log(abs(multiplier)))
+        limit = LIMIT + extra      # deeper points take more steps to leave the edge
+        lift = 1.5 * high + 2.0 * onset
+        hue = int(ctx.travel("mid") / 3)
+        inputs = (width, height, id(p), self.colours, round(theta, 5), round(math.log(half), 6),
+                  round(center.real, 14), round(center.imag, 14), round(lift, 3), hue)
+        if self.last is not None and self.last[0] == inputs:
+            return self.last[1]
+        began = time.monotonic()
+        step = self.step
+        cols = -(-width // step)
+        turn = cmath.exp(1j * theta) * half / (height / 2)
+        points = [center + complex((x * step - width / 2) * 0.5, height / 2 - y) * turn
+                  for y in range(height) for x in range(cols)]
+        steps, finals = p["formula"].newton()(points, limit, 1.0, half0 * 2e-6)  # a fixed tolerance keeps loops alike
+        spent = time.monotonic() - began
+        budget = 1 / self.fps
+        if getattr(ctx, "offline", False):
+            self.step = 1
+        elif spent > 1.4 * budget and self.step < 3:
+            self.step += 1
+        elif spent < 0.4 * budget and self.step > 1:
+            self.step -= 1
+        settled = sorted(s for s in steps if s < limit) or [0]
+        fast, slow = settled[int(len(settled) * 0.02)], settled[int(len(settled) * 0.97)]
+        scale = (len(RAMP) - 1) / max(1, slow - fast)
+        tolerance = half0 * 1e-3
+        rows = []
+        for y in range(height):
+            text, classes = [], []
+            base = y * cols
+            for x in range(width):
+                i = base + x // step
+                s = steps[i]
+                if s >= limit:
+                    text.append(" ")
+                    classes.append(" ")
+                    continue
+                text.append(RAMP[min(len(RAMP) - 1, max(1, int((s - fast) * scale + lift)))])
+                classes.append(str((self.root_of(finals[i], tolerance) + hue) % 10) if self.colours else " ")
+            rows.append(("".join(text), "".join(classes)))
+        self.last = (inputs, rows)
+        return rows
+
+
 def register(gout):
     gout.requires(1)  # the addon API this file is written for (docs/addons.md)
     gout.add_screen(Fractal())
+    gout.add_screen(Zoom())

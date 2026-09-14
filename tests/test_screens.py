@@ -80,7 +80,9 @@ class ScreenTest(GoutTest):
 
         shutil.copy(FRACTAL, self.addons / "fractal.py")
         self.project("song", "tone.wav")
-        self.assertIn("fractal (screen, ctrl-space)", self.gout("addons").stdout)
+        listed = self.gout("addons").stdout
+        self.assertIn("fractal (screen, ctrl-space)", listed)
+        self.assertIn("zoom (screen)", listed)  # the second screen in the same file
         cheat = " ".join(self.gout("cheat", "-w", "100").stdout.split())
         self.assertIn("SCREENS", cheat)
         self.assertIn("ctrl-space or fractal full-screen play", cheat)
@@ -116,6 +118,55 @@ class ScreenTest(GoutTest):
             rows = fractal.frame(ctx, 60, 20)
             self.assertGreaterEqual(len(set("".join(c for _, c in rows)) - {" "}), 2, fractal.status(ctx))
         self.assertEqual(fractal.status(ctx), "0 ladder  w = cosh(z) - 2")
+
+    def test_zoom_dives_in_for_ever_pushed_by_the_music(self):
+        self.project("song")
+        self.gout("add", str(self.song()))
+        Project = gout_attr("project", "Project")
+        ScreenContext = gout_attr("screens", "ScreenContext")
+        project = Project(self.cwd)
+        ctx = ScreenContext(project)
+        ctx.features = gout_attr("analysis", "project_features")(project)
+        ctx.offline = True
+        module = load_fractal()
+        zoom = module.Zoom()
+        zoom.command(ctx, [])
+
+        def frame(seconds):
+            ctx.position_ms = seconds * 1000
+            rows = zoom.frame(ctx, 80, 24)
+            self.assertEqual(len(rows), 24)
+            self.assertTrue(all(len(text) == 80 and len(classes) == 80 for text, classes in rows))
+            return rows, zoom.depth
+
+        _, start = frame(0)
+        _, bass = frame(1)
+        _, silence = frame(2)
+        self.assertEqual(start, 0)
+        self.assertGreater(bass - start, 1.5 * (silence - bass))  # the bass pushes; silence only drifts
+        self.assertTrue(zoom.status(ctx).startswith("1 seven  w = z³ + 7  ×"))
+        ctx.choice_ms = 1500  # a video changed to this choice at 1.5 s: the dive starts there
+        self.assertLess(frame(2)[1], silence)
+
+        for key in "1234567890":  # every preset keeps drawing ten to the forty times deeper
+            zoom.key_pressed(ctx, key)
+            self.assertTrue(zoom.loop_for(zoom.preset()), zoom.status(ctx))  # a point to loop around
+            zoom.zoom_factor = 1e-40
+            rows, depth = frame(0.5)
+            text = "".join(t for t, _ in rows)
+            self.assertGreater(depth, 90)
+            self.assertLess(text.count(" ") / len(text), 0.5, zoom.status(ctx))
+            self.assertGreaterEqual(len(set("".join(c for _, c in rows)) - {" "}), 2, zoom.status(ctx))
+
+        zoom.key_pressed(ctx, "1")
+        zoom.zoom_factor = 1e-6  # past the loop depth: drawn a loop further up, turned by the loop's angle
+        jumped = "".join(t for t, _ in frame(0.5)[0])
+        self.addCleanup(setattr, module, "LOOP_DEPTH", module.LOOP_DEPTH)
+        module.LOOP_DEPTH = 1e-12
+        zoom.last = None
+        straight = "".join(t for t, _ in frame(0.5)[0])  # the same moment at its real depth
+        self.assertGreater(sum(a == b for a, b in zip(jumped, straight)) / len(jumped), 0.95)
+        self.assertEqual(json.loads((self.tmp / "config" / "gout" / "fractal.json").read_text())["zoom_preset"], "seven")
 
     def test_fractal_presets_live_in_a_file_and_change_by_key_or_word(self):
         Fractal = load_fractal().Fractal

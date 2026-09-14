@@ -1037,6 +1037,7 @@ def cmd_inputs(root_hint: Path | None, args: Args) -> None:
 VIDEO_USAGE = ("gout video IMAGE [-T] [-o FILE]                          a still image with the song\n"
                "       gout video SCREEN [CHOICE... | all] [-e 10s] [-c IMAGE] [-T] [-o FILE]  a screen moving with the song,\n"
                "       e.g. gout video fractal 3 1 0 -c cover.jpg  (the cover first, a new fractal every 10 s on a drum hit;\n"
+               "       gout video zoom 3 dives into preset 3 for the whole song;\n"
                "       the title and artist from set title / set artist at the start unless -T)")
 
 
@@ -1116,7 +1117,7 @@ def cmd_video(project: Project, args: Args) -> None:
             tasks = [task for task in tasks if task[0] / FPS >= cover_until]
             count = max(1, min(count, len(tasks)))
         source = ScreenFrames(project, screen.name, tasks, cols, rows, round(seconds * 1000) - head_ms, count,
-                              first=next((t[0] for t in tasks), frames))
+                              first=next((t[0] for t in tasks), frames), cuts=cuts)
     print(f"video {target.name}  {width}x{height} {FPS} fps  {fmt_ms(seconds * 1000)}  {what}"
           + (f"  ({count} processes drawing)" if source else "") + "  (ctrl-c stops)", flush=True)
     atlas, colours = ((Atlas(extra=title_text + artist), class_colours(project.root)) if source is not None or title is not None

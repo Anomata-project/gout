@@ -230,6 +230,10 @@ at once (each with its own copy of the screen). Two things make that work well:
   `pick(ctx, word)`, without remembering the choice as the user's own. `gout video bars a b c`
   and `gout video bars all` then change between them every 10 s (`-e` sets it), on the nearest
   drum hit. Without them, the words go to `command(ctx, words)`.
+- `ctx.choice_ms` is the moment of the song the current choice began showing, the same in every
+  process. A screen whose picture builds up from when it was picked (the fractal's `zoom` dives in
+  from there) reads it instead of remembering the first frame it drew, since a process may start
+  anywhere. Read it with `getattr(ctx, "choice_ms", 0.0)`.
 
 The characters come out in a monospace font, coloured as the theme colours the terminal: ASCII
 and `█▓▒░━│·▶■●`; anything else shows as `?`.

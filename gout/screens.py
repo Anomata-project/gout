@@ -97,6 +97,7 @@ class ScreenContext:
         self.features = None         # analysis.Features once the song has been listened to
         self.note = ""               # shown in the status line: listening, or what went wrong
         self.offline = False         # True while a video is drawn: take the time needed, the same moment gives the same picture
+        self.choice_ms = 0.0         # while a video is drawn: the project time the current choice began showing
 
     def band(self, name: str, window_ms: float = 100) -> float:
         """low, mid, high, level or onset: 0 .. 1, averaged over the last window_ms."""

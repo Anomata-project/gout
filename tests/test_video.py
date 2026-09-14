@@ -1,5 +1,7 @@
+import os
 import shutil
 import subprocess
+from unittest import mock
 
 from helpers import duration, ffmpeg, gout_attr, GoutTest, REPO
 
@@ -13,6 +15,25 @@ def frame_at(path, seconds: float, width: int, height: int) -> bytes:
 def pixel(frame: bytes, width: int, x: int, y: int) -> tuple[int, int, int]:
     i = 3 * (y * width + x)
     return tuple(frame[i:i + 3])
+
+
+PROBE = """
+from gout.screens import Screen
+
+
+class Probe(Screen):
+    name = "probe"
+
+    def pick(self, ctx, word):
+        self.word = word
+
+    def frame(self, ctx, width, height):
+        return [(f"{self.word} {ctx.choice_ms:g}", "")]
+
+
+def register(gout):
+    gout.add_screen(Probe())
+"""
 
 
 class VideoTest(GoutTest):
@@ -102,9 +123,9 @@ class VideoTest(GoutTest):
         root = self.beat_project()
         ctx_class = gout_attr("screens", "ScreenContext")
 
-        def draw(order, preset):
-            screen, ctx = module.Fractal(), ctx_class(project(root))
-            ctx.offline = True
+        def draw(order, preset, kind=module.Fractal):
+            screen, ctx = kind(), ctx_class(project(root))
+            ctx.offline, ctx.choice_ms = True, 1000
             screen.pick(ctx, preset)
             frames = {}
             for ms in order:
@@ -115,7 +136,19 @@ class VideoTest(GoutTest):
         for preset in ("classic", "waves"):
             forwards, backwards = draw([0, 3000, 6000], preset), draw([6000, 3000, 0], preset)
             self.assertEqual(forwards, backwards)
+            self.assertEqual(draw([0, 3000, 6000], preset, module.Zoom), draw([6000, 3000, 0], preset, module.Zoom))
         self.assertEqual(module.Fractal().choices()[:2], ["seven", "classic"])
+
+    def test_every_worker_knows_when_its_choice_began(self):
+        (self.addons / "probe.py").write_text(PROBE)
+        root = self.beat_project()
+        ScreenFrames, schedule, Project = gout_attr("video", "ScreenFrames"), gout_attr("video", "schedule"), gout_attr("project", "Project")
+        tasks = schedule(10, 1, 500, [2000, 5000], ["a", "b"])[2:]  # 1 fps, half a second of head, a cover over two frames
+        with mock.patch.dict(os.environ, self.env()):
+            frames = ScreenFrames(Project(root), "probe", tasks, 20, 1, 6000, 3, first=2, cuts=[2000, 5000])
+            drawn = [frames.rows(frame)[0][0] for frame, _, _ in tasks]
+            frames.stop()
+        self.assertEqual(drawn, ["a 1500", "b 2000", "b 2000", "b 2000", "a 5000", "a 5000", "a 5000", "a 5000"])
 
     def test_addons_examples_update_keeps_the_old_one(self):
         (self.addons / "fractal.py").write_text("# an older copy\n")

@@ -47,13 +47,14 @@ PROJECT
   gout video vd IMAGE | SCREEN [CHOICE... | all] [-e 10s] [-c IMAGE] [-T] [-o FILE]
                                   an mp4 for YouTube with {MASTER_WAV} (rendered first when out of date):
                                   an image fitted with black bars, or a screen moving with the song,
-                                  frame by frame: gout video fractal 3 1 0, gout video fractal all
+                                  frame by frame: gout video fractal 3 1 0, gout video fractal all, or
+                                  gout video zoom 3 1 0 (an endless zoom into the same fractal)
                                   (a new choice every 10 s or -e, cut on the nearest drum hit); -c shows
                                   a cover for the first 6 s. The title and artist (set title, set artist)
                                   come up big at the start; what follows a dash in the title goes under
                                   it; -T leaves them out. 1920x1080 25 fps, H.264 and AAC 320k, to
                                   master.mp4 unless -o. A fractal video takes about 3 times the song's
-                                  length on 4 cores
+                                  length on 4 cores, a zoom up to half as long again
   gout view  v                    print the timeline once: the master first, then each track as a
                                   waveform (braille dots from the real highest and lowest points)
   gout colors [--init [--project]]  the 25 colour and layout settings from color.json: which file is in

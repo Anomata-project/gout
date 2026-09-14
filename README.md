@@ -334,7 +334,7 @@ Five examples ship in `examples/addons/`:
 | `saturation.py` | `saturation` / `sat` | a soft curve for warmth, grit or fuzz: `tanh d12 m70 t8k` is curve, drive dB, mix % (parallel blend), tone low-pass. Curves `tanh atan cubic exp alg quintic sin erf hard`. Output follows the drive by default so quiet passages keep their level; `o-6` sets it by hand. It runs at four times the project rate to keep aliasing down. Presets `warm tape tube crunch fuzz`. Its picture is the curve itself and says how many of the track's peaks it bends. |
 | `distortion.py` | `distortion` / `dist` | a pedal in a line: `hard d36 a10 h300 t4k` is clipper (`soft`, `hard` or `crush`), drive dB, asymmetry % (even harmonics), tight high-pass before the clipper, tone low-pass after. `crush` takes `b6` bits and `s8` sample-rate reduction. The output is matched to the track's loudness by running part of the track through the same stage once (cached); `o-6` sets it by hand. Presets `overdrive crunch highgain fuzz bitcrush lofi broken`. |
 | `tremolo.py` | `tremolo` / `trem` | the volume rises and falls: `5hz d50`. Presets `slow fast chop`. |
-| `fractal.py` | `ctrl-space`, or `fractal` / `fz` in the ui | full-screen play: the song as a Newton fractal, moving with the music. Ten presets and formulas of your own. See below. |
+| `fractal.py` | `ctrl-space`, or `fractal` / `fz` in the ui; `zoom` / `zm` | full-screen play: the song as a Newton fractal, moving with the music. Ten presets and formulas of your own. `zoom` dives into the same fractal for as long as the song lasts. See below. |
 
 `examples/addons/tremolo.py` is the simplest template: a subclass of `gout.fx.Effect` that says how to read
 and write its settings line and which ffmpeg filters it becomes, and a `register(gout)` function
@@ -360,6 +360,16 @@ the method and pushes the rotation, the overall level zooms in, hits and highs m
 the mids trade the basins' colours. gout listens to the song once (about 1.5 s for four minutes,
 cached in `.gout/analysis/`): from `master.wav` when it is up to date, otherwise from the track
 files as the timeline places them, without their effects.
+
+`zoom` (or `zm`) is the same fractal diving in for as long as the song plays, and
+`gout video zoom 3 1 0` puts it into a video instead of the fractal. It heads for a point Newton's
+method keeps coming back to every two or three steps; around such a point the picture repeats a
+few times smaller each time, so once the view is 100000 times deeper it goes back up one repeat
+without a visible jump and carries on. The status line counts the zoom all the same. Time pushes
+it, the level and the bass push it harder, in silence it only drifts; the bass does not bend the
+method here. The same keys and presets as the fractal: a preset key or up and down dives into
+another preset, `+` and `-` go nearer and further, and `zoom_preset` in `fractal.json` remembers
+its choice.
 
 A screen is a subclass of `gout.screens.Screen` with a `frame(ctx, width, height)` that returns
 rows of text and colour classes, registered with `gout.add_screen(...)`. `ctx.band("low")` gives

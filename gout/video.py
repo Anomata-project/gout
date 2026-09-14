@@ -366,7 +366,7 @@ class ScreenFrames:
     n-th frame and waits while gout catches up, so the rows in memory stay few."""
 
     def __init__(self, project, screen_name: str, tasks: list, cols: int, rows: int, length_ms: int, count: int,
-                 first: int = 0):
+                 first: int = 0, cuts: list[int] | None = None):
         self.count, self.first = count, first
         self.procs, self.queues, self.errors = [], [], []
         for j in range(count):
@@ -374,7 +374,8 @@ class ScreenFrames:
             proc = subprocess.Popen([*gout_command(), "_video"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                     stderr=errors, text=True, encoding="utf-8", **detached())
             job = {"project": str(project.root), "screen": screen_name, "cols": cols, "rows": rows,
-                   "length_ms": length_ms, "tasks": tasks[j::count]}
+                   "length_ms": length_ms, "tasks": tasks[j::count], "cuts": cuts or [],
+                   "start_ms": tasks[0][2] if tasks else 0}
             proc.stdin.write(json.dumps(job) + "\n")
             proc.stdin.close()
             q: queue.Queue = queue.Queue(maxsize=4)
@@ -419,7 +420,10 @@ def worker_main() -> int:
     ctx.features = project_features(project)
     ctx.offline, ctx.playing, ctx.length_ms = True, True, job["length_ms"]
     showing = object()
+    cuts, start = job.get("cuts", []), job.get("start_ms", 0)
     for frame, word, ms in job["tasks"]:
+        shown = bisect.bisect_right(cuts, ms)
+        ctx.choice_ms = max(start, cuts[shown - 1]) if shown else start  # the same in every worker
         if word != showing and word is not None:
             screen.pick(ctx, word)
         showing = word
