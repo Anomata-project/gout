@@ -19,3 +19,6 @@ gout = "gout.cli:main"
 
 [tool.setuptools]
 packages = ["gout", "gout.effects"]
+
+[tool.setuptools.package-data]
+gout = ["webpage/*"]

@@ -160,7 +160,10 @@ class WebTest(GoutTest):
         self.assertEqual(rendered.stat().st_mtime_ns, stamp)  # current: served, not rendered again
         _, head, _ = self.call("GET", "api/mix.mp3?download=1", key=key, expect=200)
         self.assertIn("attachment", head["Content-Disposition"])
-        self.assertTrue(self.api("POST", "state", {"width": 90}, key=key, expect=200)[1]["state"]["mix"]["current"])
+        self.assertRegex(head["X-Gout-Mix-State"], r"^[0-9a-f]{40}$")
+        mix = self.api("POST", "state", {"width": 90}, key=key, expect=200)[1]["state"]["mix"]
+        self.assertTrue(mix["current"])
+        self.assertEqual(mix["state"], head["X-Gout-Mix-State"])  # the page's cached mp3 is this one
 
         _, reply = self.api("GET", "analysis", key=key, expect=200)
         self.assertEqual(reply["frame_ms"], 25)
@@ -235,6 +238,25 @@ class WebTest(GoutTest):
         _, reply = self.api("GET", "info", expect=200)
         self.assertIn("fractal", reply["commands"])
         self.assertNotIn("saveas", reply["commands"])
+        self.assertEqual((reply["aliases"]["e"], reply["aliases"]["pl"], reply["effects"]["verb"]), ("eq", "play", "reverb"))
+        self.assertNotIn("sa", reply["aliases"])
+
+    def test_the_page_and_its_colours(self):
+        status, head, raw = self.call("GET", "", expect=200)
+        self.assertIn("script-src 'self'", head["Content-Security-Policy"])
+        self.assertIn(b'<script src="app.js">', raw)
+        for name, kind in (("app.js", "text/javascript"), ("fractal.js", "text/javascript"), ("style.css", "text/css")):
+            _, head, _ = self.call("GET", name, expect=200)
+            self.assertTrue(head["Content-Type"].startswith(kind), name)
+        _, head, raw = self.call("GET", "theme.css", expect=200)
+        css = raw.decode()
+        self.assertIn(".c-m{color:#f5c242;font-weight:bold}", css)   # the master's wave, from color.json's defaults
+        self.assertIn(".c-0{color:#5fafd7;font-weight:bold}", css)    # the first track colour
+        self.assertIn("--track-5:#5fd7af", css)
+        for bad in ("../web.py", "api/../../web.py", "downloads/x", "index.htm", ".hidden.js", "webpage/app.js"):
+            status, _, raw = self.call("GET", bad)
+            self.assertIn(status, (401, 404), bad)  # an api path asks for a key first; nothing is served
+            self.assertNotIn(b"import", raw, bad)
 
 
 class StoreTest(GoutTest):

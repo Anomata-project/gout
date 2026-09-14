@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>gout — a command-line DAW</title>
+<meta name="description" content="Try gout, a command-line DAW, in your browser: upload up to five mp3 or wav files, mix them with the same commands as the terminal version, and play the song as a fractal.">
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="theme.css">
+</head>
+<body>
+<div id="app">
+  <header class="bar r-header"><span id="title"> gout preview</span><span id="title-hint"></span></header>
+
+  <main id="panes">
+    <section id="left" aria-label="log and prompt">
+      <div id="scroll">
+        <div id="log" aria-live="polite"></div>
+        <div id="promptline">
+          <span id="prompt" class="r-prompt">&gt; </span><input id="line" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" aria-label="gout command"><span id="busy" hidden>…</span>
+        </div>
+      </div>
+    </section>
+    <section id="right" aria-label="timeline, effect panel and cheat sheet">
+      <div id="timeline-box">
+        <div class="bar r-header"><span id="timeline-title"> timeline</span><span>alt-t </span></div>
+        <pre id="timeline"></pre>
+      </div>
+      <div id="panel-box" hidden>
+        <div class="bar r-header"><span id="panel-title"></span><span>ctrl-g </span></div>
+        <pre id="panel"></pre>
+      </div>
+      <div id="cheat-box">
+        <div class="bar r-header"><span> cheat sheet</span><span>ctrl-k </span></div>
+        <pre id="cheat"></pre>
+      </div>
+    </section>
+  </main>
+
+  <section id="files" aria-label="files">
+    <div id="file-row">
+      <label id="upload-button" class="button" title="upload mp3 or wav files">+ upload<input id="upload" type="file" accept=".mp3,.wav,audio/mpeg,audio/wav,audio/x-wav" multiple></label>
+      <ul id="file-list"></ul>
+      <span id="file-count" class="dim"></span>
+    </div>
+    <div id="keep">
+      <p id="warning"><strong>This project lives in this browser only.</strong> Clearing site data, a private window or another browser starts a new, empty one, and a project left unused for <span id="days">7</span> days is deleted<span id="expires"></span>. To keep your work, download the project and open it in gout.</p>
+      <div class="actions">
+        <button id="download-zip" class="button" type="button">download project (.zip)</button>
+        <button id="download-mp3" class="button" type="button">download mix (.mp3)</button>
+        <button id="delete-project" class="button quiet" type="button">delete project</button>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <button id="big-play" type="button" aria-label="play full screen with the fractal"><span class="triangle">▶</span> play</button>
+    <div id="downloads">
+      <div class="dim">gout, the whole thing, for your own computer:</div>
+      <div class="buttons">
+        <button class="button os" type="button" data-os="linux">Linux</button>
+        <button class="button os" type="button" data-os="mac">macOS</button>
+        <button class="button os" type="button" data-os="windows">Windows</button>
+      </div>
+      <div id="download-help" hidden></div>
+    </div>
+  </footer>
+</div>
+
+<div id="screen" hidden>
+  <canvas id="fractal"></canvas>
+  <div id="screen-status" class="r-header"></div>
+</div>
+
+<div id="drop" hidden><div>drop mp3 or wav files to upload them</div></div>
+<audio id="audio" preload="auto"></audio>
+<script src="fractal.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

@@ -287,7 +287,8 @@ def page_state(project: Project, width: int, panel: tuple[int, str] | None, pict
         "rate": project.rate,
         "tracks": [{"n": t["n"], "name": t["name"], "file": t["file"], "length_ms": t["length_ms"]} for t in tracks],
         "files": [{"name": f.name, "bytes": f.stat().st_size, "track": uses.get(f.name)} for f in track_files(project)],
-        "mix": {"current": mp3_current(project), "head_ms": int(setting(project, "head"))},
+        "mix": {"current": mp3_current(project), "state": project.get("master_state"),
+                "head_ms": int(setting(project, "head"))},
         "expires": store.expires(project.root),
         "timeline": {"rows": [[label, LIVE_NOTE if kind == "note" and cells.endswith("plays the project live") else cells,
                                kind, classes, role]
@@ -436,9 +437,14 @@ class App:
         if self.downloads and self.downloads.is_dir():
             found = {f.name: f"downloads/{f.name}" for f in sorted(self.downloads.iterdir()) if f.is_file()}
         words = set(SERVER_COMMANDS) | PAGE_WORDS
+        kinds = {}
         for eff in effects().values():
             words |= {eff.name, *eff.aliases, *eff.shortcuts}
-        return {"version": __version__, "downloads": found, "commands": sorted(words),
+            kinds |= {word: eff.name for word in (eff.name, *eff.aliases)}
+        known = words | {"fz", "quit", "exit", "q", "sheet", "split", "timeline"}
+        short = {alias: name for alias, name in aliases().items() if name in known}
+        return {"version": __version__, "downloads": found, "commands": sorted(words), "aliases": short,
+                "effects": kinds,
                 "limits": {"files": MAX_FILES, "file_bytes": MAX_FILE_BYTES, "days": self.store.days,
                            "song_ms": MAX_SONG_MS, "formats": sorted(FORMATS)}}
 
@@ -567,6 +573,13 @@ class App:
             if not ok or not (root / MASTER_MP3).exists():
                 raise Refused(409, "\n".join(lines) or "play: nothing to play")
         return root / MASTER_MP3, head
+
+    def mix_state(self, root: Path) -> str:
+        project = Project(root)
+        try:
+            return project.get("master_state") or ""
+        finally:
+            project.conn.close()
 
     def features(self, root: Path) -> dict:
         project = Project(root)
@@ -820,7 +833,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(200, payload | app.state(root, body))
             elif (method, name) == ("GET", "mix.mp3"):
                 path, head = app.mix(root)
-                headers = {"X-Gout-Head-Ms": str(head)}
+                headers = {"X-Gout-Head-Ms": str(head), "X-Gout-Mix-State": app.mix_state(root)}
                 if (query.get("download") or [""])[0]:
                     headers["Content-Disposition"] = f'attachment; filename="{ZIP_FOLDER}.mp3"'
                 self.send_file(path, "audio/mpeg", headers)
