@@ -84,9 +84,11 @@ TRACKS   (TRACK is the number shown by ls, or the track name)
 
 ADDONS
   gout addons           where addons are read from, what loaded, and effects this project lacks
-                        The folder is ~/.config/gout/addons ($XDG_CONFIG_HOME, or $GOUT_ADDONS). An addon
-                        is a .py file with an Effect class and register(gout); it becomes a command, a
-                        row in the sheet and an entry in gout fx kinds. examples/addons/tremolo.py is one.
+  gout addons examples  copy the example addons that come with gout into that folder
+                        The folder is ~/.config/gout/addons (%APPDATA%\\gout\\addons on Windows;
+                        $XDG_CONFIG_HOME or $GOUT_ADDONS when set). An addon is a .py file with an Effect
+                        class and register(gout); it becomes a command, a row in the sheet and an entry
+                        in gout fx kinds. examples/addons/tremolo.py is one; docs/addons.md tells how.
                         An addon can also add a full-screen view to the ui: examples/addons/fractal.py
                         opens with ctrl-space (esc goes back) and moves with the music.
                         Addons are plain Python with your permissions; gout never loads them from projects.

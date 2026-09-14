@@ -8,7 +8,24 @@ The code is the `gout/` package; `bin/gout` runs it straight from the checkout.
 
 ## Install
 
-Needs `ffmpeg` and `ffprobe` on `PATH`.
+Installers for Windows, macOS and Linux (Ubuntu, Debian) are on the
+[releases page](https://github.com/Anomata-project/gout/releases/latest): open one, click through,
+and open **gout** from the Start menu, Launchpad or your applications. The Windows and macOS
+installers carry their own Python and ffmpeg; the Linux package has apt bring them. gout is not
+signed with a paid certificate, so Windows and macOS ask once whether you trust it; the release
+notes show the two clicks that answer.
+
+### The web preview
+
+This branch (`web-version`) also has `gout web`: a preview of gout in a browser, with uploads of up
+to five mp3 or wav files, the same commands, playback and the fractal, and a download button for
+the installers. `gout web --port 8321` runs it locally; `deploy/deploy-web.sh` puts it on
+gout.anomata.eu as a systemd service behind nginx. The installers never contain it.
+
+### From source
+
+Needs Python 3.9 or newer and `ffmpeg` and `ffprobe` on `PATH`. On Windows the terminal ui also
+needs `pip install windows-curses`.
 
 ```sh
 ./install.sh              # symlinks ~/.local/bin/gout -> ./bin/gout
@@ -16,7 +33,8 @@ Needs `ffmpeg` and `ffprobe` on `PATH`.
 
 The symlink points back at this checkout, so editing the package takes effect immediately.
 `pipx install .` and `pip install --user -e .` work too, or run `./bin/gout` or `python3 -m gout`
-in place.
+in place. `packaging/build.py` builds the installers; `.github/workflows/installers.yml` builds and
+tries them on every push and publishes them for a tag.
 
 ## A project
 
@@ -302,16 +320,18 @@ chain, is marked `(not installed)`, and is left out of the mix with a warning on
 
 ## Addons
 
-An addon is a Python file that adds effects or full-screen views. Put it in `~/.config/gout/addons/` (or
-`$XDG_CONFIG_HOME/gout/addons/`, or the folder `$GOUT_ADDONS` names) and its effects behave like
-the built-in ones: a command with presets and a picture, a place in `gout fx` chains, rows in the
-parameter sheet, entries in `gout.json`, help and the cheat sheet.
+An addon is a Python file that adds effects or full-screen views. Put it in `~/.config/gout/addons/`
+(`%APPDATA%\gout\addons\` on Windows; `$XDG_CONFIG_HOME/gout/addons/` or the folder `$GOUT_ADDONS`
+names when set) and its effects behave like the built-in ones: a command with presets and a
+picture, a place in `gout fx` chains, rows in the parameter sheet, entries in `gout.json`, help and
+the cheat sheet.
 
 ```sh
-mkdir -p ~/.config/gout/addons
-cp examples/addons/*.py ~/.config/gout/addons/
+gout addons examples             # copy the examples below into the addon folder
 gout addons                      # the folder, what loaded, and effects this project lacks
 ```
+
+[docs/addons.md](docs/addons.md) shows how to write your own, from a first effect to screens.
 
 Five examples ship in `examples/addons/`:
 
@@ -321,7 +341,7 @@ Five examples ship in `examples/addons/`:
 | `saturation.py` | `saturation` / `sat` | a soft curve for warmth, grit or fuzz: `tanh d12 m70 t8k` is curve, drive dB, mix % (parallel blend), tone low-pass. Curves `tanh atan cubic exp alg quintic sin erf hard`. Output follows the drive by default so quiet passages keep their level; `o-6` sets it by hand. It runs at four times the project rate to keep aliasing down. Presets `warm tape tube crunch fuzz`. Its picture is the curve itself and says how many of the track's peaks it bends. |
 | `distortion.py` | `distortion` / `dist` | a pedal in a line: `hard d36 a10 h300 t4k` is clipper (`soft`, `hard` or `crush`), drive dB, asymmetry % (even harmonics), tight high-pass before the clipper, tone low-pass after. `crush` takes `b6` bits and `s8` sample-rate reduction. The output is matched to the track's loudness by running part of the track through the same stage once (cached); `o-6` sets it by hand. Presets `overdrive crunch highgain fuzz bitcrush lofi broken`. |
 | `tremolo.py` | `tremolo` / `trem` | the volume rises and falls: `5hz d50`. Presets `slow fast chop`. |
-| `fractal.py` | `ctrl-space`, or `fractal` / `fz` in the ui | full-screen play: the song as a Newton fractal of w = z³ + 7, moving with the music. See below. |
+| `fractal.py` | `ctrl-space`, or `fractal` / `fz` in the ui | full-screen play: the song as a Newton fractal, moving with the music. Ten presets and formulas of your own. See below. |
 
 `examples/addons/tremolo.py` is the simplest template: a subclass of `gout.fx.Effect` that says how to read
 and write its settings line and which ffmpeg filters it becomes, and a `register(gout)` function
@@ -333,12 +353,15 @@ clean path back in) override `graph` instead of `filters`. The base class in
 ### Screens
 
 A screen is a full-screen view an addon adds to the ui. `examples/addons/fractal.py` is one:
-`ctrl-space` fills the terminal with it and plays from the playhead, `esc` goes back to gout with
-the song still playing. Space plays and stops, the left and right arrows move 5 s, up and down
-change the power (z² to z⁸), `+` and `-` the constant, `c` turns colours off.
+`ctrl-space` fills the terminal with it and plays from the playhead (in GNOME Terminal the window
+goes fullscreen too), `esc` goes back to gout with the song still playing. Space plays and stops,
+the left and right arrows move 5 s, `1` .. `9` and `0` pick one of ten presets and up and down step
+through them, `+` and `-` zoom, `c` turns colours off. At the prompt, `fractal rings` or `fractal 5`
+opens a preset, `fractal z^5 - 3z + 1` a formula of your own, and `fractal presets` lists them; the
+presets live in `~/.config/gout/fractal.json`, written the first time.
 
 Every character is a starting point z on the complex plane that Newton's method walks towards a
-root of w = z³ + 7: the character says how many steps it took, the colour which root it reached,
+root of the formula: the character says how many steps it took, the colour which root it reached,
 and where the basins meet the steps pile up into the fractal. The music moves it. The bass bends
 the method and pushes the rotation, the overall level zooms in, hits and highs make it denser, and
 the mids trade the basins' colours. gout listens to the song once (about 1.5 s for four minutes,
@@ -525,3 +548,9 @@ your own addons. `GOUT_KEEP_TEST_DIRS=1` keeps the temporary projects for a look
 ```
 
 Use the explicit units for nudges: `move 2 +500ms`, not `move 2 +0.5`.
+
+## License
+
+gout is free software: you can redistribute it and change it under the terms of the GNU General
+Public License, version 3 or (at your option) any later version. See `LICENSE`. Copyright 2026
+Anomata Project. [CONTRIBUTING.md](CONTRIBUTING.md) says how to take part.

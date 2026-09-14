@@ -1,6 +1,7 @@
 """A tremolo for gout: the volume rises and falls at a steady rate.
 
-Install it by copying this file into your addon folder:
+Install it with `gout addons examples`, which copies the examples into your addon folder, or
+by hand:
 
     mkdir -p ~/.config/gout/addons && cp examples/addons/tremolo.py ~/.config/gout/addons/
 
@@ -76,4 +77,5 @@ class Tremolo(Effect):
 
 
 def register(gout):
+    gout.requires(1)  # the addon API this file is written for (docs/addons.md)
     gout.add_effect(Tremolo())

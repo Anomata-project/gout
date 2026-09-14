@@ -334,7 +334,8 @@ class ScreenTest(GoutTest):
             os.chdir(root)
             env = self.env()
             env["TERM"] = "xterm-256color"
-            os.execve(sys.executable, [sys.executable, *gout_cmd()[1:]], env)
+            command = gout_cmd()  # python and the launcher, or a built gout
+            os.execve(command[0], command, env)
         import fcntl
         import termios
         fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 0, 0))

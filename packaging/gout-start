@@ -1,0 +1,14 @@
+#!/bin/sh
+# gout's entry in the application menu: a terminal in ~/gout, with the first commands to type.
+mkdir -p "$HOME/gout" && cd "$HOME/gout" || exit 1
+gout version
+cat <<'TEXT'
+
+  gout new song              make a project here, in ~/gout
+  cd song
+  gout add ~/Music/drums.wav put a track in it (wav, mp3, flac...)
+  gout                       open gout; ctrl-k shows every key
+  gout help                  everything else
+
+TEXT
+exec "${SHELL:-/bin/sh}" -i

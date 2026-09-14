@@ -1,6 +1,7 @@
 """Distortion for gout: a pedal in a line of text — overdrive, high gain, fuzz, or a bitcrusher.
 
-Install it by copying this file into your addon folder:
+Install it with `gout addons examples`, which copies the examples into your addon folder, or
+by hand:
 
     mkdir -p ~/.config/gout/addons && cp examples/addons/distortion.py ~/.config/gout/addons/
 
@@ -293,4 +294,5 @@ class Distortion(Effect):
 
 
 def register(gout):
+    gout.requires(1)  # the addon API this file is written for (docs/addons.md)
     gout.add_effect(Distortion())

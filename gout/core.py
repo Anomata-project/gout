@@ -1,10 +1,13 @@
 """Constants, errors, parsing and formatting of times and sizes, small helpers."""
 from __future__ import annotations
 
+import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
+from pathlib import Path
 
 
 __version__ = "2.0.0"
@@ -180,6 +183,70 @@ def fmt_pan(pan: float) -> str:
     if abs(pan) < 0.005:
         return "C"
     return f"{'L' if pan < 0 else 'R'}{round(abs(pan) * 100)}"
+
+
+PACKAGE_ROOT = Path(__file__).resolve().parents[1]  # the checkout, or where the package is installed
+
+
+def frozen() -> bool:
+    """True inside a packaged gout: the installers build one program with Python inside it."""
+    return bool(getattr(sys, "frozen", False))
+
+
+def resource_dir() -> Path:
+    """Where the files that come with gout are (examples/, the licence): the checkout, or the
+    unpacked program."""
+    return Path(getattr(sys, "_MEIPASS", PACKAGE_ROOT)) if frozen() else PACKAGE_ROOT
+
+
+def gout_command() -> list[str]:
+    """The command that runs gout again in a new process, arguments to follow: the program itself
+    when packaged (it has no python -c), otherwise this Python with this package on its path."""
+    if frozen():
+        return [sys.executable]
+    return [sys.executable, "-c", f"import sys; sys.path.insert(0, {str(PACKAGE_ROOT)!r}); "
+                                  "from gout.cli import main; sys.exit(main(sys.argv[1:]))"]
+
+
+def use_bundled_tools() -> None:
+    """A packaged gout carries ffmpeg, ffprobe and ffplay in ffmpeg/ next to the program (macOS,
+    Windows); they go first on PATH so every command finds them."""
+    if not frozen():
+        return
+    folder = Path(sys.executable).resolve().parent / "ffmpeg"
+    if folder.is_dir():
+        os.environ["PATH"] = str(folder) + os.pathsep + os.environ.get("PATH", "")
+
+
+def config_home() -> Path:
+    """gout's own settings folder: $XDG_CONFIG_HOME/gout when set, %APPDATA%\\gout on Windows,
+    otherwise ~/.config/gout (Linux and macOS)."""
+    base = os.environ.get("XDG_CONFIG_HOME")
+    if not base and os.name == "nt":
+        base = os.environ.get("APPDATA")
+    return Path(base or "~/.config").expanduser() / "gout"
+
+
+def detached() -> dict:
+    """Popen arguments for a process gout stops later with its children (a player, a render):
+    its own session on Linux and macOS, its own process group on Windows, so ctrl-c in the
+    terminal reaches gout and not them."""
+    if os.name == "nt":
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    return {"start_new_session": True}
+
+
+def stop_process(proc: subprocess.Popen) -> None:
+    """Stop a process started with detached(), and whatever it started (a render's ffmpeg)."""
+    if proc.poll() is not None:
+        return
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True)
+        else:
+            os.killpg(proc.pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
 
 
 def run_quiet(cmd: list[str], verbose: bool = False) -> subprocess.CompletedProcess:

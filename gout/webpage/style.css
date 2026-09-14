@@ -80,7 +80,10 @@ footer { flex: none; border-top: 1px solid var(--line); padding: 1em 0 1.4em; di
 #download-help { background: var(--bg-2); border: 1px solid var(--line); border-radius: 3px; padding: .6em .8em;
                  max-width: 80ch; }
 #download-help p { margin: .2em 0; }
-#download-help code { color: #ffd75f; white-space: pre-wrap; }
+#download-help .files { display: flex; flex-wrap: wrap; gap: .5em; margin: .5em 0; }
+#download-help ol { margin: .4em 0; padding-left: 2.2ch; }
+#download-help li { margin: .15em 0; }
+#download-help a:not(.button) { color: var(--accent); }
 
 /* the full-screen fractal */
 #screen { position: fixed; inset: 0; background: #000; z-index: 10; }

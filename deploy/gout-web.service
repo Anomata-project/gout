@@ -1,0 +1,34 @@
+# gout's web preview behind nginx (deploy/deploy-web.sh installs it as /etc/systemd/system/gout-web.service)
+[Unit]
+Description=gout web preview (gout.anomata.eu)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=gout-web
+Group=gout-web
+WorkingDirectory=/var/lib/gout-web
+ExecStart=/usr/bin/python3 /var/www/gout/bin/gout web --host 127.0.0.1 --port 8321 --root /var/lib/gout-web/projects --releases Anomata-project/gout --trust-proxy -q
+Environment=HOME=/var/lib/gout-web XDG_CONFIG_HOME=/var/lib/gout-web/config GOUT_NO_ADDONS=1 PYTHONDONTWRITEBYTECODE=1
+Restart=on-failure
+RestartSec=3
+
+# the preview runs ffmpeg on files strangers upload: it may write only its own folder
+StateDirectory=gout-web
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+ReadWritePaths=/var/lib/gout-web
+MemoryMax=1200M
+CPUQuota=160%
+TasksMax=96
+
+[Install]
+WantedBy=multi-user.target

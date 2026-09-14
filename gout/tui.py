@@ -14,7 +14,8 @@ import threading
 import time
 from pathlib import Path
 
-from .core import __version__, fmt_ms, fmt_pan, GoutError, is_master, MASTER_N, MASTER_WAV, parse_time
+from .core import __version__, detached, fmt_ms, fmt_pan, gout_command, GoutError, is_master, MASTER_N, MASTER_WAV, \
+    parse_time, stop_process
 from . import analysis
 from .model import audible, timeline
 from .fx import effect, effects, GUTTER, resolve
@@ -43,8 +44,10 @@ TRACK_FIRST = {"move", "trim", "rm", "mute", "solo", "gain", "pan", "fx"}
 UI_WORDS = ("quit", "clear", "split", "sheet", "view", "help")
 HISTORY_FILE = ".gout/ui-history"
 IDLE_RENDER_SECONDS = 1.5  # how long nothing must change before the ui renders in the background
-PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 HISTORY_KEEP = 500
+# ctrl and alt with the arrows: xterm-style terminfo names (kLFT5, kRIT3...) and PDCurses's (Windows)
+ARROW_NAMES = {f"k{side}{n}".encode(): way for side, way in (("LFT", "left"), ("RIT", "right")) for n in range(2, 9)}
+ARROW_NAMES |= {f"{mod}_{side}".encode(): side.lower() for mod in ("CTL", "ALT") for side in ("LEFT", "RIGHT")}
 
 
 def header_line(text: str, hint: str, width: int) -> str:
@@ -418,21 +421,16 @@ class Tui:
             return
         if not p.tracks() or p.master_is_current():
             return
-        code = (f"import sys; sys.path.insert(0, {str(PACKAGE_ROOT)!r}); from gout.cli import main; "
-                f"sys.exit(main(['-p', {str(p.root)!r}, 'mix']))")
-        self.render_proc = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE,
+        self.render_proc = subprocess.Popen([*gout_command(), "-p", str(p.root), "mix"], stdout=subprocess.PIPE,
                                             stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, text=True,
-                                            start_new_session=True)
+                                            **detached())
         self.render_state = state
 
     def cancel_render(self) -> None:
         if self.render_proc is None:
             return
         if self.render_proc.poll() is None:
-            try:
-                os.killpg(self.render_proc.pid, 15)
-            except (ProcessLookupError, PermissionError):
-                pass
+            stop_process(self.render_proc)
             try:
                 self.render_proc.wait(timeout=3)
             except subprocess.TimeoutExpired:
@@ -441,7 +439,10 @@ class Tui:
             self.render_proc.stdout.close()
         self.render_proc = None
         for leftover in ("master.raw.part.wav", "master.part.wav"):
-            (self.project.root / leftover).unlink(missing_ok=True)
+            try:
+                (self.project.root / leftover).unlink(missing_ok=True)
+            except OSError:  # Windows: a file still open cannot be deleted; the next render overwrites it
+                pass
 
     def stop_playing(self, keep: bool = True) -> None:
         if self.player is None:
@@ -539,8 +540,8 @@ class Tui:
                 self.line.clear()
         elif key in (curses.KEY_SLEFT, curses.KEY_SRIGHT):
             self.resize(5 if key == curses.KEY_SRIGHT else -5)
-        elif isinstance(key, int) and self.keyname(key)[:4] in (b"kLFT", b"kRIT"):  # ctrl/alt + arrows
-            self.resize(5 if self.keyname(key)[:4] == b"kRIT" else -5)
+        elif isinstance(key, int) and self.keyname(key) in ARROW_NAMES:  # ctrl/alt + arrows
+            self.resize(5 if ARROW_NAMES[self.keyname(key)] == "right" else -5)
         elif key == curses.KEY_UP:
             self.line.up()
         elif key == curses.KEY_DOWN:

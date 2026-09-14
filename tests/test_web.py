@@ -1,4 +1,5 @@
 import http.client
+import io
 import json
 import os
 import re
@@ -240,6 +241,7 @@ class WebTest(GoutTest):
         self.assertNotIn("saveas", reply["commands"])
         self.assertEqual((reply["aliases"]["e"], reply["aliases"]["pl"], reply["effects"]["verb"]), ("eq", "play", "reverb"))
         self.assertNotIn("sa", reply["aliases"])
+        self.assertEqual(reply["installers"], {})  # no --releases: nothing to offer
 
     def test_the_page_and_its_colours(self):
         status, head, raw = self.call("GET", "", expect=200)
@@ -280,3 +282,39 @@ class StoreTest(GoutTest):
         self.assertEqual(store.sweep(), [name])
         self.assertIsNone(store.folder(old))
         self.assertIsNotNone(store.folder(kept))
+
+    def test_releases_find_each_systems_installer(self):
+        web = __import__("gout.web", fromlist=["Releases"])
+        release = {"tag_name": "v2.0.0", "html_url": "https://github.com/o/r/releases/tag/v2.0.0", "assets": [
+            {"name": f"gout-2.0.0-{name}", "browser_download_url": f"https://example.invalid/{name}", "size": 1000}
+            for name in ("windows-x64-setup.exe", "macos-arm64.pkg", "macos-x86_64.pkg")] + [
+            {"name": "gout_2.0.0_all.deb", "browser_download_url": "https://example.invalid/deb", "size": 99},
+            {"name": "notes.txt", "browser_download_url": "https://example.invalid/notes", "size": 5}]}
+
+        class Reply(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        releases = web.Releases("o/r")
+        self.assertEqual(releases.found, {"page": "https://github.com/o/r/releases/latest"})
+        real = web.urllib.request.urlopen
+        try:
+            web.urllib.request.urlopen = lambda request, timeout: Reply(json.dumps(release).encode())
+            releases.refresh()
+            self.assertEqual(releases.found["version"], "v2.0.0")
+            self.assertEqual(releases.found["windows"]["url"], "https://example.invalid/windows-x64-setup.exe")
+            self.assertEqual(releases.found["macos-arm64"]["name"], "gout-2.0.0-macos-arm64.pkg")
+            self.assertEqual(releases.found["linux"]["bytes"], 99)
+            self.assertEqual(sorted(releases.found), ["linux", "macos-arm64", "macos-x86_64", "page", "version", "windows"])
+
+            def offline(request, timeout):
+                raise OSError("no network")
+
+            web.urllib.request.urlopen = offline
+            releases.refresh()  # GitHub out of reach: what was found stays
+            self.assertIn("windows", releases.found)
+        finally:
+            web.urllib.request.urlopen = real

@@ -1,6 +1,7 @@
 """Saturation for gout: drive the sound into a soft curve for warmth, grit or fuzz.
 
-Install it by copying this file into your addon folder:
+Install it with `gout addons examples`, which copies the examples into your addon folder, or
+by hand:
 
     mkdir -p ~/.config/gout/addons && cp examples/addons/saturation.py ~/.config/gout/addons/
 
@@ -183,4 +184,5 @@ class Saturation(Effect):
 
 
 def register(gout):
+    gout.requires(1)  # the addon API this file is written for (docs/addons.md)
     gout.add_effect(Saturation())

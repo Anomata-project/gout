@@ -5,7 +5,7 @@ import os
 import sys
 from pathlib import Path
 
-from .core import __version__, BASE_COMMANDS, DB_NAME, die, GoutError, need_tools
+from .core import __version__, BASE_COMMANDS, DB_NAME, die, GoutError, need_tools, use_bundled_tools
 from .project import Project
 from .helptext import help_text
 from .fx import effects
@@ -113,6 +113,11 @@ def run(argv: list[str], project: Project | None = None) -> int:
         return 0
     if head in ("-V", "--version", "version"):
         print(f"gout {__version__}")
+        try:
+            import curses  # noqa: F401  what the terminal ui needs; Windows has it from windows-curses
+        except ImportError as exc:
+            print(f"gout: the terminal ui cannot start here: {exc}"
+                  + ("  (pip install windows-curses)" if os.name == "nt" else ""))
         return 0
     if head in ("quit", "clear", "split", "sheet", "stop") and project is None:
         die(f"{head} only means something inside the ui (gout, in a project)")
@@ -143,6 +148,13 @@ def run(argv: list[str], project: Project | None = None) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else list(argv)
+    use_bundled_tools()
+    if os.name == "nt":  # a pipe or file on Windows is cp1252 otherwise, and gout prints ━ and ▶
+        for stream in (sys.stdout, sys.stderr):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except (AttributeError, ValueError):
+                pass
     try:
         return run(argv)
     except GoutError as exc:

@@ -1,6 +1,9 @@
 """gout web: the preview of gout in a browser. No login; one project per browser.
 
-    gout web [--host 127.0.0.1] [--port 8321] [--root DIR] [--downloads DIR] [--trust-proxy]
+    gout web [--host 127.0.0.1] [--port 8321] [--root DIR] [--downloads DIR] [--releases OWNER/REPO]
+             [--trust-proxy] [-q]
+
+--releases names the GitHub repository whose latest release holds the installers the page offers.
 
 The page (gout/webpage/) talks to a small JSON api under /api/. The first visit makes a project
 and the page keeps its key in localStorage; the key comes back in the X-Gout-Key header, and only
@@ -32,6 +35,7 @@ import sys
 import threading
 import time
 import traceback
+import urllib.request
 import zipfile
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -40,7 +44,8 @@ from urllib.parse import parse_qs, urlsplit
 
 from . import analysis
 from .cli import aliases
-from .core import __version__, DB_NAME, DEFAULT_RATE, GoutError, MASTER_MP3, MASTER_N, MASTER_WAV, TRACK_DIR
+from .core import __version__, DB_NAME, DEFAULT_RATE, gout_command, GoutError, MASTER_MP3, MASTER_N, MASTER_WAV, \
+    TRACK_DIR
 from .commands import chain_kinds, panel_target, settled_panel
 from .formula import FormulaError, parse
 from .fx import effect, effects, GUTTER, resolve
@@ -53,7 +58,6 @@ from .settings import master_track, setting
 from .theme import BASIC_RGB, CUBE, DEFAULTS, NAMES, rgb_of
 
 PAGE_DIR = Path(__file__).resolve().parent / "webpage"
-PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 
 MAX_FILES = 5
 MAX_FILE_BYTES = 20_000_000
@@ -112,12 +116,10 @@ class Refused(Exception):
 def run_gout(root: Path, argv: list[str], timeout: int = COMMAND_SECONDS) -> tuple[bool, list[str]]:
     """Run one gout command on the project in its own process. (ok, output lines), with the
     project's path taken out of the output."""
-    code = (f"import sys; sys.path.insert(0, {str(PACKAGE_ROOT)!r}); from gout.cli import main; "
-            f"sys.exit(main(sys.argv[1:]))")
     env = dict(os.environ, GOUT_NO_ADDONS="1", GOUT_PLAYER="null", XDG_CONFIG_HOME=str(root / ".gout" / "config"))
     env.pop("GOUT_ADDONS", None)
     try:
-        result = subprocess.run([sys.executable, "-c", code, "-p", str(root), *argv], capture_output=True,
+        result = subprocess.run([*gout_command(), "-p", str(root), *argv], capture_output=True,
                                 text=True, timeout=timeout, env=env, stdin=subprocess.DEVNULL, cwd=root)
     except subprocess.TimeoutExpired:
         return False, [f"error: {argv[0]} took longer than {timeout} s and was stopped"]
@@ -425,12 +427,51 @@ def theme_css() -> str:
     return "\n".join(rules) + "\n"
 
 
+# ---------------------------------------------------------------------------- the installers
+
+RELEASES_API = "https://api.github.com/repos/{repo}/releases/latest"
+INSTALLERS = {  # which file of a release is which system's installer, as packaging/build.py names them
+    "windows": re.compile(r"-windows-x64-setup\.exe$"),
+    "macos-arm64": re.compile(r"-macos-arm64\.pkg$"),
+    "macos-x86_64": re.compile(r"-macos-x86_64\.pkg$"),
+    "linux": re.compile(r"_all\.deb$"),
+}
+
+
+class Releases:
+    """The installers of the latest release on GitHub, looked up when the server starts and then
+    hourly: the page may only talk to its own server, so the server asks GitHub for it."""
+
+    def __init__(self, repo: str | None):
+        self.repo = repo
+        self.found: dict = {"page": f"https://github.com/{repo}/releases/latest"} if repo else {}
+
+    def refresh(self) -> None:
+        if not self.repo:
+            return
+        request = urllib.request.Request(RELEASES_API.format(repo=self.repo),
+                                         headers={"Accept": "application/vnd.github+json", "User-Agent": "gout-web"})
+        try:
+            with urllib.request.urlopen(request, timeout=10) as reply:
+                data = json.load(reply)
+        except (OSError, ValueError):
+            return  # keep what was found before; there may be no release yet
+        found = {"page": data.get("html_url") or self.found.get("page"), "version": data.get("tag_name", "")}
+        for asset in data.get("assets") or []:
+            for system, pattern in INSTALLERS.items():
+                if pattern.search(asset.get("name", "")):
+                    found[system] = {"name": asset["name"], "url": asset["browser_download_url"],
+                                     "bytes": asset.get("size", 0)}
+        self.found = found
+
+
 # ---------------------------------------------------------------------------- the api
 
 class App:
-    def __init__(self, store: Store, downloads: Path | None = None):
+    def __init__(self, store: Store, downloads: Path | None = None, releases: Releases | None = None):
         self.store = store
         self.downloads = downloads.expanduser().resolve() if downloads else None
+        self.releases = releases or Releases(None)
 
     def info(self) -> dict:
         found = {}
@@ -443,7 +484,8 @@ class App:
             kinds |= {word: eff.name for word in (eff.name, *eff.aliases)}
         known = words | {"fz", "quit", "exit", "q", "sheet", "split", "timeline"}
         short = {alias: name for alias, name in aliases().items() if name in known}
-        return {"version": __version__, "downloads": found, "commands": sorted(words), "aliases": short,
+        return {"version": __version__, "downloads": found, "installers": self.releases.found,
+                "commands": sorted(words), "aliases": short,
                 "effects": kinds,
                 "limits": {"files": MAX_FILES, "file_bytes": MAX_FILE_BYTES, "days": self.store.days,
                            "song_ms": MAX_SONG_MS, "formats": sorted(FORMATS)}}
@@ -859,22 +901,23 @@ def default_root() -> Path:
 
 
 def serve(host: str, port: int, root: Path, downloads: Path | None = None, trust_proxy: bool = False,
-          quiet: bool = False) -> None:
+          quiet: bool = False, releases: str | None = None) -> None:
     effects()  # built-ins only: cli.run switched addons off before anything loaded
     store = Store(root)
     server = ThreadingHTTPServer((host, port), Handler)
     server.daemon_threads = True
-    server.app = App(store, downloads)  # type: ignore[attr-defined]
+    server.app = App(store, downloads, Releases(releases))  # type: ignore[attr-defined]
     server.trust_proxy = trust_proxy  # type: ignore[attr-defined]
     server.quiet = quiet  # type: ignore[attr-defined]
 
-    def sweeper() -> None:
+    def hourly() -> None:
         while True:
+            server.app.releases.refresh()  # type: ignore[attr-defined]
             for name in store.sweep():
                 print(f"web   deleted unused project {name[:8]}…", flush=True)
             time.sleep(3600)
 
-    threading.Thread(target=sweeper, daemon=True).start()
+    threading.Thread(target=hourly, daemon=True).start()
     shown = host if ":" not in host else f"[{host}]"
     print(f"web   http://{shown}:{server.server_address[1]}/  projects in {store.root}  (ctrl-c stops)", flush=True)
     try:

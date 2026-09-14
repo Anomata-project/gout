@@ -732,56 +732,80 @@
   // ------------------------------------------------------------------ downloads
 
   const INSTALL = {
-    linux: [
-      "gout runs in a terminal and needs Python 3.9 or newer and ffmpeg:",
-      "sudo apt install python3 ffmpeg      (Debian, Ubuntu; dnf or pacman elsewhere)",
-      "python3 gout.pyz new song && cd song && python3 ../gout.pyz",
-    ],
-    mac: [
-      "gout runs in Terminal and needs Python 3.9 or newer and ffmpeg, both from Homebrew:",
-      "brew install python ffmpeg",
-      "python3 gout.pyz new song && cd song && python3 ../gout.pyz",
-    ],
-    windows: [
-      "On Windows gout runs inside WSL, the Linux that comes with Windows (its terminal ui needs it):",
-      "wsl --install      (in PowerShell as administrator, then restart)",
-      "sudo apt install python3 ffmpeg      (in the Ubuntu window)",
-      "python3 gout.pyz new song && cd song && python3 ../gout.pyz",
-    ],
+    windows: {
+      title: "gout for Windows 10 and 11",
+      files: [["windows", "download for Windows"]],
+      steps: [
+        "Open the downloaded gout-…-windows-x64-setup.exe.",
+        "If Windows says \"Windows protected your PC\", click More info, then Run anyway. gout is free and not signed with a paid certificate, so Windows asks once.",
+        "Click through the installer. It installs for you only and needs no administrator.",
+        "Open gout from the Start menu: a terminal opens in your gout folder with the first commands.",
+      ],
+      project: "Your project from here: unzip gout-preview.zip, then in gout's terminal: gout -p \"%USERPROFILE%\\Downloads\\gout-preview\"",
+    },
+    mac: {
+      title: "gout for macOS",
+      files: [["macos-arm64", "Apple silicon (M1 and later)"], ["macos-x86_64", "Intel"]],
+      steps: [
+        "Open the downloaded pkg. macOS says it cannot verify the developer: click Done. gout is free and not signed with a paid certificate, so macOS asks once.",
+        "Open System Settings → Privacy & Security, scroll down to the message about gout, click Open Anyway, then Open, and give your password.",
+        "Click through the installer.",
+        "Open gout from Launchpad, or type gout in Terminal.",
+      ],
+      project: "Your project from here: unzip gout-preview.zip, then in Terminal: gout -p ~/Downloads/gout-preview",
+    },
+    linux: {
+      title: "gout for Linux (Ubuntu, Debian, Mint, Pop!_OS)",
+      files: [["linux", "download the .deb"]],
+      steps: [
+        "Open the downloaded gout_…_all.deb: Ubuntu's App Center installs it. Or, in its folder: sudo apt install ./gout_*_all.deb",
+        "apt brings Python and ffmpeg along.",
+        "Open gout from your applications, or type gout in a terminal.",
+        "Another Linux: run gout from its source (the README on GitHub); it needs Python 3.9 and ffmpeg.",
+      ],
+      project: "Your project from here: unzip gout-preview.zip, then: gout -p ~/Downloads/gout-preview",
+    },
   };
 
   function showDownload(os) {
     const box = $("download-help");
-    const file = Object.keys(ui.info.downloads).find((name) => name.endsWith(".pyz"));
-    const lines = INSTALL[os];
-    box.replaceChildren();
-    const intro = document.createElement("p");
-    intro.textContent = lines[0];
-    box.appendChild(intro);
-    for (const line of lines.slice(1)) {
-      const p = document.createElement("p");
-      const code = document.createElement("code");
-      code.textContent = line;
-      p.appendChild(code);
-      box.appendChild(p);
+    const guide = INSTALL[os];
+    const found = ui.info.installers || {};
+    const el = (tag, className, text) => {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      if (text !== undefined) node.textContent = text;
+      return node;
+    };
+    box.replaceChildren(el("p", "", guide.title + (found.version ? ` (${found.version})` : "")));
+    const row = el("p", "files");
+    let any = false;
+    for (const [key, label] of guide.files) {
+      const file = found[key];
+      if (!file) continue;
+      any = true;
+      const a = el("a", "button", `${label} · ${size(file.bytes)}`);
+      a.href = file.url;
+      a.rel = "noopener";
+      a.title = file.name;
+      row.appendChild(a);
     }
-    const p = document.createElement("p");
-    if (file) {
-      const a = document.createElement("a");
-      a.className = "button";
-      a.href = ui.info.downloads[file];
-      a.download = file;
-      a.textContent = `download ${file}`;
-      p.appendChild(a);
-      const rest = document.createElement("span");
-      rest.className = "dim";
-      rest.textContent = "  then open your project zip with  python3 gout.pyz -p gout-preview";
-      p.appendChild(rest);
+    if (any) {
+      box.appendChild(row);
     } else {
-      p.className = "dim";
-      p.textContent = "This server has no download to offer yet.";
+      const none = el("p", "dim", "The installers are not published yet. ");
+      if (found.page) {
+        const a = el("a", "", "They will be on GitHub.");
+        a.href = found.page;
+        a.rel = "noopener";
+        none.appendChild(a);
+      }
+      box.appendChild(none);
     }
-    box.appendChild(p);
+    const list = el("ol");
+    for (const step of guide.steps) list.appendChild(el("li", "", step));
+    box.appendChild(list);
+    box.appendChild(el("p", "dim", guide.project));
     box.hidden = false;
     for (const b of document.querySelectorAll(".button.os")) b.setAttribute("aria-pressed", String(b.dataset.os === os));
   }

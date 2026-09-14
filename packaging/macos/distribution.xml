@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="2">
+    <title>gout @VERSION@</title>
+    <welcome file="welcome.html" mime-type="text/html"/>
+    <license file="LICENSE.txt" mime-type="text/plain"/>
+    <conclusion file="conclusion.html" mime-type="text/html"/>
+    <options customize="never" require-scripts="false" hostArchitectures="@ARCH@"/>
+    <domains enable_localSystem="true"/>
+    <choices-outline>
+        <line choice="gout"/>
+    </choices-outline>
+    <choice id="gout" title="gout">
+        <pkg-ref id="@IDENTIFIER@"/>
+    </choice>
+    <pkg-ref id="@IDENTIFIER@" version="@VERSION@" onConclusion="none">gout-component.pkg</pkg-ref>
+</installer-gui-script>

@@ -14,8 +14,9 @@ back to bold, dim or reverse video as before.
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
+
+from .core import config_home
 
 FILE_NAME = "color.json"
 
@@ -98,8 +99,7 @@ MONO = {
 
 
 def user_file() -> Path:
-    base = os.environ.get("XDG_CONFIG_HOME") or "~/.config"
-    return Path(base).expanduser() / "gout" / FILE_NAME
+    return config_home() / FILE_NAME
 
 
 def theme_file(project_root: Path | None) -> Path | None:
