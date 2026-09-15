@@ -201,6 +201,9 @@ class GoutTest(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp(prefix="gout-test-"))
         self.saved_xdg = os.environ.get("XDG_CONFIG_HOME")
         os.environ["XDG_CONFIG_HOME"] = str(self.tmp / "config")  # never the user's own color.json
+        self.saved_env = {name: os.environ.get(name) for name in ("GOUT_RECORDER", "GOUT_MONITOR")}
+        os.environ["GOUT_RECORDER"] = "null"  # in-process code (the ui tests) never records a real input
+        os.environ["GOUT_MONITOR"] = "none"   # nor plays one back
         for name in ("GNOME_TERMINAL_SERVICE", "GNOME_TERMINAL_SCREEN"):  # never the user's own window
             os.environ.pop(name, None)
         self.addons = self.tmp / "addons"
@@ -215,6 +218,11 @@ class GoutTest(unittest.TestCase):
             os.environ.pop("XDG_CONFIG_HOME", None)
         else:
             os.environ["XDG_CONFIG_HOME"] = self.saved_xdg
+        for name, value in self.saved_env.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
         if os.environ.get("GOUT_KEEP_TEST_DIRS"):
             print(f"\nkept {self.tmp}")
         else:

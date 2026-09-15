@@ -109,9 +109,9 @@ class UiTest(GoutTest):
         self.assertNotIn("gout mix", page)
         self.assertIn("no command 'nope'", self.gout("help", "nope", ok=False).stderr)
         project, screen, ui = self.open_ui(root)
-        ui.input = "record"
+        ui.input = "record calibrate"  # the one part of recording left to the shell
         ui.submit()
-        self.assertIn("help record says how", ui.log[-1])
+        self.assertIn("run that from the shell", ui.log[-1])
         ui.input = "help record"
         ui.submit()
         self.assertIn("gout record calibrate", "\n".join(ui.log))
