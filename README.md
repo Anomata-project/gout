@@ -87,10 +87,11 @@ name (a unique prefix will do). `-N` / `--no-mix` on any change skips an automat
 | `trim` | `t` | `TRACK -c` | soft trim off (`--clear`) |
 | `trim` | `t` | `TRACK -H [-st ..] [-et ..] [-r]` | hard trim, rewrites the file; bakes the soft trim when no times given (`--hard`) |
 | `rm` | `r` | `TRACK [-D]` | drop a track; `-D` also deletes its file (`--delete`) |
-| `mute` | `mu` | `TRACK [on\|off]` | toggle; `mute all off` |
+| `mute` | `mu` | `TRACK [PART] [on\|off]` | toggle; `mute all off` |
 | `solo` | `s` | `TRACK [on\|off]` | toggle; `solo all off` |
-| `gain` | `g` | `TRACK DB` | `gain 2 -6` |
-| `pan` | `p` | `TRACK L30 \| R30 \| C` | every track starts centred |
+| `gain` | `g` | `TRACK [PART] DB` | `gain 2 -6`; `gain 2 p3 -6` only that part |
+| `pan` | `p` | `TRACK [PART] L30 \| R30 \| C` | every track starts centred |
+| `part` | `pt` | `TRACK [TIME... \| PART name [NAME] \| join [PART PART] [-f]]` | cut a track into parts that stay on its line; see Parts |
 | `hp`, `lp` | | `TRACK HZ [SLOPE] \| off` | high-pass or low-pass cut, slope in dB per octave (12 by default) |
 | `eq` | `e` | `TRACK BANDS... \| PRESET \| on \| off \| clear` | the whole eq in one line; `eq TRACK` shows it with the curve |
 | `delay` | `dl` | `TRACK TIME [wN fN nN] \| PRESET \| on \| off \| clear` | delay after the compressor; note values with `set bpm` |
@@ -115,6 +116,35 @@ name (a unique prefix will do). `-N` / `--no-mix` on any change skips an automat
 
 Long flags exist for every short one: `--at --name --hard --clear --reencode --delete --mp3
 --rate --width --verbose --no-mix`.
+
+## Parts
+
+A track can be cut into parts. They stay on the track's line, and each can have a gain, pan and
+mute of its own on top of the track's.
+
+```sh
+gout part 3 1:30             # cut track 3 where you hear 1:30: parts p1 and p2
+gout part 3 2:10 2:45        # more cuts, anywhere in the track
+gout part 3 p2 name chorus   # p2 answers to chorus too (part 3 chorus name: back to p2)
+gout gain 3 chorus -10       # only the chorus is 10 dB down; gain 3 -10 is the whole track
+gout mute 3 p4               # and p4 is left out
+gout part 3                  # the parts, where they are and what they have
+gout part 3 join             # one piece again
+```
+
+In the ui, `part 3 here` cuts at the playhead. Parts are numbered from the left and renumber
+after a new cut, as tracks do; a name you give stays with its part. A name cannot be a word that
+means something after a track, such as `on`, `off`, `l30` or an effect preset.
+
+The sound goes through each part's gain and pan first, then the parts are summed, then the track's
+effects, gain and pan act on the sum. Where two parts meet they overlap by 10 ms with a linear
+crossfade: a cut alone changes nothing you can hear (the difference measures -162 dB), and a part
+turned down does not click at its edges.
+
+`part 3 join` makes one piece again, and `part 3 join p2 p3` joins two neighbours. When the parts
+have settings of their own that joining would lose, gout says which and stops. `-f` joins anyway
+and drops them, and `undo` brings them back. `trim` on a track in parts moves the start of its first
+part and the end of its last; a hard trim needs one piece.
 
 ## Playing
 

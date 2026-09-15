@@ -31,11 +31,12 @@ from .core import (
     TRACK_DIR,
 )
 from .media import cut, mp3_frame_cut, probe
-from .model import audible, is_heard, timeline
+from .model import (audible, is_heard, meets, MIN_PART_MS, part_has_settings, part_label, part_settings, part_start,
+                    PART_WORD, timeline)
 from .fx import Effect, effect, effects, FxContext, resolve
 from .settings import BITS_CODEC, MASTER_DEFAULTS, master_track, parse_setting, setting, TAG_KEYS
 from .project import legacy_chain, Project
-from .mixer import autorender, live_source, mix, sounding_end, track_chain, track_head
+from .mixer import autorender, live_source, mix, sounding_end, sounds, track_chain
 from .render import effect_picture, LABEL_W, render_cheat, render_timeline
 from .player import Player
 from .recorder import (choose_backend, current_input, default_output, find_input, level_db, list_inputs,
@@ -231,6 +232,12 @@ def cmd_ls(project: Project, args: Args) -> None:
         print(f"{t['n']:>4}  {t['name']:<16} {t['kind']:<4} {t['channels']:>2}  {fmt_ms(start):<12} "
               f"{fmt_ms(b - a):<12} {fmt_ms(t['length_ms']):<12} {trim:<27} "
               f"{fmt_db(t['gain_db']):<7} {fmt_pan(t['pan']):<4} {flags}")
+        for part in t["parts"]:
+            begin = part_start(t, part)
+            print(f"{'':>4}    {part_text(t['parts'], part):<14} {'':<4} {'':>2}  {fmt_ms(begin):<12} "
+                  f"{fmt_ms(part['out_ms'] - part['in_ms']):<12} {'':<12} "
+                  f"{fmt_ms(part['in_ms']) + ' > ' + fmt_ms(part['out_ms']):<27} "
+                  f"{fmt_db(part['gain_db']):<7} {fmt_pan(part['pan']):<4} {'M' if part['mute'] else '-'}")
     master_ms = project.get("master_ms")
     if master_ms and project.master.exists():
         lufs, tp = project.get("master_lufs"), project.get("master_tp")
@@ -311,6 +318,16 @@ def cmd_trim(project: Project, args: Args) -> None:
     if b <= a:
         die(f"out point {fmt_ms(b)} is not after the in point {fmt_ms(a)}")
 
+    parts = t["parts"]
+    if parts and hard:
+        die(f"track {t['n']} {t['name']} is in parts; a hard trim needs one piece: gout part {t['n']} join first")
+    if parts and (clear or st or et or el):  # the outer ends are the first part's start and the last part's end
+        first, last = parts[0], parts[-1]
+        if a != first["in_ms"] and (len(parts) > 1 and a > first["out_ms"] - MIN_PART_MS):
+            die(f"in point {fmt_ms(a)} is past the end of {part_label(parts, first)} ({fmt_ms(first['out_ms'])} in the file)")
+        if b != last["out_ms"] and (len(parts) > 1 and b < last["in_ms"] + MIN_PART_MS):
+            die(f"out point {fmt_ms(b)} is before the start of {part_label(parts, last)} ({fmt_ms(last['in_ms'])} in the file)")
+
     if not (hard or clear or st or et or el):
         trimmed = a > 0 or b < length
         print(f"trim  {t['n']:>2}  {t['name']:<16} " + (f"{fmt_ms(a)} > {fmt_ms(b)}  of {fmt_ms(length)}"
@@ -320,6 +337,9 @@ def cmd_trim(project: Project, args: Args) -> None:
     if not hard:
         project.record(f"trim {t['name']} {fmt_ms(a)}>{fmt_ms(b)}")
         project.update(t["n"], in_ms=a, out_ms=None if b >= length else b)
+        if parts:
+            project.part_update(parts[0]["id"], in_ms=a)
+            project.part_update(parts[-1]["id"], out_ms=b)
         start, end = timeline({**t, "in_ms": a, "out_ms": b})
         print(f"trim  {t['n']:>2}  {t['name']:<16} {fmt_ms(a)} > {fmt_ms(b)}  soft, {fmt_ms(b - a)} audible"
               f"  at {fmt_ms(start)} -> {fmt_ms(end)}")
@@ -372,8 +392,26 @@ def cmd_rm(project: Project, args: Args) -> None:
 
 
 def _toggle(project: Project, args: Args, column: str) -> None:
-    pos = args.positionals(f"gout {column} TRACK|all [on|off]", 1, 2)
-    spec, state = pos[0], (pos[1] if len(pos) > 1 else None)
+    usage = f"gout {column} TRACK|all [on|off]" + ("   gout mute TRACK PART [on|off]" if column == "mute" else "")
+    pos = args.positionals(usage, 1, 3)
+    spec, rest = pos[0], pos[1:]
+    if rest and rest[0].lower() not in ("on", "off", "1", "0", "yes", "no", "true", "false"):
+        if column == "solo":
+            die("solo works on whole tracks; mute the parts you do not want to hear")
+        if spec == "all" or len(rest) > 2:
+            die(f"usage: {usage}")
+        t = project.track(spec)
+        part = pick_part(t, rest[0])
+        label = part_label(t["parts"], part)
+        new = on_off(rest[1] if len(rest) > 1 else None, part["mute"])
+        project.record(f"mute {t['name']} {label} {'on' if new else 'off'}")
+        project.part_update(part["id"], mute=new)
+        print(f"mute  {t['n']:>2}  {t['name']:<16} {label:<8} {'on' if new else 'off'}")
+        autorender(project, args)
+        return
+    if len(rest) > 1:
+        die(f"usage: {usage}")
+    state = rest[0] if rest else None
     if spec == "all":
         if state is None:
             die(f"gout {column} all needs on or off")
@@ -397,23 +435,31 @@ def cmd_solo(project: Project, args: Args) -> None:
 
 
 def cmd_gain(project: Project, args: Args) -> None:
-    spec, value = args.positionals("gout gain TRACK DB   (e.g. gain 2 -6)", 2, 2)
-    t = project.track(spec)
+    words = args.positionals("gout gain TRACK [PART] DB   (e.g. gain 2 -6, gain 2 p3 -6)", 2, 3)
+    t = project.track(words[0])
+    part, value = (pick_part(t, words[1]) if len(words) == 3 else None), words[-1]
     try:
         gain = float(value.lower().removesuffix("db"))
     except ValueError:
         die(f"bad gain {value!r}, expected a number of dB like -6 or +3.5")
     if not -60 <= gain <= 24:
         die("gain must be between -60 and +24 dB")
-    project.record(f"gain {t['name']} {value}")
-    project.update(t["n"], gain_db=gain)
-    print(f"gain  {t['n']:>2}  {t['name']:<16} {fmt_db(gain)}")
+    if part is not None:
+        label = part_label(t["parts"], part)
+        project.record(f"gain {t['name']} {label} {value}")
+        project.part_update(part["id"], gain_db=gain)
+        print(f"gain  {t['n']:>2}  {t['name']:<16} {label:<8} {fmt_db(gain)}")
+    else:
+        project.record(f"gain {t['name']} {value}")
+        project.update(t["n"], gain_db=gain)
+        print(f"gain  {t['n']:>2}  {t['name']:<16} {fmt_db(gain)}")
     autorender(project, args)
 
 
 def cmd_pan(project: Project, args: Args) -> None:
-    spec, value = args.positionals("gout pan TRACK C | L30 | R30 | -100..100", 2, 2)
-    t = project.track(spec)
+    words = args.positionals("gout pan TRACK [PART] C | L30 | R30 | -100..100", 2, 3)
+    t = project.track(words[0])
+    part, value = (pick_part(t, words[1]) if len(words) == 3 else None), words[-1]
     v = value.strip().upper()
     match = re.fullmatch(r"([LR])\s*(\d{1,3})", v)
     if v in ("C", "CENTER", "CENTRE", "0"):
@@ -427,10 +473,182 @@ def cmd_pan(project: Project, args: Args) -> None:
             die(f"bad pan {value!r}")
     if not -1 <= pan <= 1:
         die("pan must be between L100 and R100")
-    project.record(f"pan {t['name']} {value}")
-    project.update(t["n"], pan=pan)
-    print(f"pan   {t['n']:>2}  {t['name']:<16} {fmt_pan(pan)}")
+    if part is not None:
+        label = part_label(t["parts"], part)
+        project.record(f"pan {t['name']} {label} {value}")
+        project.part_update(part["id"], pan=pan)
+        print(f"pan   {t['n']:>2}  {t['name']:<16} {label:<8} {fmt_pan(pan)}")
+    else:
+        project.record(f"pan {t['name']} {value}")
+        project.update(t["n"], pan=pan)
+        print(f"pan   {t['n']:>2}  {t['name']:<16} {fmt_pan(pan)}")
     autorender(project, args)
+
+
+# ---- parts: a track cut into pieces on its own line, each with gain, pan and mute of its own
+
+PART_USAGE = ("gout part TRACK                         its parts\n"
+              "       gout part TRACK TIME...                 cut it where you hear TIME (in the ui, here: the playhead)\n"
+              "       gout part TRACK PART name [NAME]        name a part; without NAME it is p1, p2 ... again\n"
+              "       gout part TRACK join [PART PART] [-f]   one piece again, or two neighbours; -f drops their own settings")
+PART_RESERVED = {"on", "off", "all", "here", "join", "name", "rm", "clear", "none", "save", "master", "presets",
+                 "kinds", "add", "move", "c", "center", "centre"}
+
+
+def find_part(t: dict, word: str) -> dict | None:
+    """One of a track's parts: p and its place from the left, or its name."""
+    parts, word = t.get("parts") or [], word.lower()
+    match = re.fullmatch(rf"{PART_WORD}(\d+)", word)
+    if match:
+        k = int(match.group(1))
+        return parts[k - 1] if 1 <= k <= len(parts) else None
+    return next((p for p in parts if p["name"] == word), None)
+
+
+def pick_part(t: dict, word: str) -> dict:
+    part = find_part(t, word)
+    if part is None:
+        if not t["parts"]:
+            die(f"track {t['n']} {t['name']} is one piece, it has no part {word!r} (gout part {t['n']} TIME cuts it)")
+        die(f"track {t['n']} {t['name']} has no part {word!r}; its parts: "
+            + " ".join(part_label(t["parts"], p) for p in t["parts"]))
+    return part
+
+
+def check_part_name(t: dict, part: dict, name: str) -> None:
+    if not re.fullmatch(r"[a-z][a-z0-9_-]{0,15}", name):
+        die(f"a part name is lowercase letters, digits, - and _, up to 16, starting with a letter: {name!r}")
+    if re.fullmatch(rf"{PART_WORD}\d+", name) or name in PART_RESERVED or re.fullmatch(r"[lr]\d{1,3}", name):
+        die(f"{name!r} would read as something else after the track; pick another name")
+    taken = next((eff.name for eff in effects().values() if name in eff.presets), None)
+    if taken:
+        die(f"{name!r} is a preset of {taken}; pick another name")
+    if any(p["name"] == name and p["id"] != part["id"] for p in t["parts"]):
+        die(f"track {t['n']} already has a part called {name}")
+
+
+def part_text(parts: list[dict], part: dict) -> str:
+    """p2, or p2 chorus when it has a name."""
+    place = f"{PART_WORD}{parts.index(part) + 1}"
+    return f"{place} {part['name']}" if part["name"] else place
+
+
+def part_own(part: dict) -> str:
+    bits = []
+    if part["gain_db"]:
+        bits.append(f"gain {fmt_db(part['gain_db'])}")
+    if abs(part["pan"]) >= 0.005:
+        bits.append(f"pan {fmt_pan(part['pan'])}")
+    if part["mute"]:
+        bits.append("muted")
+    return ", ".join(bits)
+
+
+def print_parts(t: dict) -> None:
+    parts = t["parts"]
+    if not parts:
+        start, end = timeline(t)
+        print(f"part  {t['n']:>2}  {t['name']:<16} one piece, {fmt_ms(start)} -> {fmt_ms(end)}"
+              f"   (gout part {t['n']} TIME cuts it there)")
+        return
+    print(f"part  {t['n']:>2}  {t['name']:<16} {len(parts)} parts")
+    for part in parts:
+        start = part_start(t, part)
+        print((f"      {part_text(parts, part):<16} {fmt_ms(start)} -> {fmt_ms(start + part['out_ms'] - part['in_ms'])}"
+               f"  {fmt_db(part['gain_db']):<7} {fmt_pan(part['pan']):<4}{'  muted' if part['mute'] else ''}").rstrip())
+
+
+def cmd_part(project: Project, args: Args) -> None:
+    """Cut a track into parts, name them, join them again."""
+    force = args.flag("--force", "-f")
+    words = args.positionals(PART_USAGE, 1)
+    t = project.track(words[0])
+    rest = words[1:]
+    if not rest:
+        print_parts(t)
+        return
+    if rest[0].lower() == "join":
+        join_parts(project, t, rest[1:], force)
+    elif len(rest) >= 2 and rest[1].lower() == "name":
+        part = pick_part(t, rest[0])
+        if len(rest) > 3:
+            die(f"a part name is one word\nusage: {PART_USAGE}")
+        new = rest[2].lower() if len(rest) == 3 else None
+        if new is not None:
+            check_part_name(t, part, new)
+        project.record(f"part {t['name']} {part_label(t['parts'], part)} name {new or ''}".rstrip())
+        project.part_update(part["id"], name=new)
+    elif rest[0].lower() == "here":
+        die("here is the playhead, so it works at the ui's prompt; from a shell give the time: "
+            f"gout part {t['n']} 1:30")
+    elif find_part(t, rest[0]) is not None:
+        die(f"what should {rest[0]} do? A part takes name, or join two of them: gout part {t['n']} join {' '.join(rest[:2])}"
+            f"\nusage: {PART_USAGE}")
+    else:
+        cut_track(project, t, [parse_ms(word) for word in rest])
+    print_parts(project.track(str(t["n"])))
+    autorender(project, args)
+
+
+def cut_track(project: Project, t: dict, times: list[int]) -> None:
+    """Cut at timeline times. Worked out in full before anything is written, so a bad time changes nothing."""
+    a, b = audible(t)
+    pieces = [dict(p) for p in t["parts"]] or [
+        {"id": None, "name": None, "in_ms": a, "out_ms": b, "shift_ms": 0, "gain_db": 0.0, "pan": 0.0, "mute": False}]
+    for at in sorted(set(times)):
+        piece = next((p for p in pieces if part_start(t, p) < at < part_start(t, p) + p["out_ms"] - p["in_ms"]), None)
+        if piece is None:
+            start, end = timeline(t)
+            die(f"track {t['n']} {t['name']} has nothing to cut at {fmt_ms(at)}: it plays {fmt_ms(start)} -> {fmt_ms(end)}"
+                + (" and is already cut there" if start < at < end else ""))
+        cut = at - t["offset_ms"] - piece["shift_ms"]
+        if cut - piece["in_ms"] < MIN_PART_MS or piece["out_ms"] - cut < MIN_PART_MS:
+            die(f"a cut at {fmt_ms(at)} would leave a part shorter than {MIN_PART_MS} ms")
+        after = {**piece, "id": None, "name": None, "in_ms": cut}
+        piece["out_ms"] = cut
+        pieces.insert(pieces.index(piece) + 1, after)
+    project.record(f"part {t['name']} " + " ".join(fmt_ms(at) for at in sorted(set(times))))
+    for piece in pieces:
+        if piece["id"] is None:
+            project.part_insert(t["file"], name=piece["name"], in_ms=piece["in_ms"], out_ms=piece["out_ms"],
+                                shift_ms=piece["shift_ms"], gain_db=piece["gain_db"], pan=piece["pan"],
+                                mute=int(piece["mute"]))
+        else:
+            project.part_update(piece["id"], out_ms=piece["out_ms"])
+
+
+def join_parts(project: Project, t: dict, words: list[str], force: bool) -> None:
+    parts = t["parts"]
+    if not parts:
+        die(f"track {t['n']} {t['name']} is one piece already")
+    if words:
+        if len(words) != 2:
+            die(f"join takes two neighbouring parts, or none for all of them\nusage: {PART_USAGE}")
+        i, j = sorted(parts.index(pick_part(t, word)) for word in words)
+        if j != i + 1:
+            die(f"{part_label(parts, parts[i])} and {part_label(parts, parts[j])} are not next to each other")
+        group = parts[i:j + 1]
+    else:
+        group = parts
+    for left, right in zip(group, group[1:]):
+        if not meets(left, right):
+            die(f"{part_label(parts, left)} and {part_label(parts, right)} do not meet, so they cannot be joined")
+    alike = len({part_settings(p) for p in group}) == 1
+    if not alike and not force:
+        own = [f"{part_label(parts, p)} ({part_own(p)})" for p in group if part_has_settings(p)]
+        die(f"{', '.join(own)} {'has settings of its own' if len(own) == 1 else 'have settings of their own'} that joining would drop; "
+            f"gout part {t['n']} join{''.join(' ' + w for w in words)} -f joins anyway (undo brings them back)")
+    project.record(f"part {t['name']} join" + "".join(" " + part_label(parts, p) for p in (group if words else [])))
+    first = group[0]
+    kept = {} if alike else {"gain_db": 0.0, "pan": 0.0, "mute": 0}
+    project.part_update(first["id"], out_ms=group[-1]["out_ms"], **kept)
+    for part in group[1:]:
+        project.part_delete(part["id"])
+    if not alike:
+        print(f"join  dropped " + "; ".join(f"{part_label(parts, p)} {part_own(p)}" for p in group if part_has_settings(p)))
+    left = project.track(str(t["n"]))["parts"]
+    if len(left) == 1 and not part_has_settings(left[0]):
+        project.parts_clear(t["file"])  # one plain piece is the track itself
 
 
 SET_USAGE = "gout set KEY VALUE   (gout set alone lists the keys and their values)"
@@ -1196,7 +1414,7 @@ def cmd_stems(project: Project, args: Args) -> None:
     for t in tracks:
         if audible_only and not is_heard(t, any_solo):
             continue
-        if track_head(project, t) is not None:
+        if sounds(project, t):
             plans.append((t, None))
     if not plans:
         die("nothing to export: no track has audible material" + (" the mix hears" if audible_only else ""))
@@ -1304,6 +1522,8 @@ def apply_document(project: Project, data: dict, settings: bool = True, tracks: 
                 fields["out_ms"] = None
             if fields:
                 project.update(t["n"], **fields)
+            if isinstance(item.get("parts"), list):
+                apply_parts(project, t, item["parts"], warnings)
             if isinstance(item.get("fx"), list):
                 apply_chain(project, t["file"], t["name"], item["fx"], warnings)
             elif any(item.get(kind) is not None for kind in ("eq", "comp", "delay", "reverb")):
@@ -1313,6 +1533,29 @@ def apply_document(project: Project, data: dict, settings: bool = True, tracks: 
         if order:
             project.reorder(order)
     return n_settings, n_tracks, warnings
+
+
+def apply_parts(project: Project, t: dict, items: list, warnings: list[str]) -> None:
+    """A track's parts from a document, each checked against the file."""
+    project.parts_clear(t["file"])
+    names: set[str] = set()
+    for item in items:
+        try:
+            lo, hi = int(item["in_ms"]), int(item["out_ms"])
+            name = item.get("name") or None
+            fields = {"shift_ms": int(item.get("shift_ms") or 0), "gain_db": max(-60.0, min(24.0, float(item.get("gain_db") or 0))),
+                      "pan": max(-1.0, min(1.0, float(item.get("pan") or 0))), "mute": 1 if item.get("mute") else 0}
+        except (KeyError, TypeError, ValueError) as exc:
+            warnings.append(f"{t['name']}: a part with bad values ({exc}), skipped")
+            continue
+        if not 0 <= lo < hi <= t["length_ms"]:
+            warnings.append(f"{t['name']}: a part {fmt_ms(lo)} > {fmt_ms(hi)} is outside the file, skipped")
+            continue
+        if name is not None and (not re.fullmatch(r"[a-z][a-z0-9_-]{0,15}", str(name)) or name in names):
+            warnings.append(f"{t['name']}: part name {name!r} not usable, left unnamed")
+            name = None
+        names.add(name)
+        project.part_insert(t["file"], name=name, in_ms=lo, out_ms=hi, **fields)
 
 
 def read_document(path: Path) -> dict:

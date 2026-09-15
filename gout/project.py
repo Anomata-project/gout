@@ -42,6 +42,17 @@ CREATE TABLE IF NOT EXISTS fx (
     params  TEXT NOT NULL DEFAULT '',   -- its canonical settings line
     enabled INTEGER NOT NULL DEFAULT 1
 );
+CREATE TABLE IF NOT EXISTS parts (
+    id       INTEGER PRIMARY KEY,
+    track    TEXT NOT NULL,              -- the track's file name, as an effect's owner
+    name     TEXT,                       -- given by the user; the others are p1, p2 ... by place
+    in_ms    INTEGER NOT NULL,           -- the piece of the file, in file time
+    out_ms   INTEGER NOT NULL,
+    shift_ms INTEGER NOT NULL DEFAULT 0, -- moved along the track from where it was cut
+    gain_db  REAL NOT NULL DEFAULT 0,
+    pan      REAL NOT NULL DEFAULT 0,
+    mute     INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS envelopes (
     file  TEXT PRIMARY KEY,
     size  INTEGER NOT NULL,
@@ -67,6 +78,7 @@ CREATE TABLE IF NOT EXISTS history (
 
 TRACK_COLUMNS = ("n", "name", "file", "kind", "length_ms", "channels", "sample_rate",
                  "offset_ms", "in_ms", "out_ms", "gain_db", "pan", "mute", "solo")
+PART_COLUMNS = ("id", "name", "in_ms", "out_ms", "shift_ms", "gain_db", "pan", "mute")
 
 
 # before the effect chain, a track had one column per effect and the master one setting each
@@ -198,15 +210,48 @@ class Project:
     # ---- tracks
 
     def tracks(self) -> list[dict]:
-        """Every track as a dict, with its effect chain under "fx" and its chain owner."""
+        """Every track as a dict, with its effect chain under "fx", its chain owner, and its parts
+        (left to right; none when it is one piece)."""
         chains = self.chains()
+        parts = self.all_parts()
         out = []
         for r in self.conn.execute("SELECT * FROM tracks ORDER BY n").fetchall():
             t = dict(r)
             t["owner"] = t["file"]
             t["fx"] = chains.get(t["file"], [])
+            t["parts"] = parts.get(t["file"], [])
             out.append(t)
         return out
+
+    # ---- parts
+
+    def all_parts(self) -> dict[str, list[dict]]:
+        out: dict[str, list[dict]] = {}
+        for r in self.conn.execute("SELECT * FROM parts ORDER BY track, shift_ms + in_ms, id"):
+            part = {c: r[c] for c in PART_COLUMNS}
+            part["mute"] = bool(part["mute"])
+            out.setdefault(r["track"], []).append(part)
+        return out
+
+    def part_insert(self, track_file: str, **fields) -> int:
+        cols = ["track", *fields]
+        with self.conn:
+            cur = self.conn.execute(f"INSERT INTO parts ({', '.join(cols)}) VALUES ({', '.join('?' for _ in cols)})",
+                                    (track_file, *fields.values()))
+            return cur.lastrowid
+
+    def part_update(self, pid: int, **fields) -> None:
+        with self.conn:
+            self.conn.execute(f"UPDATE parts SET {', '.join(f'{k} = ?' for k in fields)} WHERE id = ?",
+                              (*fields.values(), pid))
+
+    def part_delete(self, pid: int) -> None:
+        with self.conn:
+            self.conn.execute("DELETE FROM parts WHERE id = ?", (pid,))
+
+    def parts_clear(self, track_file: str) -> None:
+        with self.conn:
+            self.conn.execute("DELETE FROM parts WHERE track = ?", (track_file,))
 
     def track(self, spec: str) -> dict:
         tracks = self.tracks()
@@ -245,6 +290,7 @@ class Project:
             row = self.conn.execute("SELECT file FROM tracks WHERE n = ?", (n,)).fetchone()
             if row:
                 self.conn.execute("DELETE FROM fx WHERE owner = ?", (row["file"],))
+                self.conn.execute("DELETE FROM parts WHERE track = ?", (row["file"],))
             self.conn.execute("DELETE FROM tracks WHERE n = ?", (n,))
             rows = self.conn.execute("SELECT n FROM tracks ORDER BY n").fetchall()
             for new, row in enumerate(rows, 1):  # keep numbering contiguous
@@ -402,7 +448,7 @@ class Project:
                 t["file_stat"] = [st.st_size, st.st_mtime]
             except OSError:
                 t["file_stat"] = None
-        for items in [t["fx"] for t in snap["tracks"]] + [snap["master"]["fx"]]:
+        for items in [t["fx"] for t in snap["tracks"]] + [t.get("parts", []) for t in snap["tracks"]] + [snap["master"]["fx"]]:
             for item in items:
                 item.pop("id", None)
         return hashlib.sha1(json.dumps(snap, sort_keys=True).encode()).hexdigest()
@@ -436,6 +482,8 @@ class Project:
         for t in snap["tracks"]:
             t.pop("owner", None)
             t["fx"] = clean(t["fx"])
+            for part in t.get("parts", []):
+                part.pop("id", None)
         return {"gout": __version__, **snap}
 
     def sync_json(self) -> None:
@@ -469,12 +517,18 @@ class Project:
         with self.conn:
             self.conn.execute("DELETE FROM tracks")
             self.conn.execute("DELETE FROM fx")
+            self.conn.execute("DELETE FROM parts")
             for t in snap["tracks"]:
                 cols = [c for c in TRACK_COLUMNS if c in t]
                 self.conn.execute(
                     f"INSERT INTO tracks ({', '.join(cols)}) VALUES ({', '.join('?' for _ in cols)})",
                     tuple(t[c] for c in cols),
                 )
+            for t in snap["tracks"]:
+                for part in t.get("parts", []):
+                    cols = [c for c in PART_COLUMNS if c in part]
+                    self.conn.execute(f"INSERT INTO parts (track, {', '.join(cols)}) VALUES (?, {', '.join('?' for _ in cols)})",
+                                      (t["file"], *(part[c] for c in cols)))
             owners = [(t["file"], t["fx"] if "fx" in t else legacy_chain(t)) for t in snap["tracks"]]
             for owner, items in owners + [(MASTER_OWNER, master)]:
                 for pos, item in enumerate(items, 1):

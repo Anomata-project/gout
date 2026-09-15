@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .core import die, fmt_ms, fmt_size, GoutError, MASTER_MP3, MASTER_WAV, pan_filter, run_quiet
 from .media import fmt_lufs, measure_loudness, probe
-from .model import audible, is_heard, timeline
+from .model import audible, CROSS_MS, is_heard, meets, timeline
 from .fx import Effect, FxContext, effect
 from .settings import BITS_CODEC, master_track, setting, tag_args
 
@@ -98,25 +98,92 @@ def track_head(project: "Project", t: dict, shift_ms: int = 0) -> list[str] | No
     return steps
 
 
+def part_heads(project: "Project", t: dict, shift_ms: int = 0) -> list[tuple[dict, list[str]]]:
+    """The filters that put each heard part of a split track on the timeline, like track_head,
+    counted in samples at the project rate. Where two parts meet, each reaches CROSS_MS over
+    the cut with a linear fade, so the two add up to the unbroken sound when they are alike
+    (measured: -162 dB) and a change of gain between them does not click."""
+    rate, length = project.rate, t["length_ms"]
+    at = lambda ms: round(ms * rate / 1000)
+    parts = t["parts"]
+    cross = at(CROSS_MS)
+    out = []
+    for k, part in enumerate(parts):
+        lo, hi = at(part["in_ms"]), at(min(part["out_ms"], length))
+        before = after = 0
+        if k > 0 and meets(parts[k - 1], part):
+            prev = parts[k - 1]
+            before = min(cross, (hi - lo) // 2, (lo - at(prev["in_ms"])) // 2, lo)
+        if k + 1 < len(parts) and meets(part, parts[k + 1]):
+            nxt = parts[k + 1]
+            after = min(cross, (hi - lo) // 2, (at(min(nxt["out_ms"], length)) - hi) // 2, at(length) - hi)
+        if part["mute"] or hi <= lo:
+            continue
+        start = at(t["offset_ms"] + part["shift_ms"]) + lo - before - at(shift_ms)
+        size = hi + after - (lo - before)
+        steps = [f"aformat=sample_rates={rate}:sample_fmts=fltp",
+                 f"atrim=start_sample={lo - before}:end_sample={hi + after}", "asetpts=PTS-STARTPTS"]
+        if before:
+            steps.append(f"afade=t=in:ss=0:ns={2 * before}:curve=tri")
+        if after:
+            steps.append(f"afade=t=out:ss={size - 2 * after}:ns={2 * after}:curve=tri")
+        if start < 0:  # live playback from inside or after the part: cut what comes before the playhead
+            if -start >= size:
+                continue
+            steps += [f"atrim=start_sample={-start}", "asetpts=PTS-STARTPTS"]
+            start = 0
+        if start > 0:
+            steps.append(f"adelay={start}S:all=1")
+        if t["channels"] != 2:
+            steps.append(pan_filter(t["channels"], 0.0))
+        if part["gain_db"]:
+            steps.append(f"volume={part['gain_db']:.2f}dB")
+        if abs(part["pan"]) >= 0.005:
+            steps.append(pan_filter(2, part["pan"]))
+        out.append((part, steps))
+    return out
+
+
+def sounds(project: "Project", t: dict, shift_ms: int = 0) -> bool:
+    """Whether anything of a track reaches the mix from shift_ms on (mute and solo aside)."""
+    if t.get("parts"):
+        return bool(part_heads(project, t, shift_ms))
+    return track_head(project, t, shift_ms) is not None
+
+
 def track_chain(project: "Project", t: dict, src: str, out: str, inputs: list[Path],
                 warnings: set[str] | None = None, shift_ms: int = 0) -> str | None:
     """One track's whole filtergraph from its input label to [out]: position, effects in
-    order, then gain and pan like a channel strip's fader. None when nothing is audible."""
-    head = track_head(project, t, shift_ms)
-    if head is None:
-        return None
+    order, then gain and pan like a channel strip's fader. A track in parts puts each part in
+    place with its own gain and pan first and sums them. None when nothing is audible."""
     post = []
     if t["gain_db"]:
         post.append(f"volume={t['gain_db']:.2f}dB")
     if abs(t["pan"]) >= 0.005:
         post.append(pan_filter(2, t["pan"]))
-    return chain_graph(project, t, head, post, src, out, inputs, warnings)
+    if not t.get("parts"):
+        head = track_head(project, t, shift_ms)
+        if head is None:
+            return None
+        return chain_graph(project, t, head, post, src, out, inputs, warnings)
+    heads = part_heads(project, t, shift_ms)
+    if not heads:
+        return None
+    graph = []
+    if len(heads) == 1:
+        graph.append(f"{src}{','.join(heads[0][1])}[{out}m]")
+    else:
+        graph.append(f"{src}asplit={len(heads)}" + "".join(f"[{out}s{k}]" for k in range(len(heads))))
+        graph += [f"[{out}s{k}]{','.join(steps)}[{out}q{k}]" for k, (_, steps) in enumerate(heads)]
+        graph.append("".join(f"[{out}q{k}]" for k in range(len(heads)))
+                     + f"amix=inputs={len(heads)}:normalize=0:duration=longest:dropout_transition=0[{out}m]")
+    return ";".join(graph + [chain_graph(project, t, [], post, f"[{out}m]", out, inputs, warnings)])
 
 
 def build_graph(project: "Project", tracks: list[dict], warnings: set[str] | None = None,
                 shift_ms: int = 0) -> tuple[list[Path], str, list[dict]]:
     any_solo = any(t["solo"] for t in tracks)
-    used = [t for t in tracks if is_heard(t, any_solo) and track_head(project, t, shift_ms) is not None]
+    used = [t for t in tracks if is_heard(t, any_solo) and sounds(project, t, shift_ms)]
     if not used:
         return [], "", []
     inputs: list[Path] = [project.tracks_dir / t["file"] for t in used]  # effect files follow

@@ -110,10 +110,19 @@ TRACKS   (TRACK is the number shown by ls, or the track name)
   gout trim  t  TRACK -c                     soft trim off again (--clear)
   gout trim  t  TRACK -H [-st ..] [-et ..]   hard trim: rewrite the file, bakes the soft trim (--hard)
   gout rm    r  TRACK [-D]                   drop a track; -D also deletes its file (--delete)
-  gout mute  mu TRACK [on|off]               toggle mute        (mute all off)
+  gout mute  mu TRACK [PART] [on|off]        toggle mute        (mute all off)
   gout solo  s  TRACK [on|off]               toggle solo        (solo all off)
-  gout gain  g  TRACK DB                     gain 2 -6
-  gout pan   p  TRACK C | L30 | R30          balance; every track starts centred, 50/50
+  gout gain  g  TRACK [PART] DB              gain 2 -6, gain 2 p3 -6
+  gout pan   p  TRACK [PART] C | L30 | R30   balance; every track starts centred, 50/50
+  gout part  pt TRACK [TIME... | PART name [NAME] | join [PART PART] [-f]]
+                                             cut a track into parts where you hear TIME (at the ui's prompt,
+                                             part 3 here cuts at the playhead); the parts stay on the track.
+                                             They are p1, p2 ... from the left, or the name you give. gain,
+                                             pan and mute take a part after the track: gain 3 p2 -10. Parts
+                                             meet with a 10 ms crossfade, so a cut alone changes nothing you
+                                             hear. join makes one piece again, or joins two neighbours;
+                                             parts with settings of their own need -f, which drops them.
+                                             part TRACK alone lists them
 {{EFFECTS}}  -N (--no-mix) on any of these skips the automatic re-mix; -p DIR before a command picks
   the project. Long flags: --at --name --hard --clear --reencode --delete --mp3 --rate --width
 

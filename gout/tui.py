@@ -41,7 +41,7 @@ ESCAPE_KEYS = {"[A": "KEY_UP", "OA": "KEY_UP", "[B": "KEY_DOWN", "OB": "KEY_DOWN
                "[F": "KEY_END", "OF": "KEY_END", "[4~": "KEY_END", "[8~": "KEY_END", "[3~": "KEY_DC"}
 
 # commands whose first word is a track (or master); the rest take files where they take anything
-TRACK_FIRST = {"move", "trim", "rm", "mute", "solo", "gain", "pan", "fx"}
+TRACK_FIRST = {"move", "part", "trim", "rm", "mute", "solo", "gain", "pan", "fx"}
 UI_WORDS = ("quit", "clear", "split", "sheet", "view", "help")
 HISTORY_FILE = ".gout/ui-history"
 IDLE_RENDER_SECONDS = 1.5  # how long nothing must change before the ui renders in the background
@@ -1110,6 +1110,8 @@ class Tui:
                 return
         head = aliases().get(argv[0], argv[0])
         is_effect = head == "fx" or resolve(head) is not None
+        if head == "part" and "here" in argv[2:]:  # the playhead, where the song is now
+            argv = [f"{self.play_position_ms()}ms" if word == "here" else word for word in argv]
         if head in ("q", "quit", "exit"):
             self.stop_playing(keep=False)
             self.cancel_render()

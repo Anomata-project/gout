@@ -21,3 +21,35 @@ def is_heard(t: dict, any_solo: bool) -> bool:
         return False
     a, b = audible(t)
     return b > a
+
+
+# ---- parts: a track cut into pieces that stay on its line
+
+CROSS_MS = 5          # where two parts meet, each reaches this far over the cut and they crossfade
+MIN_PART_MS = 20      # no part shorter than this
+PART_WORD = "p"       # unnamed parts are p1, p2 ... from left to right
+
+
+def part_start(t: dict, part: dict) -> int:
+    """Where a part begins on the timeline."""
+    return t["offset_ms"] + part["shift_ms"] + part["in_ms"]
+
+
+def part_label(parts: list[dict], part: dict) -> str:
+    """The name a part answers to: its own, or p and its place."""
+    return part["name"] or f"{PART_WORD}{parts.index(part) + 1}"
+
+
+def part_has_settings(part: dict) -> bool:
+    return bool(part["gain_db"] or abs(part["pan"]) >= 0.005 or part["mute"] or part.get("fx"))
+
+
+def part_settings(part: dict) -> tuple:
+    """What a part sounds like apart from where it is: parts alike here can be joined as they are."""
+    chain = tuple((i["kind"], i["params"], i["on"]) for i in part.get("fx") or [])
+    return round(part["gain_db"], 3), round(part["pan"], 3), bool(part["mute"]), chain
+
+
+def meets(left: dict, right: dict) -> bool:
+    """Whether right carries on exactly where left stops: a cut to crossfade over."""
+    return left["out_ms"] == right["in_ms"] and left["shift_ms"] == right["shift_ms"]
