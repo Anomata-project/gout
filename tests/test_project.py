@@ -41,6 +41,30 @@ class ProjectTest(GoutTest):
         self.gout("move", "1", "=-2s")
         self.assertEqual(self.dump()["tracks"][0]["offset_ms"], -2000)
 
+    def test_move_several_tracks_or_all_with_one_undo(self):
+        self.project("song", "bass.wav", "click.wav", "tone.wav")
+        offsets = lambda: [t["offset_ms"] for t in self.dump()["tracks"]]
+        self.gout("move", "1", "tone", "+2s")
+        self.assertEqual(offsets(), [2000, 0, 2000])
+        out = self.gout("move", "all", "-500ms").stdout
+        self.assertEqual(offsets(), [1500, -500, 1500])
+        self.assertIn("before 0:00: its first 0.5 s is not heard", out)
+        self.assertEqual(out.count("before 0:00"), 1)  # only the click
+        self.gout("undo")  # the whole move at once
+        self.assertEqual(offsets(), [2000, 0, 2000])
+        self.gout("trim", "2", "-st", "250ms")  # the click is heard from 0.25 s
+        self.gout("move", "2", "3", "1s")  # the earliest heard start lands at 1 s, the spacing stays
+        self.assertEqual(offsets(), [2000, 750, 2750])
+        out = self.gout("move", "all", "=0").stdout  # the click, heard first at 1 s, now at 0:00
+        self.assertEqual(offsets(), [1000, -250, 1750])
+        self.assertNotIn("before 0:00", out)  # what it trims off was never heard
+        self.gout("move", "1", "1", "+1s")  # named twice, moved once
+        self.assertEqual(offsets(), [2000, -250, 1750])
+        err = self.gout("move", "1", "nope", "+1s", ok=False).stderr
+        self.assertIn("no track named 'nope'", err)
+        self.assertIn("usage: gout move TRACK... | all", err)
+        self.assertEqual(offsets(), [2000, -250, 1750])  # nothing moved
+
     def test_rm_keeps_the_file_and_rm_delete_removes_it(self):
         root = self.project("song", "bass.wav", "click.wav")
         self.gout("rm", "1")

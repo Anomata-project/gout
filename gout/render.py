@@ -316,6 +316,7 @@ COMMAND_SECTIONS = [
         ("scan", "sc", "", "register files you put in master/ yourself"),
         ("ls", "l", "", "list the tracks"),
         ("move", "m", "TRACK +1s | -500ms | 1:30", "later, earlier, or place at a time"),
+        ("", "", "1 3 -12s | all -12s", "several tracks or all, one undo"),
         ("trim", "t", "TRACK -st 2s -et 1:40", "soft trim: the file is untouched"),
         ("trim", "t", "TRACK -H [-st ..] [-r]", "hard trim: rewrite the file"),
         ("trim", "t", "TRACK -c", "soft trim off"),

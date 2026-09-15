@@ -100,6 +100,8 @@ TRACKS   (TRACK is the number shown by ls, or the track name)
   gout scan  sc                              register wav/mp3 you copied into {TRACK_DIR}/ yourself,
                                              at 0; reports tracks whose file has gone missing
   gout move  m  TRACK +TIME | -TIME | TIME   nudge later, nudge earlier, or place at a time
+  gout move  m  TRACK... | all +TIME | TIME  several tracks, or all: by the same amount, or the
+                                             earliest placed at TIME with the spacing kept
   gout trim  t  TRACK [-st T] [-et T|-el T]  soft trim: in/out points, the file is untouched
   gout trim  t  TRACK -c                     soft trim off again (--clear)
   gout trim  t  TRACK -H [-st ..] [-et ..]   hard trim: rewrite the file, bakes the soft trim (--hard)

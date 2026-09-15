@@ -139,7 +139,8 @@ class UiTest(GoutTest):
         self.keys(ui, "\n")
         self.assertEqual([t["name"] for t in project.tracks()], ["bass", "Sandi-piano"])
         for typed, completed in (("reve", "reverb "), ("mute ba", "mute bass "), ("reverb 1 ha", "reverb 1 hall "),
-                                 ("fx 1 add co", "fx 1 add comp ")):
+                                 ("fx 1 add co", "fx 1 add comp "), ("move al", "move all "),
+                                 ("move 1 Sa", "move 1 Sandi-piano ")):
             ui.input = typed
             self.keys(ui, "\t")
             self.assertEqual(ui.input, completed, typed)

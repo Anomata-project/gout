@@ -241,22 +241,38 @@ def cmd_ls(project: Project, args: Args) -> None:
         print(f"      {MASTER_WAV} not rendered — gout mix")
 
 
+MOVE_USAGE = "gout move TRACK... | all +TIME | -TIME | TIME  (or =TIME)"
+
+
 def cmd_move(project: Project, args: Args) -> None:
-    spec, delta = args.positionals("gout move TRACK +TIME | -TIME | TIME  (or =TIME)", 2, 2)
-    t = project.track(spec)
-    a, _ = audible(t)
+    """One track, several (move 1 3 +2s) or all of them by the same amount. A time without a sign
+    places the earliest audible start there and keeps the spacing. One undo puts them all back."""
+    words = args.positionals(MOVE_USAGE, 2)
+    specs, delta = words[:-1], words[-1]
+    if "all" in specs:
+        chosen = project.tracks()
+        if not chosen:
+            die("the project has no tracks yet — gout add FILE")
+    else:
+        try:
+            chosen = [project.track(spec) for spec in specs]
+        except GoutError as exc:
+            die(f"{exc}\nusage: {MOVE_USAGE}")
+    chosen = list({t["n"]: t for t in chosen}.values())  # a track named twice moves once
     if delta[0] in "+-":
         step = parse_ms(delta[1:])
-        offset = t["offset_ms"] + (step if delta[0] == "+" else -step)
+        shift = step if delta[0] == "+" else -step
     else:
         text = delta[1:] if delta[0] == "=" else delta
-        neg = text.startswith("-")
         at = parse_ms(text.lstrip("+-"))
-        offset = (-at if neg else at) - a  # place the audible start there
-    project.record(f"move {t['name']} {delta}")
-    project.update(t["n"], offset_ms=offset)
-    start, end = timeline({**t, "offset_ms": offset})
-    print(f"move  {t['n']:>2}  {t['name']:<16} at {fmt_ms(start)} -> {fmt_ms(end)}")
+        shift = (-at if text.startswith("-") else at) - min(timeline(t)[0] for t in chosen)
+    project.record(f"move {'all' if 'all' in specs else ' '.join(t['name'] for t in chosen)} {delta}")
+    for t in chosen:
+        offset = t["offset_ms"] + shift
+        project.update(t["n"], offset_ms=offset)
+        start, end = timeline({**t, "offset_ms": offset})
+        cut = f"  (before 0:00: its first {-start / 1000:g} s is not heard)" if start < 0 else ""
+        print(f"move  {t['n']:>2}  {t['name']:<16} at {fmt_ms(start)} -> {fmt_ms(end)}{cut}")
     autorender(project, args)
 
 

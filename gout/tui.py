@@ -145,7 +145,7 @@ class Tui:
         eff = resolve(head)
         if len(before) == 1 and (head in TRACK_FIRST or eff is not None):
             names = [t["name"] for t in self.project.tracks()] + ["master"] * (eff is not None or head == "fx")
-            names += ["all"] * (head in ("mute", "solo"))
+            names += ["all"] * (head in ("mute", "solo", "move"))
             names += ["presets"] * (eff is not None) + ["kinds"] * (head == "fx")
             matches = [n for n in names if n.startswith(value)]
             if matches or value[:1] not in ("/", ".", "~"):
@@ -153,6 +153,8 @@ class Tui:
         if len(before) == 2 and eff is not None and head == eff.name:
             words = list(eff.presets) + ["on", "off", "clear"]
             return [w for w in words if w.startswith(value)]
+        if len(before) >= 2 and head == "move" and value[:1].isalpha() and "all" not in before:  # more tracks before the time
+            return [t["name"] for t in self.project.tracks() if t["name"].startswith(value)]
         if len(before) >= 2 and head == "fx" and before[-1].lower() == "add":
             return [name for name in effects() if name.startswith(value)]
         if head in TRACK_FIRST or eff is not None:

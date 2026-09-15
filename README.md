@@ -81,7 +81,7 @@ name (a unique prefix will do). `-N` / `--no-mix` on any change skips an automat
 | `ls` | `l` | | list tracks, positions, trims, flags |
 | `view` | `v` | `[-w COLS]` | print the timeline once: master first, tracks as waveforms |
 | `colors` | | `[--init [--project] [-f]]` | the colour and layout settings of `color.json` |
-| `move` | `m` | `TRACK +TIME \| -TIME \| TIME` | nudge later, nudge earlier, place at a time |
+| `move` | `m` | `TRACK... \| all +TIME \| -TIME \| TIME` | nudge later, nudge earlier, place at a time; `move 1 3 -12s` or `move all -12s` moves several by the same amount (one undo), and with `TIME` the earliest of them lands there with the spacing kept |
 | `trim` | `t` | `TRACK [-st T] [-et T \| -el T]` | soft trim, times count from the start of the track's file |
 | `trim` | `t` | `TRACK -c` | soft trim off (`--clear`) |
 | `trim` | `t` | `TRACK -H [-st ..] [-et ..] [-r]` | hard trim, rewrites the file; bakes the soft trim when no times given (`--hard`) |
