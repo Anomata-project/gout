@@ -295,6 +295,104 @@ def default_output(backend: str) -> str:
     return "default"
 
 
+# ---- hearing the input while recording
+
+MONITOR_LATENCY_MS = 10  # asked of PipeWire; measured on an ALSA laptop jack: 256-sample cycles, no dropouts
+
+
+def pactl_block(text: str, kind: str, name: str) -> str:
+    """The part of `pactl list sinks` or `pactl list sources` about the one called name."""
+    for chunk in re.split(rf"^{kind} #", text, flags=re.M):
+        if re.search(rf"^\s*Name:\s*{re.escape(name)}\s*$", chunk, re.M):
+            return chunk
+    return ""
+
+
+def speaker_output(text: str, sink: str) -> bool:
+    """Whether a sink's active port is a loudspeaker, from `pactl list sinks`."""
+    block = pactl_block(text, "Sink", sink)
+    active = re.search(r"^\s*Active Port:\s*(\S+)", block, re.M)
+    if not active:
+        return False
+    port = re.search(rf"^\s*{re.escape(active.group(1))}:.*\(type: (\w+)", block, re.M)
+    return (port.group(1) if port else active.group(1)).lower().startswith("speaker")
+
+
+def muted_input(text: str, source: str) -> bool:
+    """Whether the system has muted a source, from `pactl list sources`."""
+    found = re.search(r"^\s*Mute:\s*(\w+)", pactl_block(text, "Source", source), re.M)
+    return bool(found) and found.group(1).lower() == "yes"
+
+
+def input_is_muted(backend: str, device: Input) -> bool:
+    if backend not in ("pw-record", "parecord") or not shutil.which("pactl"):
+        return False
+    return muted_input(output_of(["pactl", "list", "sources"]), device.name)
+
+
+def monitor_plan(backend: str, device: Input, output: str) -> tuple[list[str] | None, str]:
+    """How the input gets to the headphones while recording: PipeWire's pw-loopback from the input
+    to the output gout plays to. (None, why) when it does not: not on the speakers, where a
+    microphone would howl, and not for what an output plays, which would echo round and round.
+    GOUT_MONITOR=none switches it off, GOUT_MONITOR=cmd:PROGRAM runs PROGRAM instead (tests)."""
+    wanted = os.environ.get("GOUT_MONITOR", "").strip()
+    if wanted == "none":
+        return None, ""
+    if device.monitor:
+        return None, "you do not hear this input while recording: it is what an output plays, it would echo"
+    if wanted.startswith("cmd:"):
+        program = wanted[4:]
+    elif is_fake(backend):
+        return None, ""
+    elif backend != "pw-record":
+        return None, "you do not hear the input while recording: that needs PipeWire (pw-loopback) for now"
+    else:
+        program = shutil.which("pw-loopback") or ""
+        if not program:
+            return None, "you do not hear the input while recording: pw-loopback is not installed (pipewire-bin)"
+        if shutil.which("pactl") and speaker_output(output_of(["pactl", "list", "sinks"]), output):
+            return None, ("you do not hear the input while recording: the sound goes to the speakers and a "
+                          "microphone would howl; with headphones in you do")
+    return ([program, "-n", "gout-monitor", "-C", device.name, "-P", output, "-l", str(MONITOR_LATENCY_MS)],
+            f"you hear the input in your headphones too, about {MONITOR_LATENCY_MS} ms late (-M: not)")
+
+
+class Monitor:
+    """The input played to the output while a take runs. Stops with the take, with ctrl-c (same
+    process group) and, on Linux, when gout itself dies."""
+
+    def __init__(self, cmd: list[str] | None):
+        self.cmd, self.proc = cmd, None
+
+    def start(self) -> "Monitor":
+        if self.cmd:
+            try:
+                self.proc = subprocess.Popen(self.cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                             stderr=subprocess.DEVNULL, preexec_fn=die_with_parent if sys.platform.startswith("linux") else None)
+            except OSError:
+                self.proc = None
+        return self
+
+    def stop(self) -> None:
+        if self.proc is not None and self.proc.poll() is None:
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+        self.proc = None
+
+
+def die_with_parent() -> None:
+    """In the child before it runs: ask Linux to end it when gout ends, however gout ends."""
+    try:
+        import ctypes
+        import signal
+        ctypes.CDLL(None).prctl(1, signal.SIGTERM)  # PR_SET_PDEATHSIG
+    except (OSError, AttributeError):
+        pass
+
+
 def check_channels(device: Input, first: int, count: int) -> list[int]:
     """The channels to keep, 0-based, after checking the input has them."""
     last = first + count - 1

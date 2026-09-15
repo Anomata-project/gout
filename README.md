@@ -204,6 +204,7 @@ Recording runs from a shell in the project folder; the ui cannot do it yet.
 gout inputs                   # what can be recorded here; the one in use is marked
 gout inputs 2                 # use input 2 from now on, on this computer (default: the system's again)
 gout record calibrate         # once per input and output: 10 clicks out and back in
+gout record check 0:12        # the song plays, you hear yourself, a meter shows level and clips; nothing kept
 gout record                   # a new track from 0:00 while the project plays; ctrl-c stops
 gout record 1:30 -n vocal     # from 1:30, the track called vocal
 gout record 0:12 -t 30s       # stops by itself after 30 seconds
@@ -221,10 +222,24 @@ cable from the output to the input, and it plays 10 clicks and records them. Do 
 input and output (headphones and speakers count as different outputs). The result is kept for this
 computer, and every later take uses it.
 
-gout plays the project but does not play your input back to you, so wear headphones: with
-speakers the microphone records the song too. `-d` records without playing anything. gout also
-records without playing when PortAudio is missing (`gout version` says so) or when nothing is
-audible from `FROM`.
+You hear what you record while you record it, together with the song: on Linux with PipeWire, gout
+plays the input to the output for as long as the take runs (PipeWire's `pw-loopback`, asked for 10 ms
+of delay; measured on a laptop jack: 256-sample cycles and no dropouts). `-M` (`--no-monitor`)
+records without hearing it. gout leaves it out by itself when the sound goes to the speakers, where
+a microphone would howl, and when the input is what an output plays, where it would echo round and
+round. Wear headphones anyway: with speakers the microphone records the song too. `-d` records
+without playing the project. gout also records without playing when PortAudio is missing (`gout
+version` says so) or when nothing is audible from `FROM`.
+
+`ctrl-c` is how a take ends: gout stops the input, finishes the file, lines the take up and adds it
+as a track. `-t` ends it after a set time.
+
+`gout record check` is a rehearsal. It does what `record` does, the song playing and the input in
+your headphones, but it only shows the level as you play: a meter, the loudest peak so far and how
+many times it clipped. At the end it says what to do (`it clipped 3 times: turn the input or the
+instrument down`, `loudest -10.2 dB, no clips: a good level`, `quiet, about 14 dB up`), and nothing
+is kept. When the system has muted the input, `record` and `record check` both say so before they
+start, since that records silence.
 
 On Linux, `gout inputs` also lists what each output plays, so you can record the computer's own
 sound like any other input. Capture goes through `pw-record`, `parecord` or `arecord` on Linux and

@@ -364,3 +364,95 @@ class InputListTest(GoutTest):
         self.assertEqual(meter(0.0, 10), "·········· " + "  -inf dB")
         self.assertTrue(meter(0.1, 10).startswith("███████···"))  # -20 dB of 60
         self.assertIn("CLIP", meter(1.0, 10))
+
+
+MONITOR_SINKS = """Sink #51
+	State: RUNNING
+	Name: alsa_output.pci-0000_00_1f.3.analog-stereo
+	Description: Built-in Audio Analog Stereo
+	Mute: no
+	Ports:
+		analog-output-speaker: Speakers (type: Speaker, priority: 10000, availability group: Legacy 4, not available)
+		analog-output-headphones: Headphones (type: Headphones, priority: 9900, availability group: Legacy 5, available)
+	Active Port: analog-output-headphones
+Sink #60
+	State: SUSPENDED
+	Name: laptop_speakers
+	Mute: no
+	Ports:
+		analog-output-speaker: Speakers (type: Speaker, priority: 10000, availability group: Legacy 4, available)
+	Active Port: analog-output-speaker
+"""
+
+MUTED_SOURCES = """Source #52
+	State: RUNNING
+	Name: alsa_input.pci-0000_00_1f.3.analog-stereo
+	Description: Built-in Audio Analog Stereo
+	Mute: yes
+	Active Port: analog-input-mic
+Source #53
+	Name: usb_interface
+	Mute: no
+"""
+
+
+class MonitorTest(GoutTest):
+    def fake_monitor(self):
+        """A stand-in for pw-loopback: writes its pid and arguments, then waits to be stopped."""
+        script = self.tmp / "fake-loopback"
+        log = self.tmp / "monitor.log"
+        script.write_text(f"#!/bin/sh\necho $$ \"$@\" > {log}\nexec sleep 30\n")
+        script.chmod(0o755)
+        self.more_env["GOUT_MONITOR"] = f"cmd:{script}"
+        return log
+
+    def test_speakers_and_mute_are_read_from_pactl(self):
+        speaker_output, muted_input = gout_attr("recorder", "speaker_output"), gout_attr("recorder", "muted_input")
+        self.assertFalse(speaker_output(MONITOR_SINKS, "alsa_output.pci-0000_00_1f.3.analog-stereo"))  # headphones in
+        self.assertTrue(speaker_output(MONITOR_SINKS, "laptop_speakers"))
+        self.assertFalse(speaker_output(MONITOR_SINKS, "no_such_sink"))
+        self.assertTrue(muted_input(MUTED_SOURCES, "alsa_input.pci-0000_00_1f.3.analog-stereo"))
+        self.assertFalse(muted_input(MUTED_SOURCES, "usb_interface"))
+
+    def test_what_an_output_plays_is_never_played_back(self):
+        Input, monitor_plan = gout_attr("recorder", "Input"), gout_attr("recorder", "monitor_plan")
+        os.environ["GOUT_MONITOR"] = "cmd:/bin/true"
+        self.addCleanup(os.environ.pop, "GOUT_MONITOR", None)
+        cmd, _ = monitor_plan("pw-record", Input("mic", "Mic", 2), "headphones")
+        self.assertEqual(cmd[1:], ["-n", "gout-monitor", "-C", "mic", "-P", "headphones", "-l", "10"])
+        cmd, why = monitor_plan("pw-record", Input("out.monitor", "what out plays", 2, monitor=True), "out")
+        self.assertIsNone(cmd)
+        self.assertIn("echo", why)
+
+    def test_a_take_is_heard_while_it_records_unless_told_not_to(self):
+        root = self.project("song")
+        self.recorder = f"file:{self.fx / 'click.wav'}"
+        log = self.fake_monitor()
+        out = self.gout("record", "-t", "1s").stdout
+        self.assertIn("you hear the input", out)
+        pid, *words = log.read_text().split()
+        self.assertEqual(words[words.index("-l") + 1], "10")
+        time.sleep(0.2)
+        with self.assertRaises(ProcessLookupError):  # stopped with the take
+            os.kill(int(pid), 0)
+        log.unlink()
+        out = self.gout("record", "-t", "1s", "-M").stdout
+        self.assertNotIn("you hear the input", out)
+        self.assertFalse(log.exists())
+        self.assertEqual(len(self.dump()["tracks"]), 2)
+
+    def test_a_level_check_keeps_nothing_and_says_what_to_do(self):
+        root = self.project("song")
+        self.recorder = f"file:{self.fx / 'click.wav'}"  # an impulse near full scale
+        self.more_env["GOUT_MONITOR"] = "none"
+        out = self.gout("record", "check", "-t", "3s").stdout
+        self.assertIn("nothing is kept", out)
+        self.assertRegex(out, r"check (loudest|it clipped)")
+        self.assertEqual(self.dump()["tracks"], [])
+        self.assertFalse(any((root / "master").iterdir()))
+        self.assertFalse((root / ".gout" / "check.part.wav").exists())
+        advice = gout_attr("commands", "level_advice")
+        self.assertIn("a good level", advice(10 ** (-10 / 20), 0))
+        self.assertIn("about 18 dB up", advice(10 ** (-30 / 20), 0))
+        self.assertIn("clipped 2 times", advice(1.0, 2))
+        self.assertIn("nothing came in", advice(0.0, 0))

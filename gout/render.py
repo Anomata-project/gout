@@ -374,6 +374,7 @@ COMMAND_SECTIONS = [
         ("record", "rec", "[FROM] [-t 30s] [-n NAME] [-d]", "a new track while the project plays; -d without"),
         ("inputs", "in", "[N | default]", "what can be recorded; N picks one"),
         ("record", "rec", "calibrate [-i INPUT]", "clicks out and back in: takes land on time"),
+        ("record", "rec", "check [FROM]", "a rehearsal: hear yourself, level and clips, nothing kept"),
     ]),
     ("EFFECTS", "in order per track; TRACK can be master", [
         ("fx", "f", "TRACK", "the chain, numbered"),
@@ -432,6 +433,7 @@ KEY_SECTIONS = [
         ("-D --delete", "rm: delete the file too"),
         ("-c --cover  -T --no-title", "video: a cover first; no title"),
         ("-c --channel  -s --stereo", "record: input channel N; stereo from N and N+1"),
+        ("-M --no-monitor", "record: do not hear the input while recording"),
         ("-i --in  -t --time", "record: another input once; how long"),
         ("-3 --mp3", "mix: also master.mp3"),
         ("-R --rate", "new: the sample rate"),

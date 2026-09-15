@@ -39,8 +39,8 @@ from .project import legacy_chain, Project
 from .mixer import autorender, live_source, mix, part_as_owner, sounding_end, sounds, track_chain
 from .render import effect_picture, LABEL_W, render_cheat, render_timeline
 from .player import Player
-from .recorder import (choose_backend, current_input, default_output, find_input, level_db, list_inputs,
-                       load_settings, meter, Recorder, save_settings)
+from .recorder import (choose_backend, CLIP, current_input, default_output, find_input, input_is_muted, level_db,
+                       list_inputs, load_settings, meter, Monitor, monitor_plan, Recorder, save_settings)
 from .engine import (calibration, CLICK_TIMES, click_offsets, duplex_available, Engine, install_hint, output_for,
                      save_calibration)
 
@@ -1174,7 +1174,8 @@ def cmd_play(project: Project, args: Args) -> None:
     print(("\n" if live else "") + "play  finished")
 
 
-RECORD_USAGE = "gout record [FROM] [-t LENGTH] [-n NAME] [-i INPUT] [-c N] [-s] [-d]   (ctrl-c stops)"
+RECORD_USAGE = ("gout record [FROM] [-t LENGTH] [-n NAME] [-i INPUT] [-c N] [-s] [-d] [-M]   (ctrl-c stops)\n"
+                "       gout record check [FROM] [-t LENGTH] [-i INPUT] [-c N] [-s] [-d] [-M]   levels only, nothing kept")
 
 
 def play_along(project: Project, from_ms: int) -> list[str] | None:
@@ -1196,7 +1197,13 @@ def cmd_record(project: Project, args: Args) -> None:
     length = args.value("--time", "-t")
     stereo = args.flag("--stereo", "-s")
     dry = args.flag("--dry", "-d")
-    pos = args.positionals(RECORD_USAGE, 0, 1)
+    quiet = args.flag("--no-monitor", "-M")
+    pos = args.positionals(RECORD_USAGE, 0, 2)
+    checking = bool(pos) and pos[0].lower() == "check"
+    if checking:
+        pos = pos[1:]
+    if len(pos) > 1:
+        die(f"usage: {RECORD_USAGE}")
     if not channel.isdigit() or int(channel) < 1:
         die(f"-c takes the input channel to record, 1 or more, not {channel!r}")
     at_ms = parse_ms(pos[0]) if pos else 0
@@ -1209,6 +1216,9 @@ def cmd_record(project: Project, args: Args) -> None:
     device, note = current_input(list_inputs(backend), spec)
     if note:
         print(f"rec   {note}")
+    if input_is_muted(backend, device):
+        print(f"rec   {device.label} is muted in the system, so this records silence: unmute it in Settings > Sound"
+              " > Input, or pactl set-source-mute " + device.name + " 0")
     first, count = int(channel), 2 if stereo else 1
     play = None
     if not dry:
@@ -1218,29 +1228,66 @@ def cmd_record(project: Project, args: Args) -> None:
             print(f"rec   the project does not play while recording without PortAudio ({install_hint()})")
     track_name = project.unique_name(name or "rec")
     path = project.tracks_dir / f"{track_name}.wav"
+    if checking:  # the same take, into the cache, gone at the end
+        path = project.root / ".gout" / "check.part.wav"
+        path.parent.mkdir(parents=True, exist_ok=True)
+    cmd, why = (None, "") if quiet else monitor_plan(backend, device, output_for(backend))
+    monitor = Monitor(cmd)
     if play is None:
         recorder = Recorder(path, project.rate, device, backend, first, count, max_frames).start()
     else:
         recorder = Engine(path, project.rate, device, backend, first, count, max_frames, play,
                           output_for(backend)).start()
+    monitor.start()
     which = f"channels {first}+{first + 1}" if stereo else f"channel {first}"
     how = "playing from there" if play is not None else "not playing"
-    print(f"rec   {device.label}, {which} -> {TRACK_DIR}/{path.name} at {fmt_ms(at_ms)}, {how}"
+    where = "checking levels, nothing is kept" if checking else f"-> {TRACK_DIR}/{path.name}"
+    print(f"rec   {device.label}, {which} {where} at {fmt_ms(at_ms)}, {how}"
           f"  ({'stops after ' + fmt_ms(parse_ms(length)) if length else 'ctrl-c stops'})", flush=True)
+    if why:
+        print(f"rec   {why}", flush=True)
     live = sys.stdout.isatty()
+    loudest, clips = 0.0, 0
     try:
         while recorder.running():
+            peak = recorder.take_peak()
+            loudest = max(loudest, peak)
+            clips += peak >= CLIP
             if live:
-                print(f"\r      ● {fmt_ms(recorder.seconds() * 1000)}  {meter(recorder.take_peak())}  ",
-                      end="", flush=True)
+                extra = f"  loudest {level_db(loudest):5.1f} dB  clips {clips}" if checking else ""
+                print(f"\r      ● {fmt_ms(recorder.seconds() * 1000)}  {meter(peak)}{extra}  ", end="", flush=True)
             time.sleep(0.1)
     except KeyboardInterrupt:
         pass
     ended = recorder.ended_by_itself()
     recorder.stop()
+    monitor.stop()
     if live:
         print()
+    if checking:
+        loudest = max(loudest, recorder.top)
+        frames, complaint = recorder.frames, recorder.complaint()
+        path.unlink(missing_ok=True)
+        if not frames:
+            die("nothing came in from the input" + (f": {complaint}" if complaint else ""))
+        print(f"check {level_advice(loudest, clips + (1 if recorder.clipped and not clips else 0))}")
+        return
     keep_take(project, recorder, track_name, at_ms, ended, args)
+
+
+def level_advice(loudest: float, clips: int) -> str:
+    """What a level check found, and what to do about it."""
+    db = level_db(loudest)
+    if loudest <= 0:
+        return "nothing came in: is the input muted, or the synth turned down? (gout inputs shows which input)"
+    if clips:
+        return (f"it clipped {clips} time{'' if clips == 1 else 's'}: turn the input (Settings > Sound > Input) or "
+                "the instrument down, at least 3 dB, and check again")
+    if db > -3:
+        return f"loudest {db:.1f} dB: close to the top, 3 to 6 dB down leaves room for a louder moment"
+    if db < -18:
+        return f"loudest {db:.1f} dB: quiet, about {round(-12 - db)} dB up would be better"
+    return f"loudest {db:.1f} dB, no clips: a good level"
 
 
 def keep_take(project: Project, recorder, track_name: str, at_ms: int, ended: bool, args: Args) -> None:

@@ -27,7 +27,7 @@ PROJECT
                                   empty line plays and stops, left/right there move the playhead 5 s,
                                   play FROM / stop work at the prompt. Player: ffplay, else pw-cat,
                                   paplay or aplay; GOUT_PLAYER picks one (null plays in silence)
-  gout record rec [FROM] [-t LENGTH] [-n NAME] [-i INPUT] [-c N] [-s] [-d]
+  gout record rec [FROM] [-t LENGTH] [-n NAME] [-i INPUT] [-c N] [-s] [-d] [-M]
                                   record from an input into a new track at FROM (default 0:00) while
                                   the project plays from there: a 32-bit float wav in {TRACK_DIR}/ called
                                   rec, or NAME. ctrl-c stops, -t stops after LENGTH. Mono from channel 1
@@ -36,9 +36,15 @@ PROJECT
                                   soft-trimmed off, to within half a millisecond once calibrated. -d
                                   records without playing; so does gout without PortAudio (gout version
                                   says). -i records from another input this once (gout inputs lists
-                                  them). undo deletes the take; a take a crash cut short is still a
-                                  file, and gout scan registers it. In the ui: not yet, run it from a
-                                  shell in the project folder
+                                  them). You hear the input in your headphones as you record (PipeWire,
+                                  Linux; not through the speakers); -M does not. A muted input is said
+                                  before the take. undo deletes the take; a take a crash cut short is
+                                  still a file, and gout scan registers it. In the ui: not yet, run it
+                                  from a shell in the project folder
+  gout record check [FROM] [-t LENGTH] [-i INPUT] [-c N] [-s] [-d] [-M]
+                                  a rehearsal: the song plays, you hear yourself, a meter shows the
+                                  level, the loudest peak and the clips; at the end what to turn up or
+                                  down. Nothing is kept
   gout record calibrate [-i INPUT] [-c N]  play 10 clicks and record them, once per input and output
                                   (headphones and speakers count as different outputs): the microphone
                                   near the speaker, or a cable from the output to the input. Kept for
