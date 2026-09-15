@@ -159,19 +159,21 @@ def fit_layout(theme: dict, tracks: int, max_rows: int | None) -> tuple[int, int
 
 
 def render_timeline(project: "Project", width: int, styled: bool = False, playhead_ms: int | None = None,
-                    max_rows: int | None = None, theme: dict | None = None) -> list[tuple[str, str, str, str, str]]:
+                    max_rows: int | None = None, theme: dict | None = None,
+                    take: tuple[int, list[float], str] | None = None) -> list[tuple[str, str, str, str, str]]:
     """Rows of (label, cells, kind, classes, label role) for a timeline `width` columns wide.
 
     The master comes first, then every track, each a waveform some rows tall with a gap row
     between them (color.json sets the heights, the gap and braille or blocks). Kinds: axis,
     ruler, wave, gap, note. Cell classes: m master, a digit for a track's palette colour, s muted
     or not soloed, t soft-trimmed away (styled only; plain output leaves it out), c silence and
-    the zero line, r ruler, l ruler labels, g gap, p playhead. Label roles are theme keys.
+    the zero line, r ruler, l ruler labels, g gap, p playhead. Label roles are theme keys. take is a
+    recording as it runs, (where it started, its peak every 0.1 s, rec or check), drawn under the tracks.
     """
     theme = theme or load_theme(project.root)[0]
     tracks = project.tracks()
     tw = max(10, width - LABEL_W - 1)
-    if not tracks:
+    if not tracks and take is None:
         return [("", "no tracks yet — add FILE", "note", "", "")]
     style = theme["wave_style"]
     per_cell = 2 if style == "braille" else 1
@@ -180,8 +182,10 @@ def render_timeline(project: "Project", width: int, styled: bool = False, playhe
     master_ms = int(project.get("master_ms") or 0) if project.master.exists() else 0
     head_ms = int(setting(project, "head"))
 
-    t0 = min(0, min(min(t["offset_ms"], timeline(t)[0]) for t in tracks))
-    t1 = max(max(max(t["offset_ms"] + t["length_ms"], timeline(t)[1]) for t in tracks), master_ms - head_ms, t0 + 1000)
+    take_end = take[0] + len(take[1]) * TAKE_POLL_MS if take else 0
+    t0 = min(0, min((min(t["offset_ms"], timeline(t)[0]) for t in tracks), default=0))
+    t1 = max(max((max(t["offset_ms"] + t["length_ms"], timeline(t)[1]) for t in tracks), default=0),
+             master_ms - head_ms, t0 + 1000, take_end + (5000 if take else 0))  # room ahead of a take
     scale = tw / (t1 - t0)  # columns per millisecond
     dot_ms = 1 / (scale * per_cell)
 
@@ -254,7 +258,9 @@ def render_timeline(project: "Project", width: int, styled: bool = False, playhe
                     cells[c + x], classes[c + x] = ch, "l"
         return label, "".join(cells), kind, "".join(classes), role
 
-    mh, th, gap, shown = fit_layout(theme if master_ms else {**theme, "master_height": 1}, len(tracks), max_rows)
+    mh, th, gap, shown = fit_layout(theme if master_ms else {**theme, "master_height": 1}, len(tracks) + bool(take), max_rows)
+    if take:
+        shown = min(len(tracks), max(0, shown - 1))  # the take's row goes before any track when room is short
 
     step = next((s for s in TICK_STEPS if s * scale >= 9), TICK_STEPS[-1])
     decimals = 0 if step >= 1000 else (2 if step == 250 else 1)
@@ -319,6 +325,25 @@ def render_timeline(project: "Project", width: int, styled: bool = False, playhe
         else:
             columns = columns_for(wave, t["offset_ms"], t["length_ms"], a, b, cls, styled)
         add_group(lines, wave_rows(columns, th, style))
+    if take:
+        start, peaks, what = take
+        if shown:
+            add_gap()
+        columns = []
+        for c in range(tw):
+            dots = []
+            for x in range(per_cell):
+                t_lo = t0 + (c * per_cell + x) * dot_ms - start
+                t_hi = t_lo + dot_ms
+                i0, i1 = max(0, int(t_lo // TAKE_POLL_MS)), min(len(peaks), math.ceil(t_hi / TAKE_POLL_MS))
+                if t_hi <= 0 or i0 >= len(peaks) or i1 <= i0:
+                    dots.append(None)
+                    continue
+                loud = max(peaks[i0:i1])
+                v = level(round(loud * 128))
+                dots.append((v, v, "p" if loud >= 0.999 else "m"))  # a clip shows in the playhead's colour
+            columns.append(dots)
+        add_group([(f" ● {what}", "track_label"), ("", "ruler_labels")], wave_rows(columns, th, style))
     if shown < len(tracks):
         rows.append(("", f"+{len(tracks) - shown} more tracks, not enough room — ls lists them", "note", "", ""))
 
@@ -340,6 +365,8 @@ def render_timeline(project: "Project", width: int, styled: bool = False, playhe
 # The sheet is data: sections of rows, laid out for whatever width it gets. Command rows are
 # (long name, short name, arguments, what it does); key rows are (keys, what they do). Narrow, it
 # wraps; wide, nothing is cut; wide enough for two, it flows into two columns.
+
+TAKE_POLL_MS = 100  # a take reports its peak this often
 
 CHEAT_TITLE = "CHEAT SHEET   long short   tab on an empty line: next page"
 CHEAT_COLUMN = 64  # the narrowest a column may be before the sheet goes back to one column
@@ -464,6 +491,7 @@ KEY_SECTIONS = [
     ]),
     ("KEYS", "", [
         ("ctrl-u", "undo the last change"),
+        ("ctrl-r", "record from the playhead; ctrl-r or space stops and keeps the take"),
         ("ctrl-t", "timeline on and off"),
         ("ctrl-k", "cheat sheet on and off"),
         ("ctrl-g", "effect pictures on and off; the name line stays (eq N, comp N pick the track)"),

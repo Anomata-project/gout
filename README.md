@@ -198,7 +198,11 @@ when you run `mix`. `stems`, `mix` and `play -r` always render what they need.
 
 ## Recording
 
-Recording runs from a shell in the project folder; the ui cannot do it yet.
+Recording works from a shell in the project folder and in the ui. In the ui, `ctrl-r` records from
+the playhead and `ctrl-r` or `space` stops and keeps the take. While it runs, the prompt line shows
+the level, the loudest peak and the clips, the timeline marks `● REC` with the position, and the take
+grows on a row of its own under the tracks. Other commands wait until the take ends. `record 0:12
+-n synth` and `record check` work at the prompt too; `record calibrate` runs from a shell.
 
 ```sh
 gout inputs                   # what can be recorded here; the one in use is marked
@@ -481,7 +485,7 @@ A screen is a subclass of `gout.screens.Screen` with a `frame(ctx, width, height
 rows of text and colour classes, registered with `gout.add_screen(...)`. `ctx.band("low")` gives
 how loud a band is now (`low`, `mid`, `high`, `level`, `onset`, 0 to 1) and `ctx.travel("low")`
 how much of it has gone by, for motion that pushes with the music. A screen takes one of the keys
-nothing else uses: `ctrl-space`, `ctrl-b`, `ctrl-o`, `ctrl-q`, `ctrl-r`, `ctrl-v`, `ctrl-y`.
+nothing else uses: `ctrl-space`, `ctrl-b`, `ctrl-o`, `ctrl-q`, `ctrl-v`, `ctrl-y`.
 
 An addon that fails to load, or wants a name that is taken, is reported on every command and
 skipped; gout keeps working. Addons are ordinary Python running with your permissions, so gout

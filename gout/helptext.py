@@ -39,8 +39,9 @@ PROJECT
                                   them). You hear the input in your headphones as you record (PipeWire,
                                   Linux; not through the speakers); -M does not. A muted input is said
                                   before the take. undo deletes the take; a take a crash cut short is
-                                  still a file, and gout scan registers it. In the ui: not yet, run it
-                                  from a shell in the project folder
+                                  still a file, and gout scan registers it. In the ui, ctrl-r records
+                                  from the playhead and ctrl-r or space stops; record and record check
+                                  work at its prompt too (calibrate runs from a shell)
   gout record check [FROM] [-t LENGTH] [-i INPUT] [-c N] [-s] [-d] [-M]
                                   a rehearsal: the song plays, you hear yourself, a meter shows the
                                   level, the loudest peak and the clips; at the end what to turn up or

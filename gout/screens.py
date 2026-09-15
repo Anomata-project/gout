@@ -31,8 +31,8 @@ import re
 from pathlib import Path
 
 KEY_CODES = {  # keys a screen may take: nothing else in the ui uses them
-    "ctrl-space": "\x00", "ctrl-b": "\x02", "ctrl-o": "\x0f", "ctrl-q": "\x11", "ctrl-r": "\x12",
-    "ctrl-v": "\x16", "ctrl-y": "\x19",
+    "ctrl-space": "\x00", "ctrl-b": "\x02", "ctrl-o": "\x0f", "ctrl-q": "\x11",
+    "ctrl-v": "\x16", "ctrl-y": "\x19",  # ctrl-r records
 }
 UI_WORDS = {"quit", "q", "exit", "clear", "cl", "split", "sp", "sheet", "sh", "view", "timeline", "help",
             "cheat", "play", "stop", "saveas", "ui", "tui"}

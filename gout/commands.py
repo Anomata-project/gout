@@ -1188,9 +1188,61 @@ def play_along(project: Project, from_ms: int) -> list[str] | None:
         return None
 
 
-def cmd_record(project: Project, args: Args) -> None:
-    """Record from an input into a new track at FROM while the project plays from FROM, until
-    ctrl-c or LENGTH. -d, or no PortAudio, records without playing."""
+class Take:
+    """One take, or a level check, running while its caller does something else: the shell waits in a
+    loop and draws a meter, the ui goes on drawing its screen. start_take makes one."""
+
+    def __init__(self, project: Project, recorder, monitor: Monitor, track_name: str, at_ms: int, checking: bool,
+                 args: Args):
+        self.project, self.recorder, self.monitor = project, recorder, monitor
+        self.track_name, self.at_ms, self.checking, self.args = track_name, at_ms, checking, args
+        self.loudest, self.clips = 0.0, 0
+        self.peaks: list[float] = []  # the peak of every poll, for a waveform that grows
+        self.done = False
+
+    def running(self) -> bool:
+        return not self.done and self.recorder.running()
+
+    def poll(self) -> float:
+        """The loudest sample since the last poll (call it about every 0.1 s)."""
+        peak = self.recorder.take_peak()
+        self.loudest = max(self.loudest, peak)
+        self.clips += peak >= CLIP
+        self.peaks.append(peak)
+        return peak
+
+    def position_ms(self) -> int:
+        return self.at_ms + round(self.recorder.seconds() * 1000)
+
+    def status(self, peak: float) -> str:
+        what = "CHECK" if self.checking else "REC"
+        return (f"● {what} {fmt_ms(self.position_ms() - self.at_ms)}  {meter(peak)}  loudest "
+                f"{level_db(self.loudest):5.1f} dB  clips {self.clips}")
+
+    def finish(self) -> None:
+        """Stop the input and keep the take as a track, or for a check say what the level was.
+        Prints what happened; GoutError when nothing came in."""
+        if self.done:
+            return
+        self.done = True
+        recorder = self.recorder
+        ended = recorder.ended_by_itself()
+        recorder.stop()
+        self.monitor.stop()
+        if not self.checking:
+            keep_take(self.project, recorder, self.track_name, self.at_ms, ended, self.args)
+            return
+        loudest = max(self.loudest, recorder.top)
+        frames, complaint = recorder.frames, recorder.complaint()
+        recorder.path.unlink(missing_ok=True)
+        if not frames:
+            die("nothing came in from the input" + (f": {complaint}" if complaint else ""))
+        print(f"check {level_advice(loudest, self.clips + (1 if recorder.clipped and not self.clips else 0))}")
+
+
+def start_take(project: Project, args: Args, from_ms: int = 0) -> Take:
+    """Read the record options, start the input (with the project playing along and the input in the
+    headphones when it can) and hand back the running take. Prints what it set up."""
     name = args.value("--name", "-n")
     spec = args.value("--in", "-i")
     channel = args.value("--channel", "-c", default="1")
@@ -1206,7 +1258,7 @@ def cmd_record(project: Project, args: Args) -> None:
         die(f"usage: {RECORD_USAGE}")
     if not channel.isdigit() or int(channel) < 1:
         die(f"-c takes the input channel to record, 1 or more, not {channel!r}")
-    at_ms = parse_ms(pos[0]) if pos else 0
+    at_ms = parse_ms(pos[0]) if pos else from_ms
     max_frames = None
     if length:
         max_frames = round(parse_ms(length) * project.rate / 1000)
@@ -1243,36 +1295,31 @@ def cmd_record(project: Project, args: Args) -> None:
     how = "playing from there" if play is not None else "not playing"
     where = "checking levels, nothing is kept" if checking else f"-> {TRACK_DIR}/{path.name}"
     print(f"rec   {device.label}, {which} {where} at {fmt_ms(at_ms)}, {how}"
-          f"  ({'stops after ' + fmt_ms(parse_ms(length)) if length else 'ctrl-c stops'})", flush=True)
+          f"  ({'stops after ' + fmt_ms(parse_ms(length)) if length else STOP_HINT})", flush=True)
     if why:
         print(f"rec   {why}", flush=True)
+    return Take(project, recorder, monitor, track_name, at_ms, checking, args)
+
+
+STOP_HINT = "ctrl-c stops"
+
+
+def cmd_record(project: Project, args: Args) -> None:
+    """Record from an input into a new track at FROM while the project plays from FROM, until
+    ctrl-c or LENGTH. -d, or no PortAudio, records without playing. record check: levels only."""
+    take = start_take(project, args)
     live = sys.stdout.isatty()
-    loudest, clips = 0.0, 0
     try:
-        while recorder.running():
-            peak = recorder.take_peak()
-            loudest = max(loudest, peak)
-            clips += peak >= CLIP
+        while take.running():
+            peak = take.poll()
             if live:
-                extra = f"  loudest {level_db(loudest):5.1f} dB  clips {clips}" if checking else ""
-                print(f"\r      ● {fmt_ms(recorder.seconds() * 1000)}  {meter(peak)}{extra}  ", end="", flush=True)
+                print(f"\r      {take.status(peak)}  ", end="", flush=True)
             time.sleep(0.1)
     except KeyboardInterrupt:
         pass
-    ended = recorder.ended_by_itself()
-    recorder.stop()
-    monitor.stop()
     if live:
         print()
-    if checking:
-        loudest = max(loudest, recorder.top)
-        frames, complaint = recorder.frames, recorder.complaint()
-        path.unlink(missing_ok=True)
-        if not frames:
-            die("nothing came in from the input" + (f": {complaint}" if complaint else ""))
-        print(f"check {level_advice(loudest, clips + (1 if recorder.clipped and not clips else 0))}")
-        return
-    keep_take(project, recorder, track_name, at_ms, ended, args)
+    take.finish()
 
 
 def level_advice(loudest: float, clips: int) -> str:

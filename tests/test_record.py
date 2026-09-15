@@ -65,14 +65,59 @@ class RecordTest(GoutTest):
         self.assertEqual(len(self.dump()["tracks"]), 2)  # the failures left nothing behind
         self.assertEqual(sorted(p.name for p in (root / "master").iterdir()), ["both.wav", "right.wav"])
 
-    def test_the_ui_sends_record_to_the_shell(self):
-        root = self.project("song")
+    def test_the_ui_records_while_it_goes_on_drawing(self):
+        root = self.project("song", "tone.wav")
         from test_ui import FakeScreen
-        os.environ["GOUT_ADDONS"] = str(self.addons)
-        ui = gout_attr("tui", "Tui")(gout_attr("project", "Project")(root), FakeScreen(30, 120))
-        ui.input = "record"
-        ui.submit()
-        self.assertIn("record: run that from the shell", ui.log[-1])
+        from unittest import mock
+        take_input = self.tmp / "take.wav"
+        ffmpeg("-f", "lavfi", "-i", "sine=f=220:d=20", "-af", "volume=0.3", "-ar", "48000", str(take_input))
+        env = {"GOUT_ADDONS": str(self.addons), "GOUT_RECORDER": f"file:{take_input}", "GOUT_PORTAUDIO": "none",
+               "GOUT_MONITOR": "none", "GOUT_PLAYER": "null"}
+        with mock.patch.dict(os.environ, env):
+            project = gout_attr("project", "Project")(root)
+            screen = FakeScreen(30, 140)
+            ui = gout_attr("tui", "Tui")(project, screen)
+
+            def run_for(seconds):
+                end = time.monotonic() + seconds
+                while time.monotonic() < end:
+                    ui.check_take()
+                    time.sleep(0.05)
+
+            ui.playhead_ms = 1500
+            ui.handle("\x12")  # ctrl-r: from the playhead
+            self.assertIsNotNone(ui.take)
+            run_for(1.0)
+            ui.input = "gain 1 -3"
+            ui.submit()
+            self.assertIn("waits until the take ends", ui.log[-1])
+            ui.input = ""
+            ui.draw()
+            shown = "\n".join(screen.row(y) for y in range(screen.h))
+            self.assertIn("● REC", shown)  # the header and the prompt line
+            self.assertIn("● rec", shown)  # the take's row on the timeline
+            ui.handle(" ")  # space stops and keeps it
+            self.assertIsNone(ui.take)
+            take = project.tracks()[-1]
+            self.assertEqual((take["name"], take["offset_ms"]), ("rec", 1500))
+            self.assertGreater(take["length_ms"], 700)
+            self.assertAlmostEqual(ui.playhead_ms, 1500 + take["length_ms"], delta=150)
+
+            ui.input = "record check -t 1s"  # a check ends by itself and keeps nothing
+            ui.submit()
+            run_for(2.0)
+            self.assertIsNone(ui.take)
+            self.assertTrue(any(line.startswith("check ") for line in ui.log[-3:]), ui.log[-5:])
+            self.assertEqual(len(project.tracks()), 2)
+
+            ui.handle("\x12")
+            run_for(0.5)
+            ui.input = "q"
+            ui.submit()  # leaving keeps the take
+            self.assertEqual(len(project.tracks()), 3)
+            ui.input = "record calibrate"
+            ui.submit()
+            self.assertIn("record: run that from the shell", ui.log[-1])
 
     @unittest.skipIf(os.name == "nt", "signals")
     def test_ctrl_c_keeps_the_take_and_a_crash_leaves_a_file_scan_takes(self):

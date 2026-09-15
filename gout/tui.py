@@ -30,7 +30,7 @@ from .player import Player
 from .screens import screen_for_key, screen_named, ScreenContext, screens
 from .window import TerminalWindow
 from .theme import load_theme, Palette
-from .commands import head_seconds, player_for
+from .commands import Args, head_seconds, player_for, start_take, Take
 
 
 # arrow, paging and editing sequences as curses key names, for terminals that send the plain form
@@ -105,6 +105,8 @@ class Tui:
         self.sheet_len = 0
         self.busy = False
         self.progress_line: tuple | None = None  # (what, fraction, status) a long command reports (gout video)
+        self.take: Take | None = None  # a recording (or a level check) while it runs
+        self.take_peak = 0.0           # its level at the last look
         self.running = True
 
     # ---- the command line
@@ -240,6 +242,9 @@ class Tui:
         if self.busy and self.progress_line:  # a long command's progress where the typing would be
             text = progress_text(*self.progress_line, room)
             cursor = min(len(text), room - 1)
+        if self.take is not None and not text:  # the level where the typing would be
+            text = (self.take.status(self.take_peak) + "  ctrl-r stops")[:room]
+            cursor = 0
         first = max(0, cursor - room + 1)  # scroll sideways to keep the cursor in view
         shown = text[first:first + room]
         self.put(prompt_y, 0, prompt, self.palette.attr("suggestion") if self.busy else self.palette.attr("prompt"))
@@ -256,17 +261,21 @@ class Tui:
                 self.put(y, right_x - 1, "│", self.palette.attr("gap_line"))
             top = 0
             if self.show_timeline:
-                where = self.play_position_ms()
+                where = self.play_position_ms() if self.take is None else self.take.position_ms()
                 state = (f"  ▶ {fmt_ms(where)}{'  live' if self.player.live else ''}  space stops" if self.player
                          else (f"  ■ {fmt_ms(where)}  space plays" if where else "  space plays"))
+                if self.take is not None:
+                    state = f"  ● {'CHECK' if self.take.checking else 'REC'} {fmt_ms(where)}  ctrl-r stops"
                 if self.render_proc is not None:
                     state += "   rendering master.wav…"
                 self.put(0, right_x, header_line(" timeline" + state, "ctrl-t ", right_w), self.palette.attr("header"))
                 room = max(3, h - 2 - 6) if self.show_cheat else max(3, h - 1)  # the cheat sheet keeps six lines
                 if self.panel_track is not None:
                     room = max(3, room - ((10 if h >= 32 else 8) if self.show_panel else 1))
-                rows = render_timeline(p, right_w, styled=True, playhead_ms=where if (self.player or where) else None,
-                                       max_rows=room, theme=self.theme)
+                take = None if self.take is None else (self.take.at_ms, self.take.peaks, "check" if self.take.checking else "rec")
+                rows = render_timeline(p, right_w, styled=True,
+                                       playhead_ms=where if (self.player or self.take or where) else None,
+                                       max_rows=room, theme=self.theme, take=take)
                 for y, (label, cells, kind, classes, role) in enumerate(rows, 1):
                     if y >= h:
                         break
@@ -355,6 +364,7 @@ class Tui:
         try:
             while self.running:
                 self.check_player()
+                self.check_take()
                 began = time.monotonic()
                 self.draw()
                 spent_ms = (time.monotonic() - began) * 1000
@@ -363,7 +373,7 @@ class Tui:
                 if self.mode == "screen":  # frames at the screen's rate while the song plays
                     self.scr.timeout(max(5, round(1000 / max(1, self.screen.fps) - spent_ms)) if self.player else 250)
                 else:
-                    self.scr.timeout(100 if self.player else (250 if waiting else -1))  # playhead, renders
+                    self.scr.timeout(100 if self.player or self.take else (250 if waiting else -1))  # playhead, renders
                 try:
                     key = self.scr.get_wch()
                 except KeyboardInterrupt:
@@ -373,6 +383,7 @@ class Tui:
                 self.handle(key)
         finally:
             self.window.leave()
+            self.stop_take()  # leaving keeps what was recorded
             self.stop_playing(keep=False)
             self.cancel_render()
 
@@ -428,6 +439,52 @@ class Tui:
         else:
             self.log.append(f"play  {how} from {fmt_ms(self.playhead_ms)}  ({player.backend}; space stops)")
 
+    # ---- recording: a take runs while the ui goes on drawing
+
+    def start_take(self, words: list[str]) -> None:
+        """record [FROM] [options] or record check, from the playhead unless FROM is given."""
+        if self.take is not None:
+            self.log.append("record: a take is running; ctrl-r or space stops it")
+            return
+        self.stop_playing()
+        self.cancel_render()
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+                self.take = start_take(self.project, Args(words), self.playhead_ms)
+        except GoutError as exc:
+            buf.write(f"error: {exc}\n")
+        except Exception as exc:  # the input may fail in many ways; the ui stays
+            buf.write(f"error: record: {type(exc).__name__}: {exc}\n")
+        self.log.extend(line.replace("ctrl-c stops", "ctrl-r or space stops") for line in buf.getvalue().rstrip("\n").splitlines())
+        self.scroll = 0
+
+    def check_take(self) -> None:
+        if self.take is None:
+            return
+        if self.take.running():
+            self.take_peak = self.take.poll()
+        else:
+            self.stop_take()  # -t ran out, or the input stopped by itself
+
+    def stop_take(self) -> None:
+        """End the take and keep it (a check says what it heard); the playhead goes where it stopped."""
+        take, self.take = self.take, None
+        if take is None:
+            return
+        where = take.position_ms()
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+                take.finish()
+        except GoutError as exc:
+            buf.write(f"error: {exc}\n")
+        except Exception as exc:
+            buf.write(f"error: record: {type(exc).__name__}: {exc}\n")
+        self.log.extend(buf.getvalue().rstrip("\n").splitlines())
+        self.playhead_ms = max(0, where)
+        self.scroll = 0
+
     # ---- rendering in the background
 
     def background_render(self, now: float | None = None) -> None:
@@ -448,7 +505,7 @@ class Tui:
             if not p.master_is_current():
                 self.given_up_state = self.render_state
             return
-        if p.render_mode != "idle" or self.player is not None or self.busy or self.mode != "prompt":
+        if p.render_mode != "idle" or self.player is not None or self.take is not None or self.busy or self.mode != "prompt":
             return
         state = p.state_fingerprint()
         if state != self.seen_state:
@@ -524,8 +581,19 @@ class Tui:
         if screen_for_key(key) is not None:  # a key an addon's screen took: ctrl-space for the fractal
             self.open_screen(screen_for_key(key))
             return
-        if key == "\x05":  # ctrl-e
-            self.sheet_open()
+        if key == "\x12":  # ctrl-r: record from the playhead, or stop the take
+            if self.take is not None:
+                self.stop_take()
+            else:
+                self.log.append("> record  (ctrl-r)")
+                self.start_take([])
+        elif self.take is not None and key == " " and not self.input:
+            self.stop_take()
+        elif key == "\x05":  # ctrl-e
+            if self.take is not None:
+                self.log.append("the sheet waits until the take ends: ctrl-r or space stops it")
+            else:
+                self.sheet_open()
         elif key == "\x07":  # ctrl-g: the effect panel
             self.toggle_panel()
         elif key == "\x14":  # ctrl-t
@@ -1147,9 +1215,16 @@ class Tui:
                 return
         head = aliases().get(argv[0], argv[0])
         is_effect = head == "fx" or resolve(head) is not None
+        if self.take is not None and head not in ("q", "quit", "exit", "view", "timeline", "cheat", "clear", "help", "split"):
+            self.log.append(f"{head}: waits until the take ends (ctrl-r or space stops it)")
+            return
+        if head == "record" and argv[1:2] != ["calibrate"]:
+            self.start_take(argv[1:])
+            return
         if head == "part" and "here" in argv[2:]:  # the playhead, where the song is now
             argv = [f"{self.play_position_ms()}ms" if word == "here" else word for word in argv]
         if head in ("q", "quit", "exit"):
+            self.stop_take()
             self.stop_playing(keep=False)
             self.cancel_render()
             self.running = False
@@ -1210,7 +1285,7 @@ class Tui:
             else:
                 self.save_as(argv[1])
         elif head in ("ui", "tui", "rebuild", "new", "record"):
-            self.log.append(f"{head}: run that from the shell" + ("; help record says how" if head == "record" else ""))
+            self.log.append(f"{head}: run that from the shell" + ("; it plays clicks and listens for them" if head == "record" else ""))
         else:
             self.run_command(argv, head, is_effect)
         del self.log[:-2000]
