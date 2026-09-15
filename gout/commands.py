@@ -31,12 +31,12 @@ from .core import (
     TRACK_DIR,
 )
 from .media import cut, mp3_frame_cut, probe
-from .model import (audible, is_heard, meets, MIN_PART_MS, part_has_settings, part_label, part_settings, part_start,
+from .model import (audible, is_heard, meets, MIN_PART_MS, part_has_settings, part_label, part_owner, part_settings, part_start,
                     PART_WORD, timeline)
 from .fx import Effect, effect, effects, FxContext, resolve
 from .settings import BITS_CODEC, MASTER_DEFAULTS, master_track, parse_setting, setting, TAG_KEYS
 from .project import legacy_chain, Project
-from .mixer import autorender, live_source, mix, sounding_end, sounds, track_chain
+from .mixer import autorender, live_source, mix, part_as_owner, sounding_end, sounds, track_chain
 from .render import effect_picture, LABEL_W, render_cheat, render_timeline
 from .player import Player
 from .recorder import (choose_backend, current_input, default_output, find_input, level_db, list_inputs,
@@ -237,7 +237,8 @@ def cmd_ls(project: Project, args: Args) -> None:
             print(f"{'':>4}    {part_text(t['parts'], part):<14} {'':<4} {'':>2}  {fmt_ms(begin):<12} "
                   f"{fmt_ms(part['out_ms'] - part['in_ms']):<12} {'':<12} "
                   f"{fmt_ms(part['in_ms']) + ' > ' + fmt_ms(part['out_ms']):<27} "
-                  f"{fmt_db(part['gain_db']):<7} {fmt_pan(part['pan']):<4} {'M' if part['mute'] else '-'}")
+                  f"{fmt_db(part['gain_db']):<7} {fmt_pan(part['pan']):<4} {'M' if part['mute'] else '-'}"
+                  + ("  fx " + " | ".join(fx_text(item) for item in part["fx"]) if part.get("fx") else ""))
     master_ms = project.get("master_ms")
     if master_ms and project.master.exists():
         lufs, tp = project.get("master_lufs"), project.get("master_tp")
@@ -541,6 +542,7 @@ def part_own(part: dict) -> str:
         bits.append(f"pan {fmt_pan(part['pan'])}")
     if part["mute"]:
         bits.append("muted")
+    bits += [fx_text(item) for item in part.get("fx", [])]
     return ", ".join(bits)
 
 
@@ -554,8 +556,9 @@ def print_parts(t: dict) -> None:
     print(f"part  {t['n']:>2}  {t['name']:<16} {len(parts)} parts")
     for part in parts:
         start = part_start(t, part)
+        chain = "  fx " + " | ".join(fx_text(item) for item in part["fx"]) if part.get("fx") else ""
         print((f"      {part_text(parts, part):<16} {fmt_ms(start)} -> {fmt_ms(start + part['out_ms'] - part['in_ms'])}"
-               f"  {fmt_db(part['gain_db']):<7} {fmt_pan(part['pan']):<4}{'  muted' if part['mute'] else ''}").rstrip())
+               f"  {fmt_db(part['gain_db']):<7} {fmt_pan(part['pan']):<4}{'  muted' if part['mute'] else ''}{chain}").rstrip())
 
 
 def cmd_part(project: Project, args: Args) -> None:
@@ -610,9 +613,11 @@ def cut_track(project: Project, t: dict, times: list[int]) -> None:
     project.record(f"part {t['name']} " + " ".join(fmt_ms(at) for at in sorted(set(times))))
     for piece in pieces:
         if piece["id"] is None:
-            project.part_insert(t["file"], name=piece["name"], in_ms=piece["in_ms"], out_ms=piece["out_ms"],
-                                shift_ms=piece["shift_ms"], gain_db=piece["gain_db"], pan=piece["pan"],
-                                mute=int(piece["mute"]))
+            pid = project.part_insert(t["file"], name=piece["name"], in_ms=piece["in_ms"], out_ms=piece["out_ms"],
+                                      shift_ms=piece["shift_ms"], gain_db=piece["gain_db"], pan=piece["pan"],
+                                      mute=int(piece["mute"]))
+            for item in piece.get("fx", []):  # both halves of a cut part keep its effects
+                project.fx_insert(part_owner(t["file"], pid), item["kind"], item["params"], on=item["on"])
         else:
             project.part_update(piece["id"], out_ms=piece["out_ms"])
 
@@ -642,6 +647,8 @@ def join_parts(project: Project, t: dict, words: list[str], force: bool) -> None
     first = group[0]
     kept = {} if alike else {"gain_db": 0.0, "pan": 0.0, "mute": 0}
     project.part_update(first["id"], out_ms=group[-1]["out_ms"], **kept)
+    if not alike:
+        project.fx_clear(part_owner(t["file"], first["id"]))
     for part in group[1:]:
         project.part_delete(part["id"])
     if not alike:
@@ -669,20 +676,37 @@ def chain_owner(project: Project, spec: str) -> dict:
     return master_track(project) if is_master(spec) else project.track(spec)
 
 
+def owner_and_words(project: Project, spec: str, words: list[str]) -> tuple[dict, list[str]]:
+    """The chain an effect command works on: the track's, or a part's when the first word after
+    the track names one of its parts (eq 3 p2 hp80)."""
+    t = chain_owner(project, spec)
+    if words and t["owner"] != MASTER_OWNER and t["parts"]:
+        part = find_part(t, words[0])
+        if part is not None:
+            return part_as_owner(t, part), words[1:]
+        if re.fullmatch(rf"{PART_WORD}\d+", words[0].lower()):
+            pick_part(t, words[0])  # p9 on a track in three parts: say so, not "bad band"
+    return t, words
+
+
 def owner_label(t: dict) -> str:
-    return "master" if t["owner"] == MASTER_OWNER else t["name"]
+    return "master" if t["owner"] == MASTER_OWNER else t.get("label", t["name"])
 
 
 def owner_spec(t: dict) -> str:
-    return "master" if t["owner"] == MASTER_OWNER else str(t["n"])
+    return "master" if t["owner"] == MASTER_OWNER else t.get("spec", str(t["n"]))
 
 
 def refresh(project: Project, t: dict) -> dict:
+    if "part" in t:
+        track = project.track(str(t["n"]))
+        part = next(p for p in track["parts"] if p["id"] == t["part"]["id"])
+        return part_as_owner(track, part)
     return chain_owner(project, owner_spec(t))
 
 
 def effect_usage(eff: Effect) -> str:
-    text = (f"gout {eff.name} TRACK|master [SETTINGS... | PRESET | on | off | clear]\n"
+    text = (f"gout {eff.name} TRACK|master [PART] [SETTINGS... | PRESET | on | off | clear]\n"
             f"       e.g. gout {eff.name} 3 {eff.syntax}")
     if eff.presets:
         text += f"\n       presets: {' '.join(eff.presets)}   (gout {eff.name} presets explains them)"
@@ -746,9 +770,8 @@ def make_effect_command(eff: Effect):
         if pos[0].lower() in ("presets", "preset"):
             print_presets(eff)
             return
-        t = chain_owner(project, pos[0])
+        t, words = owner_and_words(project, pos[0], pos[1:])
         item = first_of(t, eff.name)
-        words = pos[1:]
         if not words:
             print(effect_line(eff, t, item))
             show_effect(project, t, eff, item)
@@ -783,15 +806,15 @@ def make_shortcut_command(eff: Effect, name: str, usage: str, apply):
     """A command like `hp TRACK 80` that edits the first effect of a kind through a function."""
 
     def command(project: Project, args: Args) -> None:
-        pos = args.positionals(f"gout {name} TRACK|master {usage}", 2)
-        t = chain_owner(project, pos[0])
+        pos = args.positionals(f"gout {name} TRACK|master [PART] {usage}", 2)
+        t, words = owner_and_words(project, pos[0], pos[1:])
         item = first_of(t, eff.name)
         try:
-            line = apply(item["params"] if item else "", pos[1:])
+            line = apply(item["params"] if item else "", words)
         except ValueError as exc:
             die(str(exc))
         line = checked_line(project, t, eff, line)
-        project.record(f"{name} {owner_label(t)} {' '.join(pos[1:])}")
+        project.record(f"{name} {owner_label(t)} {' '.join(words)}")
         if item is None:
             project.fx_insert(t["owner"], eff.name, line, default_position(t, eff))
         else:
@@ -813,7 +836,7 @@ def effect_commands() -> dict:
     return table
 
 
-FX_USAGE = """gout fx TRACK|master                          the effects in order, numbered
+FX_USAGE = """gout fx TRACK|master [PART]                   the effects in order, numbered (a part's after its name)
        gout fx TRACK add KIND [SETTINGS...]          add one at the end
        gout fx TRACK N SETTINGS... | on | off | rm   change, bypass or remove slot N
        gout fx TRACK N move M                        move slot N to position M
@@ -856,8 +879,7 @@ def cmd_fx(project: Project, args: Args) -> None:
     if pos[0].lower() in ("kinds", "effects"):
         print_kinds()
         return
-    t = chain_owner(project, pos[0])
-    words = pos[1:]
+    t, words = owner_and_words(project, pos[0], pos[1:])
     who = owner_label(t)
     if not words:
         print_chain(t)
@@ -1555,7 +1577,9 @@ def apply_parts(project: Project, t: dict, items: list, warnings: list[str]) -> 
             warnings.append(f"{t['name']}: part name {name!r} not usable, left unnamed")
             name = None
         names.add(name)
-        project.part_insert(t["file"], name=name, in_ms=lo, out_ms=hi, **fields)
+        pid = project.part_insert(t["file"], name=name, in_ms=lo, out_ms=hi, **fields)
+        if isinstance(item.get("fx"), list):
+            apply_chain(project, part_owner(t["file"], pid), f"{t['name']} {name or 'part'}", item["fx"], warnings)
 
 
 def read_document(path: Path) -> dict:

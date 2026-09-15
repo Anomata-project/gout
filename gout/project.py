@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .core import __version__, DB_NAME, DEFAULT_RATE, die, GoutError, MASTER_OWNER, MASTER_WAV, SIDECAR, TRACK_DIR
 from .media import compute_envelope, compute_spectrum, ENV_RATE, measure_loudness, probe
+from .model import part_owner
 
 
 SCHEMA = """
@@ -220,6 +221,8 @@ class Project:
             t["owner"] = t["file"]
             t["fx"] = chains.get(t["file"], [])
             t["parts"] = parts.get(t["file"], [])
+            for part in t["parts"]:
+                part["fx"] = chains.get(part_owner(t["file"], part["id"]), [])
             out.append(t)
         return out
 
@@ -247,10 +250,15 @@ class Project:
 
     def part_delete(self, pid: int) -> None:
         with self.conn:
+            row = self.conn.execute("SELECT track FROM parts WHERE id = ?", (pid,)).fetchone()
+            if row:
+                self.conn.execute("DELETE FROM fx WHERE owner = ?", (part_owner(row["track"], pid),))
             self.conn.execute("DELETE FROM parts WHERE id = ?", (pid,))
 
     def parts_clear(self, track_file: str) -> None:
         with self.conn:
+            for row in self.conn.execute("SELECT id FROM parts WHERE track = ?", (track_file,)).fetchall():
+                self.conn.execute("DELETE FROM fx WHERE owner = ?", (part_owner(track_file, row["id"]),))
             self.conn.execute("DELETE FROM parts WHERE track = ?", (track_file,))
 
     def track(self, spec: str) -> dict:
@@ -290,6 +298,8 @@ class Project:
             row = self.conn.execute("SELECT file FROM tracks WHERE n = ?", (n,)).fetchone()
             if row:
                 self.conn.execute("DELETE FROM fx WHERE owner = ?", (row["file"],))
+                for part in self.conn.execute("SELECT id FROM parts WHERE track = ?", (row["file"],)).fetchall():
+                    self.conn.execute("DELETE FROM fx WHERE owner = ?", (part_owner(row["file"], part["id"]),))
                 self.conn.execute("DELETE FROM parts WHERE track = ?", (row["file"],))
             self.conn.execute("DELETE FROM tracks WHERE n = ?", (n,))
             rows = self.conn.execute("SELECT n FROM tracks ORDER BY n").fetchall()
@@ -448,7 +458,8 @@ class Project:
                 t["file_stat"] = [st.st_size, st.st_mtime]
             except OSError:
                 t["file_stat"] = None
-        for items in [t["fx"] for t in snap["tracks"]] + [t.get("parts", []) for t in snap["tracks"]] + [snap["master"]["fx"]]:
+        part_chains = [p.get("fx", []) for t in snap["tracks"] for p in t.get("parts", [])]
+        for items in [t["fx"] for t in snap["tracks"]] + [t.get("parts", []) for t in snap["tracks"]] + part_chains + [snap["master"]["fx"]]:
             for item in items:
                 item.pop("id", None)
         return hashlib.sha1(json.dumps(snap, sort_keys=True).encode()).hexdigest()
@@ -484,6 +495,7 @@ class Project:
             t["fx"] = clean(t["fx"])
             for part in t.get("parts", []):
                 part.pop("id", None)
+                part["fx"] = clean(part.get("fx", []))
         return {"gout": __version__, **snap}
 
     def sync_json(self) -> None:
@@ -524,12 +536,14 @@ class Project:
                     f"INSERT INTO tracks ({', '.join(cols)}) VALUES ({', '.join('?' for _ in cols)})",
                     tuple(t[c] for c in cols),
                 )
+            part_chains = []
             for t in snap["tracks"]:
                 for part in t.get("parts", []):
                     cols = [c for c in PART_COLUMNS if c in part]
-                    self.conn.execute(f"INSERT INTO parts (track, {', '.join(cols)}) VALUES (?, {', '.join('?' for _ in cols)})",
-                                      (t["file"], *(part[c] for c in cols)))
-            owners = [(t["file"], t["fx"] if "fx" in t else legacy_chain(t)) for t in snap["tracks"]]
+                    cur = self.conn.execute(f"INSERT INTO parts (track, {', '.join(cols)}) VALUES (?, {', '.join('?' for _ in cols)})",
+                                            (t["file"], *(part[c] for c in cols)))
+                    part_chains.append((part_owner(t["file"], cur.lastrowid), part.get("fx", [])))
+            owners = [(t["file"], t["fx"] if "fx" in t else legacy_chain(t)) for t in snap["tracks"]] + part_chains
             for owner, items in owners + [(MASTER_OWNER, master)]:
                 for pos, item in enumerate(items, 1):
                     self.conn.execute("INSERT INTO fx (id, owner, pos, kind, params, enabled) VALUES (?, ?, ?, ?, ?, ?)",

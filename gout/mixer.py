@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .core import die, fmt_ms, fmt_size, GoutError, MASTER_MP3, MASTER_WAV, pan_filter, run_quiet
 from .media import fmt_lufs, measure_loudness, probe
-from .model import audible, CROSS_MS, is_heard, meets, timeline
+from .model import audible, CROSS_MS, is_heard, meets, part_label, part_owner, part_start, timeline
 from .fx import Effect, FxContext, effect
 from .settings import BITS_CODEC, master_track, setting, tag_args
 
@@ -23,7 +23,7 @@ def active_effects(project: "Project", t: dict, warnings: set[str] | None = None
     skipped with a warning. An effect whose check fails stops the mix when strict, because
     a render that silently drops a delay is worse than an error."""
     ctx = FxContext(project, t)
-    who = t.get("name", "master")
+    who = t.get("label") or t.get("name", "master")
     out = []
     for item in t.get("fx", []):
         if not item["on"]:
@@ -54,9 +54,21 @@ def effect_tail_ms(project: "Project", t: dict) -> int:
     return sum(eff.tail_ms(ctx, params) for eff, params, ctx in active_effects(project, t, strict=False))
 
 
+def part_as_owner(t: dict, part: dict) -> dict:
+    """A part in the shape of a track, for its effect chain: the track's file, the part's effects."""
+    label = part_label(t["parts"], part)
+    return {**t, "owner": part_owner(t["file"], part["id"]), "fx": part.get("fx", []), "part": part,
+            "spec": f"{t['n']} {label}", "label": f"{t['name']} {label}"}
+
+
 def sounding_end(project: "Project", t: dict) -> int:
-    """Where a track stops making sound on the timeline, effect tails included."""
-    return timeline(t)[1] + effect_tail_ms(project, t)
+    """Where a track stops making sound on the timeline, effect tails included (a part's too)."""
+    end = timeline(t)[1]
+    for part in t.get("parts") or []:
+        if part.get("fx") and not part["mute"]:
+            end = max(end, part_start(t, part) + part["out_ms"] - part["in_ms"]
+                      + effect_tail_ms(project, part_as_owner(t, part)))
+    return end + effect_tail_ms(project, t)
 
 
 def chain_graph(project: "Project", t: dict, pre: list[str], post: list[str], src: str, out: str,
@@ -136,10 +148,6 @@ def part_heads(project: "Project", t: dict, shift_ms: int = 0) -> list[tuple[dic
             steps.append(f"adelay={start}S:all=1")
         if t["channels"] != 2:
             steps.append(pan_filter(t["channels"], 0.0))
-        if part["gain_db"]:
-            steps.append(f"volume={part['gain_db']:.2f}dB")
-        if abs(part["pan"]) >= 0.005:
-            steps.append(pan_filter(2, part["pan"]))
         out.append((part, steps))
     return out
 
@@ -169,13 +177,22 @@ def track_chain(project: "Project", t: dict, src: str, out: str, inputs: list[Pa
     heads = part_heads(project, t, shift_ms)
     if not heads:
         return None
+    def part_graph(part: dict, steps: list[str], source: str, label: str) -> str:
+        """A part through its effects, then its own gain and pan."""
+        own = []
+        if part["gain_db"]:
+            own.append(f"volume={part['gain_db']:.2f}dB")
+        if abs(part["pan"]) >= 0.005:
+            own.append(pan_filter(2, part["pan"]))
+        return chain_graph(project, part_as_owner(t, part), steps, own, source, label, inputs, warnings)
+
     graph = []
     if len(heads) == 1:
-        graph.append(f"{src}{','.join(heads[0][1])}[{out}m]")
+        graph.append(part_graph(*heads[0], src, f"{out}m"))
     else:
         graph.append(f"{src}asplit={len(heads)}" + "".join(f"[{out}s{k}]" for k in range(len(heads))))
-        graph += [f"[{out}s{k}]{','.join(steps)}[{out}q{k}]" for k, (_, steps) in enumerate(heads)]
-        graph.append("".join(f"[{out}q{k}]" for k in range(len(heads)))
+        graph += [part_graph(part, steps, f"[{out}s{k}]", f"{out}r{k}") for k, (part, steps) in enumerate(heads)]
+        graph.append("".join(f"[{out}r{k}]" for k in range(len(heads)))  # r: not the q labels chain_graph makes
                      + f"amix=inputs={len(heads)}:normalize=0:duration=longest:dropout_transition=0[{out}m]")
     return ";".join(graph + [chain_graph(project, t, [], post, f"[{out}m]", out, inputs, warnings)])
 

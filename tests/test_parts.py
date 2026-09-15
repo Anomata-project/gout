@@ -2,7 +2,7 @@ import json
 import math
 import subprocess
 
-from helpers import GoutTest, RATE, difference_peak_db, ffmpeg, gout_attr, samples
+from helpers import GoutTest, RATE, difference_peak_db, ffmpeg, gout_attr, hits, samples
 from test_ui import FakeScreen
 
 
@@ -118,3 +118,47 @@ class PartTest(GoutTest):
         ui.input = "part 1 here"
         ui.submit()
         self.assertEqual([(p["in_ms"], p["out_ms"]) for p in project.tracks()[0]["parts"]], [(0, 1750), (1750, 4000)])
+
+    def test_effects_on_a_part_stay_in_that_part(self):
+        root = self.noise_project()
+        self.gout("part", "1", "2s", "3.5s")
+        self.gout("eq", "1", "p2", "lp400")
+        self.gout("mix")
+        master = root / "master.wav"
+
+        def highs_db(start, end):  # the change from sample to sample: mostly what is above a few kHz
+            values = self.window(master, start, end)
+            return rms_db([b - a for a, b in zip(values, values[1:])])
+
+        p1, p2, p3 = highs_db(1.2, 1.9), highs_db(2.1, 3.4), highs_db(3.6, 4.9)
+        self.assertGreater(p1 - p2, 15)
+        self.assertAlmostEqual(p1, p3, delta=2)
+        self.assertIn("has no part 'p9'", self.gout("eq", "1", "p9", "on", ok=False).stderr)
+
+        self.gout("part", "1", "2.5s")  # a cut part keeps its effects on both sides
+        chains = lambda: [[f"{i['kind']} {i['params']}" for i in p["fx"]] for p in self.dump()["tracks"][0]["parts"]]
+        self.assertEqual(chains(), [[], ["eq lp400"], ["eq lp400"], []])
+        self.gout("part", "1", "join", "p2", "p3")  # alike, so the eq stays
+        self.assertEqual(chains(), [[], ["eq lp400"], []])
+        self.assertIn("eq lp400", self.gout("part", "1", "join", ok=False).stderr)
+        self.assertIn("dropped p2 eq lp400", self.gout("part", "1", "join", "-f").stdout)
+        self.gout("undo")
+        self.assertEqual(chains(), [[], ["eq lp400"], []])
+
+        before = chains()
+        (root / "gout.db").unlink()
+        self.gout("rebuild")
+        self.assertEqual(chains(), before)
+        self.gout("rm", "1")
+        import sqlite3
+        db = sqlite3.connect(root / "gout.db")
+        self.assertEqual(db.execute("SELECT COUNT(*) FROM fx").fetchone()[0], 0)  # no chain left behind
+        db.close()
+
+    def test_a_part_echo_rings_past_the_end_of_the_part(self):
+        root = self.project("song", "click.wav")  # an impulse at 2.000 s
+        self.gout("part", "1", "2.1s")
+        self.gout("delay", "1", "p1", "250ms", "w100", "f0", "n1")
+        self.gout("mix")
+        found = [round(t, 3) for t, _ in hits(root / "master.wav")]
+        self.assertEqual(found, [2.0, 2.25])  # the echo comes after p1 has ended

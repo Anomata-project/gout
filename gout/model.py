@@ -30,6 +30,11 @@ MIN_PART_MS = 20      # no part shorter than this
 PART_WORD = "p"       # unnamed parts are p1, p2 ... from left to right
 
 
+def part_owner(track_file: str, pid: int) -> str:
+    """The effect chain owner of a part (track files never have a # in their name)."""
+    return f"{track_file}#{pid}"
+
+
 def part_start(t: dict, part: dict) -> int:
     """Where a part begins on the timeline."""
     return t["offset_ms"] + part["shift_ms"] + part["in_ms"]

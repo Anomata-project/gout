@@ -118,7 +118,8 @@ TRACKS   (TRACK is the number shown by ls, or the track name)
                                              cut a track into parts where you hear TIME (at the ui's prompt,
                                              part 3 here cuts at the playhead); the parts stay on the track.
                                              They are p1, p2 ... from the left, or the name you give. gain,
-                                             pan and mute take a part after the track: gain 3 p2 -10. Parts
+                                             pan, mute, fx and every effect take a part after the track:
+                                             gain 3 p2 -10, eq 3 chorus hp80, fx 3 p2 add reverb. Parts
                                              meet with a 10 ms crossfade, so a cut alone changes nothing you
                                              hear. join makes one piece again, or joins two neighbours;
                                              parts with settings of their own need -f, which drops them.
@@ -199,7 +200,7 @@ def effects_help() -> str:
         "  gout fx    f  TRACK N SETTINGS | on | off | rm   change, bypass or remove slot N",
         "  gout fx    f  TRACK N move M             move slot N to position M",
         "  gout fx    f  TRACK clear                remove them all",
-        "  gout KIND     TRACK SETTINGS | PRESET    the first effect of that kind; added where it",
+        "  gout KIND     TRACK [PART] SETTINGS | PRESET  the first effect of that kind (on a part: eq 3 p2 hp80); added where it",
         "                                           usually goes when the track has none",
         "  gout KIND     TRACK on | off | clear     bypass, bring back, remove;  gout KIND TRACK shows it",
         "  gout KIND     presets                    what the presets are",
