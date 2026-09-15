@@ -357,7 +357,7 @@ COMMAND_SECTIONS = [
         ("stats", "st", "", "LUFS, LRA and true peak per track"),
         ("new", "n", "NAME [-R HZ]", "a new project, 48000 Hz by default"),
         ("cheat", "c", "", "this sheet on and off"),
-        ("help", "h", "[all]", "this sheet in the log; all: the whole instruction page"),
+        ("help", "h", "[all | COMMAND]", "this sheet in the log; all: the whole instruction page; help record: one command"),
         ("quit", "q", "", "leave the ui"),
         ("clear", "cl", "", "empty the log"),
         ("split", "sp", "50 | +5 | -5", "left pane width in the ui"),

@@ -100,6 +100,22 @@ class UiTest(GoutTest):
         ui.handle("\x10")  # ctrl-p
         self.assertEqual((ui.mode, ui.input), ("prompt", "eq 1 hp35 +6@65/1.2 -3@300/1.5 +3@2k"))
 
+    def test_help_for_one_command_in_the_shell_and_the_ui(self):
+        root = self.project("song", "bass.wav")
+        page = self.gout("help", "rec").stdout  # a short name works too
+        self.assertTrue(page.startswith("  gout record rec [FROM]"))
+        self.assertIn("gout record calibrate", page)
+        self.assertIn("gout inputs lists", page)
+        self.assertNotIn("gout mix", page)
+        self.assertIn("no command 'nope'", self.gout("help", "nope", ok=False).stderr)
+        project, screen, ui = self.open_ui(root)
+        ui.input = "record"
+        ui.submit()
+        self.assertIn("help record says how", ui.log[-1])
+        ui.input = "help record"
+        ui.submit()
+        self.assertIn("gout record calibrate", "\n".join(ui.log))
+
     def test_prompt_runs_commands_and_follows_the_output(self):
         root = self.project("song", "bass.wav")
         project, screen, ui = self.open_ui(root)

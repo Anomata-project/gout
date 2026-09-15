@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .core import __version__, BASE_COMMANDS, DB_NAME, die, GoutError, need_tools, use_bundled_tools
 from .project import Project
-from .helptext import help_text
+from .helptext import help_for, help_text
 from .fx import effects
 from .commands import (
     Args,
@@ -116,6 +116,12 @@ def run(argv: list[str], project: Project | None = None) -> int:
         return worker_main()
     head = aliases().get(head, head)
     if head in ("-h", "--help", "help"):
+        if len(argv) > 1 and argv[1] != "all":
+            lines = help_for(aliases().get(argv[1], argv[1]))
+            if not lines:
+                die(f"no command {argv[1]!r} in the help; gout help shows the whole page")
+            print("\n".join(lines))
+            return 0
         print(help_text(), end="")
         return 0
     if head in ("-V", "--version", "version"):

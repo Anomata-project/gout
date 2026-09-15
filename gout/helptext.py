@@ -35,8 +35,10 @@ PROJECT
                                   lines up with what played: the latency is measured every take and
                                   soft-trimmed off, to within half a millisecond once calibrated. -d
                                   records without playing; so does gout without PortAudio (gout version
-                                  says). undo deletes the take; a take a crash cut short is still a
-                                  file, and gout scan registers it. In the ui: not yet
+                                  says). -i records from another input this once (gout inputs lists
+                                  them). undo deletes the take; a take a crash cut short is still a
+                                  file, and gout scan registers it. In the ui: not yet, run it from a
+                                  shell in the project folder
   gout record calibrate [-i INPUT] [-c N]  play 10 clicks and record them, once per input and output
                                   (headphones and speakers count as different outputs): the microphone
                                   near the speaker, or a cable from the output to the input. Kept for
@@ -210,3 +212,19 @@ def effects_help() -> str:
 def help_text() -> str:
     """The instruction page, with the effects there are (addons included)."""
     return HELP_TEMPLATE.replace("{EFFECTS}", effects_help(), 1)
+
+
+def help_for(word: str) -> list[str]:
+    """The instruction page's entries for one command, by its long or short name: gout help record."""
+    word = word.lower()
+    found: list[str] = []
+    taking = False
+    for line in help_text().splitlines():
+        if line.startswith("  gout "):
+            names = line.split()[1:3]
+            taking = word == names[0] or (len(names) > 1 and word == names[1] and names[1].islower())
+        elif not line.startswith("    "):
+            taking = False  # a blank line or the next heading ends an entry
+        if taking:
+            found.append(line)
+    return found

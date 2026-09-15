@@ -21,7 +21,7 @@ from .model import audible, timeline
 from .fx import effect, effects, GUTTER, resolve
 from .settings import MASTER_DEFAULTS, master_track, setting
 from .render import CHEAT_HEADINGS, cheat_layout, LABEL_W, panel_head, render_cheat, render_panel, render_timeline
-from .helptext import help_text
+from .helptext import help_for, help_text
 from .commands import save_as, slot_of
 from .cli import aliases, command_table, run
 from .lineedit import LineEditor, path_candidates
@@ -1158,15 +1158,20 @@ class Tui:
                 self.log.append("split takes a percentage (split 50) or a step (split +5, split -5)")
             self.log.append(f"split  left pane {self.split}% of the width  (ctrl-← ctrl-→ move it)")
         elif head in ("help", "-h", "--help"):
-            full = argv[1:] == ["all"]
-            self.log.extend(help_text().rstrip().splitlines() if full else render_cheat(max(40, self.layout()[2] - 2)))
+            if argv[1:] == ["all"]:
+                self.log.extend(help_text().rstrip().splitlines())
+            elif argv[1:]:
+                self.log.extend(help_for(aliases().get(argv[1], argv[1]))
+                                or [f"help: no command {argv[1]!r}; help alone shows the cheat sheet, help all the whole page"])
+            else:
+                self.log.extend(render_cheat(max(40, self.layout()[2] - 2)))
         elif head == "saveas":
             if len(argv) != 2:
                 self.log.append("saveas NAME  (a bare name goes next to this project; a path goes where it says)")
             else:
                 self.save_as(argv[1])
         elif head in ("ui", "tui", "rebuild", "new", "record"):
-            self.log.append(f"{head}: run that from the shell")
+            self.log.append(f"{head}: run that from the shell" + ("; help record says how" if head == "record" else ""))
         else:
             self.run_command(argv, head, is_effect)
         del self.log[:-2000]

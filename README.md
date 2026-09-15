@@ -98,6 +98,9 @@ name (a unique prefix will do). `-N` / `--no-mix` on any change skips an automat
 | `fx` | `f` | `TRACK [add KIND ... \| N SETTINGS \| N on\|off\|rm \| N move M \| clear]` | the track's (or master's) effect chain, in order; `fx kinds` lists every effect |
 | `play` | `pl` | `[FROM] [-r]` | play `master.wav`, or the project live when it is out of date; in the ui, space plays and stops |
 | `mix` | `x` | `[-3] [-v]` | render `master.wav`; `-3` / `--mp3` also writes `master.mp3` |
+| `record` | `rec` | `[FROM] [-t LENGTH] [-n NAME] [-i INPUT] [-c N] [-s] [-d]` | record a new track while the project plays from `FROM`; see Recording |
+| `record` | `rec` | `calibrate [-i INPUT] [-c N]` | play clicks and record them, so later takes land on time |
+| `inputs` | `in` | `[N \| NAME \| default]` | what can be recorded; `N` picks one for this computer |
 | `undo` | `u` | | undo the last change, again for the one before; `ctrl-u` in the ui (not past a hard trim or `rm -D`) |
 | `stems` | `sm` | `[DIR] [-A]` | one wav per track, processed as in the mix and all the same length, into `stems/`; `-A` only what the mix hears |
 | `dump` | `dp` | | the state as JSON, the same document as `gout.json` |
@@ -106,6 +109,7 @@ name (a unique prefix will do). `-N` / `--no-mix` on any change skips an automat
 | `set` | `se` | `KEY VALUE` | settings; `set` alone lists them all (see the master bus below) |
 | `stats` | `st` | | integrated LUFS, loudness range and true peak per track file, and for `master.wav` |
 | `cheat` | `c` | | the cheat sheet |
+| `help` | `h` | `[all \| COMMAND]` | the instruction page; `help record` shows one command's part of it |
 | `cut` | | `INPUT ...` | the 1.x cutter, see below |
 
 Long flags exist for every short one: `--at --name --hard --clear --reencode --delete --mp3
@@ -145,6 +149,40 @@ second and a half, `master.wav` is rendered in a separate process while you keep
 new change cancels it and waits again. The timeline draws an out-of-date master in grey and says
 so. `on` renders after every change, from the shell too, as older versions did; `off` renders only
 when you run `mix`. `stems`, `mix` and `play -r` always render what they need.
+
+## Recording
+
+Recording runs from a shell in the project folder; the ui cannot do it yet.
+
+```sh
+gout inputs                   # what can be recorded here; the one in use is marked
+gout inputs 2                 # use input 2 from now on, on this computer (default: the system's again)
+gout record calibrate         # once per input and output: 10 clicks out and back in
+gout record                   # a new track from 0:00 while the project plays; ctrl-c stops
+gout record 1:30 -n vocal     # from 1:30, the track called vocal
+gout record 0:12 -t 30s       # stops by itself after 30 seconds
+```
+
+Each take is a new track: a 32-bit float wav in `master/`, called `rec` unless `-n` names it. It
+records mono from channel 1 of the input; `-c 2` takes channel 2 and `-s` stereo from channels 1
+and 2 (or N and N+1). `-i` records from another input this once. `undo` deletes the take. A take
+cut short by a crash is still a file in `master/`, and `gout scan` registers it.
+
+While you record, the project plays from `FROM`, and the take is placed so it lines up with what
+you heard: gout measures how late the input is on every take and trims that off. `gout record
+calibrate` makes it exact, to within half a millisecond. Put the microphone near the speaker, or a
+cable from the output to the input, and it plays 10 clicks and records them. Do it once for each
+input and output (headphones and speakers count as different outputs). The result is kept for this
+computer, and every later take uses it.
+
+gout plays the project but does not play your input back to you, so wear headphones: with
+speakers the microphone records the song too. `-d` records without playing anything. gout also
+records without playing when PortAudio is missing (`gout version` says so) or when nothing is
+audible from `FROM`.
+
+On Linux, `gout inputs` also lists what each output plays, so you can record the computer's own
+sound like any other input. Capture goes through `pw-record`, `parecord` or `arecord` on Linux and
+ffmpeg on macOS and Windows. `GOUT_RECORDER` picks one, and `GOUT_RECORDER=null` records silence.
 
 ## The terminal ui
 
