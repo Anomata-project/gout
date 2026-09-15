@@ -292,7 +292,7 @@ BASE_COMMANDS = {
     "new": ("n",), "cheat": ("c",), "help": ("h", "?"), "ui": ("tui",), "cut": (), "addons": (),
     "quit": ("q", "exit"), "clear": ("cl",), "split": ("sp",), "sheet": ("sh",), "version": ("-V",),
     "play": ("pl",), "stop": (), "colors": ("colours",), "record": ("rec", "rc"), "inputs": ("in",),
-    "video": ("vd",), "part": ("pt",),
+    "video": ("vd",), "part": ("pt",), "window": ("wd",),
 }
 
 

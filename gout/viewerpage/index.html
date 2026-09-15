@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>gout timeline</title>
+<link rel="stylesheet" href="viewer.css">
+<link rel="icon" href="data:,">
+</head>
+<body>
+<header id="bar">
+  <span id="song">gout</span>
+  <span id="where">0:00.000</span>
+  <span id="mode"></span>
+  <span id="zoom"></span>
+  <span id="hint">space play · ← → 5 s · wheel zoom · shift-wheel or drag scroll · click places the playhead · + − 0 · f follow · ctrl-r record</span>
+</header>
+<main id="scroller">
+  <div id="stack">
+    <canvas id="wave"></canvas>
+    <canvas id="over"></canvas>
+  </div>
+</main>
+<div id="gone" hidden>gout closed the window's connection: the ui has stopped, or ctrl-o opens it again</div>
+<script src="viewer.js"></script>
+</body>
+</html>

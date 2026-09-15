@@ -1,0 +1,14 @@
+:root { color-scheme: dark; }
+html, body { margin: 0; height: 100%; background: #181818; color: #d0d0d0;
+  font: 13px ui-monospace, "DejaVu Sans Mono", Menlo, Consolas, monospace; overflow: hidden; }
+#bar { display: flex; gap: 18px; align-items: baseline; padding: 6px 12px; height: 18px; background: #87afd7;
+  color: #000; white-space: nowrap; overflow: hidden; }
+#song { font-weight: bold; }
+#where { font-variant-numeric: tabular-nums; min-width: 9ch; }
+#mode.rec { color: #b00000; font-weight: bold; }
+#hint { color: #1c3550; overflow: hidden; text-overflow: ellipsis; }
+#scroller { position: absolute; top: 30px; left: 0; right: 0; bottom: 0; overflow-y: auto; overflow-x: hidden; }
+#stack { position: relative; }
+canvas { position: absolute; left: 0; top: 0; display: block; }
+#over { cursor: crosshair; }
+#gone { position: fixed; bottom: 12px; left: 12px; padding: 6px 10px; background: #5f1f1f; color: #fff; }

@@ -26,6 +26,7 @@ analysis = Analysis(
     [str(ROOT / "packaging" / "entry.py")],
     pathex=[str(ROOT)],
     datas=[(str(ROOT / "examples" / "addons"), "examples/addons"), (str(ROOT / "docs" / "addons.md"), "docs"),
+           (str(ROOT / "gout" / "viewerpage"), "gout/viewerpage"),  # the window's page
            (str(ROOT / "LICENSE"), ".")],
     hiddenimports=sorted(set(stdlib)) + collect_submodules("gout", filter=lambda mod: not mod.startswith("gout.web")),
     excludes=sorted(LEAVE_OUT) + ["gout.web"],

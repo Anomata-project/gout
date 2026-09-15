@@ -332,6 +332,26 @@ shows the timeline,
 whole width. `help` prints the sheet into the log, `help all` the whole instruction page,
 `quit` / `ctrl-d` / `ctrl-c` leave. Both states are remembered per project.
 
+### The window
+
+`ctrl-o` (or `window` / `wd` at the prompt) opens the timeline in a browser window of its own, in high
+definition: real waveforms, a playhead that glides, and zoom from the whole song down to single
+samples. The terminal's timeline (`ctrl-t`) stays as it is; the window follows the ui. It shows the
+master, every track with its trimmed-away audio dimmed, parts with their names and their own gain,
+muted parts grey, and a take growing as you record. With `set bpm` the ruler numbers the bars.
+
+In the window: `space` plays and stops, `←` `→` move 5 s, the mouse wheel zooms around the pointer,
+shift and the wheel (or dragging) scrolls, a click places the playhead, `+` `-` zoom, `0` fits the
+song, `f` turns following the playhead on and off, and `ctrl-r` records as in the ui. It only looks:
+changes are made in the ui, and the window redraws when they are.
+
+gout serves the page from this computer only (127.0.0.1) at a link with a secret in it, so nothing
+else can read the project, and turns away requests for any other host name. It opens in Chromium,
+Chrome, Brave or Edge as an app window when one is installed, otherwise in the default browser.
+Waveforms are worked out once per file (about 1.7 s for five minutes) and kept in `.gout/peaks/`;
+closer in than 5 ms a pixel the page asks for the samples of what is in view. The server stops with
+the ui.
+
 ### The parameter sheet
 
 `ctrl-e` (or `sheet` at the prompt) replaces the screen with a table of every parameter in the
@@ -485,7 +505,7 @@ A screen is a subclass of `gout.screens.Screen` with a `frame(ctx, width, height
 rows of text and colour classes, registered with `gout.add_screen(...)`. `ctx.band("low")` gives
 how loud a band is now (`low`, `mid`, `high`, `level`, `onset`, 0 to 1) and `ctx.travel("low")`
 how much of it has gone by, for motion that pushes with the music. A screen takes one of the keys
-nothing else uses: `ctrl-space`, `ctrl-b`, `ctrl-o`, `ctrl-q`, `ctrl-v`, `ctrl-y`.
+nothing else uses: `ctrl-space`, `ctrl-b`, `ctrl-q`, `ctrl-v`, `ctrl-y`.
 
 An addon that fails to load, or wants a name that is taken, is reported on every command and
 skipped; gout keeps working. Addons are ordinary Python running with your permissions, so gout

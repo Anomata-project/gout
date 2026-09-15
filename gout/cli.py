@@ -138,7 +138,7 @@ def run(argv: list[str], project: Project | None = None) -> int:
             print(f"gout: PortAudio: not found, so gout record does not play the project while recording"
                   f" ({install_hint()})")
         return 0
-    if head in ("quit", "clear", "split", "sheet", "stop") and project is None:
+    if head in ("quit", "clear", "split", "sheet", "stop", "window") and project is None:
         die(f"{head} only means something inside the ui (gout, in a project)")
 
     need_tools()

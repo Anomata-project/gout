@@ -4,6 +4,7 @@ from __future__ import annotations
 import contextlib
 import io
 import math
+import queue
 import os
 import re
 import shlex
@@ -105,6 +106,9 @@ class Tui:
         self.sheet_len = 0
         self.busy = False
         self.progress_line: tuple | None = None  # (what, fraction, status) a long command reports (gout video)
+        self.viewer = None             # the window's server, once ctrl-o opened it
+        self.viewer_state = ""         # the project state the window was last told about
+        self.viewer_checked = 0.0
         self.take: Take | None = None  # a recording (or a level check) while it runs
         self.take_peak = 0.0           # its level at the last look
         self.running = True
@@ -365,6 +369,7 @@ class Tui:
             while self.running:
                 self.check_player()
                 self.check_take()
+                self.tell_viewer()
                 began = time.monotonic()
                 self.draw()
                 spent_ms = (time.monotonic() - began) * 1000
@@ -373,7 +378,7 @@ class Tui:
                 if self.mode == "screen":  # frames at the screen's rate while the song plays
                     self.scr.timeout(max(5, round(1000 / max(1, self.screen.fps) - spent_ms)) if self.player else 250)
                 else:
-                    self.scr.timeout(100 if self.player or self.take else (250 if waiting else -1))  # playhead, renders
+                    self.scr.timeout(50 if self.viewer else 100 if self.player or self.take else (250 if waiting else -1))
                 try:
                     key = self.scr.get_wch()
                 except KeyboardInterrupt:
@@ -386,6 +391,8 @@ class Tui:
             self.stop_take()  # leaving keeps what was recorded
             self.stop_playing(keep=False)
             self.cancel_render()
+            if self.viewer is not None:
+                self.viewer.stop()
 
     # ---- playback
 
@@ -438,6 +445,64 @@ class Tui:
             self.log.append(f"play  again from {fmt_ms(self.playhead_ms)} with the change ({'live' if player.live else MASTER_WAV})")
         else:
             self.log.append(f"play  {how} from {fmt_ms(self.playhead_ms)}  ({player.backend}; space stops)")
+
+    # ---- the window: a high-definition timeline in a browser (viewer.py)
+
+    def open_window(self) -> None:
+        from .viewer import Viewer
+        if self.viewer is None:
+            try:
+                self.viewer = Viewer(self.project.root, self.project.rate).start()
+            except OSError as exc:
+                self.log.append(f"error: window: {exc}")
+                return
+            self.viewer_state = ""
+            self.tell_viewer()
+        how = self.viewer.open()
+        self.log.append(f"window  the timeline in {how}  ({self.viewer.url.split('?')[0]}, only for this computer;"
+                        " ctrl-o shows it again)")
+        self.scroll = 0
+
+    def tell_viewer(self) -> None:
+        """What the window needs, each turn: where the playhead is; when the project changed, all of it.
+        And the keys and clicks it sent, done here as if typed."""
+        viewer = self.viewer
+        if viewer is None:
+            return
+        from .viewer import project_state
+        now = time.monotonic()
+        if now - self.viewer_checked > 0.4:
+            self.viewer_checked = now
+            state = self.project.state_fingerprint() + str(self.project.master_is_current())
+            if state != self.viewer_state:
+                self.viewer_state = state
+                viewer.publish_state(*project_state(self.project, self.theme))
+        take = self.take
+        viewer.publish_play(take.position_ms() if take else self.play_position_ms(), bool(self.player or take),
+                            None if take is None else {"at": take.at_ms, "peaks": take.peaks,
+                                                        "label": "check" if take.checking else "rec"})
+        while True:
+            try:
+                message = viewer.keys.get_nowait()
+            except queue.Empty:
+                break
+            key = message.get("key")
+            if key == "space":
+                if self.take is not None:
+                    self.stop_take()
+                elif self.player:
+                    self.stop_playing()
+                else:
+                    self.start_playing()
+            elif key in ("left", "right") and self.take is None:
+                self.seek(-5000 if key == "left" else 5000)
+            elif key == "record":
+                self.handle("\x12")
+            elif isinstance(message.get("seek"), (int, float)) and self.take is None:
+                if self.player is not None:
+                    self.start_playing(int(message["seek"]))
+                else:
+                    self.playhead_ms = max(0, int(message["seek"]))
 
     # ---- recording: a take runs while the ui goes on drawing
 
@@ -581,7 +646,9 @@ class Tui:
         if screen_for_key(key) is not None:  # a key an addon's screen took: ctrl-space for the fractal
             self.open_screen(screen_for_key(key))
             return
-        if key == "\x12":  # ctrl-r: record from the playhead, or stop the take
+        if key == "\x0f":  # ctrl-o: the window
+            self.open_window()
+        elif key == "\x12":  # ctrl-r: record from the playhead, or stop the take
             if self.take is not None:
                 self.stop_take()
             else:
@@ -1215,6 +1282,9 @@ class Tui:
                 return
         head = aliases().get(argv[0], argv[0])
         is_effect = head == "fx" or resolve(head) is not None
+        if head == "window":
+            self.open_window()
+            return
         if self.take is not None and head not in ("q", "quit", "exit", "view", "timeline", "cheat", "clear", "help", "split"):
             self.log.append(f"{head}: waits until the take ends (ctrl-r or space stops it)")
             return

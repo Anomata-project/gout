@@ -208,7 +208,7 @@ is a track colour from the theme, `m` the master's colour, a space the terminal'
 `ctx.position_ms` and `ctx.playing` where the song is.
 
 A screen opens with its key or its name at the prompt. The keys a screen may take are the ones
-the ui does not use: `ctrl-space`, `ctrl-b`, `ctrl-o`, `ctrl-q`, `ctrl-v`, `ctrl-y`. Esc
+the ui does not use: `ctrl-space`, `ctrl-b`, `ctrl-q`, `ctrl-v`, `ctrl-y`. Esc
 or the key again goes back; space and the left and right arrows play, stop and move as always.
 Other keys go to `key_pressed(ctx, key)`, which returns `True` when it used the key. `fps`,
 `status(ctx)`, `help` (rows for the cheat sheet), `fullscreen`, `status_seconds` and

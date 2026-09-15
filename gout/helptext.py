@@ -20,7 +20,8 @@ PROJECT
                                   edits like a shell: arrows, home/end, up/down for earlier commands
                                   (kept per project), tab completes commands, tracks, presets and file
                                   names from where gout was started, right arrow takes the grey
-                                  suggestion after the cursor
+                                  suggestion after the cursor; ctrl-o (or window) opens the timeline in a
+                                  browser window, in high definition
   gout play  pl [FROM] [-r]       play from FROM (1:30, 45s): master.wav when it matches the project,
                                   otherwise the project streamed live, effects and all, at once
                                   (-r renders first instead); ctrl-c stops. In the ui: space on an
