@@ -188,7 +188,7 @@ class Fixtures:
             ffmpeg("-f", "lavfi", "-i", "sine=frequency=110:duration=4", "-ac", "2", "-ar", "44100",
                    "-c:a", "pcm_s16le", str(d / "bass.wav"))
             ffmpeg("-f", "lavfi", "-i", "sine=frequency=880:duration=3", "-c:a", "flac", str(d / "vox.flac"))
-            ffmpeg("-f", "lavfi", "-i", "anoisesrc=d=4:c=pink:a=0.3", "-ac", "2", "-ar", "48000",
+            ffmpeg("-f", "lavfi", "-i", "anoisesrc=d=4:c=pink:a=0.3:seed=1", "-ac", "2", "-ar", "48000",  # the same noise every run
                    "-c:a", "pcm_s16le", str(d / "noise.wav"))
             cls._dir = d
         return cls._dir
