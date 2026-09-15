@@ -37,6 +37,7 @@ gout add drums.mp3 bass.wav          # copied into master/, master.wav mixed
 gout add vocals.flac --at 00:00:08   # other formats are decoded to wav on the way in
 gout move 3 +250ms                   # nudge later; -250ms earlier; 1:30 places it there
 gout trim 3 -st 2s -et 1:40          # soft trim: in/out points, the file is untouched
+gout trim 3 -et -5s                  # the last 5 seconds left out
 gout trim 3 --hard                   # hard trim: bake it into the file, lighter material
 gout solo 3 && gout mix --mp3        # hear one track, bounce master.mp3 as well
 gout undo                            # every change is recorded
@@ -82,7 +83,7 @@ name (a unique prefix will do). `-N` / `--no-mix` on any change skips an automat
 | `view` | `v` | `[-w COLS]` | print the timeline once: master first, tracks as waveforms |
 | `colors` | | `[--init [--project] [-f]]` | the colour and layout settings of `color.json` |
 | `move` | `m` | `TRACK... \| all +TIME \| -TIME \| TIME` | nudge later, nudge earlier, place at a time; `move 1 3 -12s` or `move all -12s` moves several by the same amount (one undo), and with `TIME` the earliest of them lands there with the spacing kept |
-| `trim` | `t` | `TRACK [-st T] [-et T \| -el T]` | soft trim, times count from the start of the track's file |
+| `trim` | `t` | `TRACK [-st T] [-et T \| -el T]` | soft trim, times count from the start of the track's file; with a minus from its end: `trim 2 -et -5s` leaves out the last 5 seconds |
 | `trim` | `t` | `TRACK -c` | soft trim off (`--clear`) |
 | `trim` | `t` | `TRACK -H [-st ..] [-et ..] [-r]` | hard trim, rewrites the file; bakes the soft trim when no times given (`--hard`) |
 | `rm` | `r` | `TRACK [-D]` | drop a track; `-D` also deletes its file (`--delete`) |

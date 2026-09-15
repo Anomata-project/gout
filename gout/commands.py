@@ -278,7 +278,7 @@ def cmd_move(project: Project, args: Args) -> None:
 
 TRIM_USAGE = ("gout trim TRACK [-st TIME] [-et TIME | -el TIME] [-c]          soft: file untouched\n"
               "       gout trim TRACK -H [-st ..] [-et ..|-el ..] [-r]           hard: rewrite the file\n"
-              "       times are measured from the start of the track's own file")
+              "       times are measured from the start of the track's own file; -5s is 5 s before its end")
 
 
 def cmd_trim(project: Project, args: Args) -> None:
@@ -291,13 +291,18 @@ def cmd_trim(project: Project, args: Args) -> None:
         die("-et and -el are exclusive\n" + TRIM_USAGE)
     t = project.track(spec)
     length = t["length_ms"]
+
+    def point(text: str) -> int:
+        """A moment in the file: from its start, or with a minus back from its end."""
+        return length - parse_ms(text[1:]) if text.startswith("-") else parse_ms(text)
+
     a, b = audible(t)
     if clear:
         a, b = 0, length
     if st:
-        a = parse_ms(st)
+        a = point(st)
     if et:
-        b = parse_ms(et)
+        b = point(et)
     elif el:
         b = a + parse_ms(el)
     b = min(b, length)

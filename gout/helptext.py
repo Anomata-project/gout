@@ -105,7 +105,8 @@ TRACKS   (TRACK is the number shown by ls, or the track name)
   gout move  m  TRACK +TIME | -TIME | TIME   nudge later, nudge earlier, or place at a time
   gout move  m  TRACK... | all +TIME | TIME  several tracks, or all: by the same amount, or the
                                              earliest placed at TIME with the spacing kept
-  gout trim  t  TRACK [-st T] [-et T|-el T]  soft trim: in/out points, the file is untouched
+  gout trim  t  TRACK [-st T] [-et T|-el T]  soft trim: in/out points, the file is untouched;
+                                             -et -5s is 5 s before the file's end
   gout trim  t  TRACK -c                     soft trim off again (--clear)
   gout trim  t  TRACK -H [-st ..] [-et ..]   hard trim: rewrite the file, bakes the soft trim (--hard)
   gout rm    r  TRACK [-D]                   drop a track; -D also deletes its file (--delete)
@@ -154,7 +155,8 @@ EXAMPLES
   gout cut show.mp3 -st 00:34:00 -fs 1.99  1.99 MB of audio starting at 34:00
 
 SOFT AND HARD TRIM
-  Trim times count from the start of the track's own file, not from the timeline.
+  Trim times count from the start of the track's own file, not from the timeline; with a
+  minus they count back from its end: trim 2 -et -5s leaves out the last 5 seconds.
   A soft trim only stores in/out points; the mix applies them sample-exactly and
   you can change them as often as you like. A hard trim rewrites the file in {TRACK_DIR}/
   so the material gets lighter; with no times it bakes the current soft trim. The

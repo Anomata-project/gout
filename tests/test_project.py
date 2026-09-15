@@ -65,6 +65,16 @@ class ProjectTest(GoutTest):
         self.assertIn("usage: gout move TRACK... | all", err)
         self.assertEqual(offsets(), [2000, -250, 1750])  # nothing moved
 
+    def test_trim_counts_back_from_the_end_with_a_minus(self):
+        self.project("song", "tone.wav")  # 6 s
+        track = lambda: self.dump()["tracks"][0]
+        self.gout("trim", "1", "-et", "-5s")
+        self.assertEqual((track()["in_ms"], track()["out_ms"]), (0, 1000))
+        self.gout("trim", "1", "-c")
+        self.gout("trim", "1", "-st", "-2s", "-et", "-500ms")  # the last two seconds but half a second
+        self.assertEqual((track()["in_ms"], track()["out_ms"]), (4000, 5500))
+        self.assertIn("outside the file", self.gout("trim", "1", "-st", "-7s", ok=False).stderr)
+
     def test_rm_keeps_the_file_and_rm_delete_removes_it(self):
         root = self.project("song", "bass.wav", "click.wav")
         self.gout("rm", "1")

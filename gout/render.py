@@ -318,6 +318,7 @@ COMMAND_SECTIONS = [
         ("move", "m", "TRACK +1s | -500ms | 1:30", "later, earlier, or place at a time"),
         ("", "", "1 3 -12s | all -12s", "several tracks or all, one undo"),
         ("trim", "t", "TRACK -st 2s -et 1:40", "soft trim: the file is untouched"),
+        ("", "", "TRACK -et -5s", "a minus counts back from the file's end"),
         ("trim", "t", "TRACK -H [-st ..] [-r]", "hard trim: rewrite the file"),
         ("trim", "t", "TRACK -c", "soft trim off"),
         ("rm", "r", "TRACK [-D]", "drop the track; -D deletes its file"),
