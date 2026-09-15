@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import os
 import subprocess
 from array import array
 from pathlib import Path
@@ -77,7 +78,7 @@ def band_rms(path: Path, cache_dir: Path | None = None) -> dict[str, array]:
         blob = array("f")
         for name in BANDS:
             blob.extend(out[name])
-        tmp = cached.with_suffix(".part")
+        tmp = cached.with_suffix(f".{os.getpid()}.part")  # video workers may all work it out at once
         tmp.write_bytes(blob.tobytes())
         tmp.replace(cached)
     return out
