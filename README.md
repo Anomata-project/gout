@@ -240,6 +240,13 @@ and closes, `esc` closes and keeps unapplied edits for next time. A rejected val
 sheet marked `!` with the reason on the bottom line. The ui switches the terminal's flow control
 off for its own session so that `ctrl-s` reaches it.
 
+The line above the bottom one shows the highlighted row as a whole command, never cut short:
+`gout eq 1 hp35 +6@65/1.2 -3@300/1.5 +3@2k`, `gout gain 1 -3`, `gout set title 'Deep water'`
+(a second effect of the same kind goes by its position, `gout fx 1 3 ...`). Select it with the
+mouse and paste it into a shell or into gout's prompt in another project: the prompt takes a
+leading `gout` too. `ctrl-p` closes the sheet with that command on the prompt line, ready to
+change the track number and run. A value too long for its column ends in `…`.
+
 `saveas NAME` (`sa`, also `gout saveas` from the shell) copies the whole project, audio
 included, to a sibling directory with that name, or to a path when you give one, and the ui
 carries on in the copy the way a DAW's Save As does. In the sheet, `ctrl-shift-s` asks for the

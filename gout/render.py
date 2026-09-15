@@ -437,6 +437,7 @@ KEY_SECTIONS = [
         ("ctrl-x", "apply and close"),
         ("esc", "close, keeping the edits for next time"),
         ("ctrl-w", "clear the cell"),
+        ("ctrl-p", "the row as a command on the prompt (the line at the bottom shows it to copy)"),
         ("ctrl-shift-s", "save as (or saveas NAME at the prompt)"),
     ]),
 ]

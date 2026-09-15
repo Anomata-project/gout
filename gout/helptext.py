@@ -15,7 +15,8 @@ PROJECT
   gout                            inside a project: open the terminal ui (prompt left; timeline and
                                   cheat sheet right, ctrl-t / ctrl-k hide each; ctrl-u undoes; ctrl-e opens the
                                   parameter sheet: every setting and track parameter as name, value
-                                  and new value, ctrl-s applies); elsewhere: this page. The prompt
+                                  and new value, ctrl-s applies, the highlighted row shown as a command
+                                  to copy, ctrl-p puts it on the prompt); elsewhere: this page. The prompt
                                   edits like a shell: arrows, home/end, up/down for earlier commands
                                   (kept per project), tab completes commands, tracks, presets and file
                                   names from where gout was started, right arrow takes the grey

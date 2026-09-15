@@ -138,6 +138,8 @@ class Tui:
 
     def complete_words(self, before: list[str], value: str) -> list[str]:
         """What the word under the cursor can become: a command, a track, a preset, or a file."""
+        if before[:1] == ["gout"]:
+            before = before[1:]
         if not before:
             names = sorted(set(command_table()) | set(UI_WORDS) | set(screens()))
             return [n for n in names if n.startswith(value)]
@@ -603,10 +605,13 @@ class Tui:
         rows: list[dict] = []
 
         def head(text: str) -> None:
-            rows.append({"id": None, "head": True, "name": text, "value": "", "hint": "", "cmd": None})
+            rows.append({"id": None, "head": True, "name": text, "value": "", "hint": "", "cmd": None, "copy": ""})
 
-        def row(rid: str, name: str, value: str, cmd, hint: str = "") -> None:
-            rows.append({"id": rid, "head": False, "name": name, "value": value, "hint": hint, "cmd": cmd})
+        def row(rid: str, name: str, value: str, cmd, hint: str = "", copy: str | None = None) -> None:
+            """copy: the row as a command someone can type, here or in another project (by default
+            what an edit to the value it has would run)."""
+            copy = shlex.join(cmd(value)) if copy is None else copy
+            rows.append({"id": rid, "head": False, "name": name, "value": value, "hint": hint, "cmd": cmd, "copy": copy})
 
         hints = {
             "rate": "Hz", "autorender": "idle | on | off",
@@ -617,15 +622,20 @@ class Tui:
 
         def fx_rows(spec: str, key: str, items: list[dict]) -> None:
             """A row per effect in the chain (edit: settings, on, off, rm, move N) and one to add."""
+            seen = set()
             for pos, item in enumerate(items, 1):
                 eff = effect(item["kind"])
                 value = item["params"] or (eff.empty if eff else "")
                 value += ("  (off)" if not item["on"] else "") + ("" if eff else "  (not installed)")
                 hint = (eff.hint if eff else "not installed") + " | on | off | rm | move N"
+                # the kind's own command reaches the first of its kind; later ones go by position
+                target = [item["kind"], spec] if eff and item["kind"] not in seen else ["fx", spec, str(pos)]
+                seen.add(item["kind"])
                 row(f"fx#{item['id']}", f"{pos} {item['kind']}", value,
-                    lambda v, s=spec, fid=item["id"]: ["fx", s, f"#{fid}", *v.split()], hint)
+                    lambda v, s=spec, fid=item["id"]: ["fx", s, f"#{fid}", *v.split()], hint,
+                    shlex.join(target + item["params"].split()) if item["params"] else "")
             row(f"{key}:+fx", "+ effect", "", lambda v, s=spec: ["fx", s, "add", *v.split()],
-                "KIND [SETTINGS]: " + " | ".join(effects()))
+                "KIND [SETTINGS]: " + " | ".join(effects()), f"fx {spec} add ")
         head(f"project  {p.get('name')}")
         row("set:rate", "rate", str(p.rate), lambda v: ["set", "rate", v], hints["rate"])
         row("set:autorender", "autorender", p.render_mode,
@@ -699,13 +709,16 @@ class Tui:
             self.sheet_cur = next((i for i, r in enumerate(rows) if r["id"]), 0)
         pending = len(self.edits)
         title = (f" sheet  {pending} change{'s' if pending != 1 else ''}   ctrl-s apply   ctrl-x apply and close"
-                 f"   esc close   ↑ ↓ rows")
+                 f"   ctrl-p row to the prompt   esc close   ↑ ↓ rows")
         self.put(0, 0, title.ljust(w), self.palette.attr("header"))
         name_w = 12
         val_w = max(14, min(28, (w - name_w - 6) // 3))
         new_x = 2 + name_w + 1 + val_w + 1
         self.put(1, 0, f"  {'name':<{name_w}} {'value':<{val_w}} new value", curses.A_DIM)
-        avail = max(1, h - 3)
+        copy = rows[self.sheet_cur]["copy"] if rows else ""
+        copy = f"gout {copy}".rstrip() if copy else ""  # runs in a shell and at gout's prompt alike
+        copy_lines = [copy[i:i + max(1, w - 2)] for i in range(0, len(copy), max(1, w - 2))]
+        avail = max(1, h - 3 - len(copy_lines))
         if self.sheet_cur < self.sheet_top:
             self.sheet_top = self.sheet_cur
         if self.sheet_cur >= self.sheet_top + avail:
@@ -720,7 +733,8 @@ class Tui:
             current = self.sheet_top + i == self.sheet_cur
             edit = self.edits.get(r["id"])
             mark = "!" if r["id"] in self.sheet_errors else ("*" if edit is not None else " ")
-            self.put(y, 0, f"{mark} {r['name']:<{name_w}} {r['value'][:val_w]:<{val_w}} ".ljust(new_x),
+            value = r["value"] if len(r["value"]) <= val_w else r["value"][:val_w - 1] + "…"  # the whole of it is on the command line
+            self.put(y, 0, f"{mark} {r['name']:<{name_w}} {value:<{val_w}} ".ljust(new_x),
                      curses.A_REVERSE if current else 0)
             if edit:
                 self.put(y, new_x, edit, self.palette.attr("sheet_edit") | (curses.A_REVERSE if current else 0))
@@ -728,6 +742,8 @@ class Tui:
                 self.put(y, new_x, r["hint"], self.palette.attr("suggestion"))
             if current:
                 cursor = (y, min(w - 1, new_x + len(edit or "")))
+        for i, text in enumerate(copy_lines):  # the whole row as a command, on lines of its own to select and copy
+            self.put(h - 1 - len(copy_lines) + i, 2, text, self.palette.attr("sheet_edit"))
         if self.saveas_name is not None:
             status = f"save as: {self.saveas_name}   (enter copies the whole project there, esc cancels)"
             cursor = (h - 1, min(w - 1, 9 + len(self.saveas_name)))
@@ -814,6 +830,9 @@ class Tui:
             self.sheet_apply(close=True)
         elif key in ("\x05", "\x11"):  # ctrl-e again, ctrl-q
             self.sheet_close()
+        elif key == "\x10" and rows and rows[self.sheet_cur]["copy"]:  # ctrl-p: the row as a command on the prompt line
+            self.sheet_close()
+            self.input = rows[self.sheet_cur]["copy"]
         elif key == "\x03":
             self.running = False
         elif key == curses.KEY_UP or key == curses.KEY_BTAB:
@@ -1084,6 +1103,10 @@ class Tui:
                     continue
             if argv is None:
                 self.log.append(f"error: {exc}")
+                return
+        if argv[:1] == ["gout"]:  # a line copied from a shell or the README
+            argv = argv[1:]
+            if not argv:
                 return
         head = aliases().get(argv[0], argv[0])
         is_effect = head == "fx" or resolve(head) is not None

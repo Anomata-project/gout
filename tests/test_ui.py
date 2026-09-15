@@ -67,6 +67,39 @@ class UiTest(GoutTest):
         for ch in text:
             ui.handle(ch)
 
+    def test_every_sheet_row_reads_as_a_command_to_copy(self):
+        root = self.project("song", "bass.wav")
+        self.gout("eq", "1", "hp35 +6@65/1.2 -3@300/1.5 +3@2k")
+        self.gout("fx", "1", "add", "eq", "lp12k")
+        self.gout("comp", "master", "bass")
+        self.gout("set", "title", "Deep water")
+        project, screen, ui = self.open_ui(root)
+        copies = {r["id"]: r["copy"] for r in ui.sheet_build() if r["id"]}
+        eq_first, eq_second = project.tracks()[0]["fx"]
+        self.assertEqual(copies[f"fx#{eq_first['id']}"], "eq 1 hp35 +6@65/1.2 -3@300/1.5 +3@2k")
+        self.assertEqual(copies[f"fx#{eq_second['id']}"], f"fx 1 2 {eq_second['params']}")  # the second eq goes by position
+        self.assertTrue(copies[f"fx#{gout_attr('settings', 'master_track')(project)['fx'][0]['id']}"].startswith("comp master -16 3:1"))
+        self.assertEqual(copies["set:title"], "set title 'Deep water'")
+        self.assertEqual(copies["t1:gain"], "gain 1 0")
+        self.assertEqual(copies["t1:+fx"], "fx 1 add ")
+
+        values = {r["id"]: r["value"] for r in ui.sheet_build() if r["id"]}
+        for rid, copy in copies.items():  # typed back at the prompt, with gout in front, each one changes nothing
+            if not rid.endswith("+fx"):
+                ui.input = f"gout {copy}"
+                ui.submit()
+                self.assertNotIn("error", ui.log[-1], copy)
+        self.assertEqual({r["id"]: r["value"] for r in ui.sheet_build() if r["id"]}, values)
+
+        ui.handle("\x05")
+        self.assertEqual(ui.mode, "sheet")
+        self.type_on_row(ui, f"fx#{eq_first['id']}", "")
+        ui.draw()
+        shown = [screen.row(y).strip() for y in range(screen.h)]
+        self.assertIn("gout eq 1 hp35 +6@65/1.2 -3@300/1.5 +3@2k", shown)  # a line of its own, to select with the mouse
+        ui.handle("\x10")  # ctrl-p
+        self.assertEqual((ui.mode, ui.input), ("prompt", "eq 1 hp35 +6@65/1.2 -3@300/1.5 +3@2k"))
+
     def test_prompt_runs_commands_and_follows_the_output(self):
         root = self.project("song", "bass.wav")
         project, screen, ui = self.open_ui(root)
