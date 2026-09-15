@@ -162,3 +162,75 @@ class PartTest(GoutTest):
         self.gout("mix")
         found = [round(t, 3) for t, _ in hits(root / "master.wav")]
         self.assertEqual(found, [2.0, 2.25])  # the echo comes after p1 has ended
+
+    def test_a_part_moves_and_is_trimmed_where_you_hear_it(self):
+        root = self.project("song", "click.wav")  # an impulse at 2.000 s
+        clicks = lambda: [round(t, 3) for t, _ in hits(root / "master.wav")] if self.gout("mix") else []
+        self.gout("part", "1", "1.5s")
+        self.gout("move", "1", "p2", "+1s")  # the click goes with its part
+        self.assertEqual(clicks(), [3.0])
+        self.gout("trim", "1", "p2", "-st", "+250ms", "-et", "3.1s")  # less of the part, still where it was
+        self.assertEqual(clicks(), [3.0])
+        self.assertEqual([(p["in_ms"], p["out_ms"], p["shift_ms"]) for p in self.dump()["tracks"][0]["parts"]],
+                         [(0, 1500, 0), (1750, 2100, 1000)])
+        self.gout("trim", "1", "p2", "-st", "3.05s")
+        self.assertEqual(self.gout("mix").returncode, 0)
+        self.assertEqual(hits(root / "master.wav"), [])  # it starts after the click now
+        self.gout("undo")
+        self.gout("move", "1", "p2", "1s")  # placed: the part begins at 1 s, the click 0.25 s into it
+        self.assertEqual(clicks(), [1.25])
+        self.assertIn("cannot start before its file does",  # its file begins at -0.75 s now
+                      self.gout("trim", "1", "p2", "-st", "-2s", ok=False).stderr)
+        self.assertIn("has no part 'p9'", self.gout("move", "1", "p9", "+1s", ok=False).stderr)
+
+        self.gout("rm", "1", "p1")
+        self.assertIn("all that is left of track 1", self.gout("rm", "1", "p1", ok=False).stderr)
+        self.assertEqual(clicks(), [1.25])
+        self.gout("undo")
+        self.assertEqual(len(self.dump()["tracks"][0]["parts"]), 2)
+
+    def test_a_moved_part_fades_at_its_own_edges(self):
+        root = self.noise_project()
+        self.gout("part", "1", "2s")
+        self.gout("move", "1", "p2", "+500ms")  # p1 now stops at 2 s and p2 starts at 2.5 s, with silence between
+        self.gout("mix")
+        (left,) = samples(root / "master.wav", 1)
+        loud = max(abs(v) for v in left[int(1.5 * RATE):int(1.9 * RATE)])
+        self.assertLess(max(abs(v) for v in left[int(1.9995 * RATE):int(2.0 * RATE)]), 0.15 * loud)  # p1 fades out
+        self.assertLess(max(abs(v) for v in left[int(2.5 * RATE):int(2.5005 * RATE)]), 0.15 * loud)  # p2 fades in
+        self.assertLess(max(abs(v) for v in left[int(2.01 * RATE):int(2.49 * RATE)]), 1e-6)
+
+    def test_the_timeline_sheet_and_completion_know_the_parts(self):
+        root = self.noise_project()
+        self.gout("part", "1", "2s", "3.5s")
+        self.gout("part", "1", "p2", "name", "chorus")
+        self.gout("eq", "1", "chorus", "lp400")
+        view = self.gout("view", "-w", "100").stdout
+        for mark in ("╷p1", "╷chorus", "╷p3"):
+            self.assertIn(mark, view)
+
+        Project, Tui = gout_attr("project", "Project"), gout_attr("tui", "Tui")
+        project = Project(root)
+        ui = Tui(project, FakeScreen())
+        rows = {r["id"]: r for r in ui.sheet_build() if r["id"]}
+        chorus = project.tracks()[0]["parts"][1]
+        ref = f"p#{chorus['id']}"
+        self.assertEqual(rows[f"{ref}:gain"]["copy"], "gain 1 chorus 0")
+        self.assertEqual(rows[f"{ref}:at"]["copy"], "move 1 chorus =00:00:02.000")
+        self.assertEqual(rows[f"fx#{chorus['fx'][0]['id']}"]["copy"], "eq 1 chorus lp400")
+        ui.handle("\x05")
+        ui.sheet_rows = ui.sheet_build()
+        ui.sheet_cur = next(i for i, r in enumerate(ui.sheet_rows) if r["id"] == f"{ref}:at")
+        for ch in "+1s":
+            ui.handle(ch)
+        ui.sheet_cur = next(i for i, r in enumerate(ui.sheet_rows) if r["id"] == f"{ref}:gain")
+        for ch in "-3":
+            ui.handle(ch)
+        ui.handle("\x18")  # both apply, though the move changes which part is p2
+        moved = next(p for p in project.tracks()[0]["parts"] if p["id"] == chorus["id"])
+        self.assertEqual((moved["shift_ms"], moved["gain_db"]), (1000, -3.0))
+
+        for typed, completed in (("gain 1 ch", "gain 1 chorus "), ("eq 1 cho", "eq 1 chorus "), ("move 1 p3", "move 1 p3 ")):
+            ui.input = typed
+            ui.handle("\t")
+            self.assertEqual(ui.input, completed, typed)

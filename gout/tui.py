@@ -17,7 +17,7 @@ from pathlib import Path
 from .core import __version__, bar, detached, fmt_ms, fmt_pan, gout_command, GoutError, is_master, MASTER_N, MASTER_WAV, \
     parse_time, stop_process
 from . import analysis
-from .model import audible, timeline
+from .model import audible, part_label, part_start, PART_WORD, timeline
 from .fx import effect, effects, GUTTER, resolve
 from .settings import MASTER_DEFAULTS, master_track, setting
 from .render import CHEAT_HEADINGS, cheat_layout, LABEL_W, panel_head, render_cheat, render_panel, render_timeline
@@ -152,16 +152,29 @@ class Tui:
             matches = [n for n in names if n.startswith(value)]
             if matches or value[:1] not in ("/", ".", "~"):
                 return matches
+        takes_part = (head in TRACK_FIRST and head != "solo") or eff is not None
+        parts = self.part_words(before[-1]) if len(before) >= 2 and takes_part else []
         if len(before) == 2 and eff is not None and head == eff.name:
-            words = list(eff.presets) + ["on", "off", "clear"]
+            words = parts + list(eff.presets) + ["on", "off", "clear"]
             return [w for w in words if w.startswith(value)]
-        if len(before) >= 2 and head == "move" and value[:1].isalpha() and "all" not in before:  # more tracks before the time
-            return [t["name"] for t in self.project.tracks() if t["name"].startswith(value)]
+        if parts and value[:1].isalpha() and len(before) == 2 and head != "move":
+            return [w for w in parts if w.startswith(value.lower())]
+        if len(before) >= 2 and head == "move" and value[:1].isalpha() and "all" not in before:  # parts, more tracks, then the time
+            return ([w for w in parts if w.startswith(value.lower())]
+                    + [t["name"] for t in self.project.tracks() if t["name"].startswith(value)])
         if len(before) >= 2 and head == "fx" and before[-1].lower() == "add":
             return [name for name in effects() if name.startswith(value)]
         if head in TRACK_FIRST or eff is not None:
             return []
         return path_candidates(self.start_dir, value)
+
+    def part_words(self, spec: str) -> list[str]:
+        """What a track's parts answer to, for completion: p1 p2 ... and the names."""
+        try:
+            parts = self.project.track(spec)["parts"]
+        except GoutError:
+            return []
+        return [f"{PART_WORD}{k}" for k in range(1, len(parts) + 1)] + [p["name"] for p in parts if p["name"]]
 
     # ---- drawing
 
@@ -620,8 +633,11 @@ class Tui:
             "bits": "32f | 24 | 16", "mp3": "320k | 192k | v0", "bpm": "120",
         }
 
-        def fx_rows(spec: str, key: str, items: list[dict]) -> None:
-            """A row per effect in the chain (edit: settings, on, off, rm, move N) and one to add."""
+        def fx_rows(spec: list[str], key: str, items: list[dict], shown: list[str] | None = None) -> None:
+            """A row per effect in the chain (edit: settings, on, off, rm, move N) and one to add. spec
+            reaches the chain in a command (a part by its id, so edits in one go keep hitting it);
+            shown is how the copy line names it."""
+            shown = shown or spec
             seen = set()
             for pos, item in enumerate(items, 1):
                 eff = effect(item["kind"])
@@ -629,13 +645,13 @@ class Tui:
                 value += ("  (off)" if not item["on"] else "") + ("" if eff else "  (not installed)")
                 hint = (eff.hint if eff else "not installed") + " | on | off | rm | move N"
                 # the kind's own command reaches the first of its kind; later ones go by position
-                target = [item["kind"], spec] if eff and item["kind"] not in seen else ["fx", spec, str(pos)]
+                target = [item["kind"], *shown] if eff and item["kind"] not in seen else ["fx", *shown, str(pos)]
                 seen.add(item["kind"])
                 row(f"fx#{item['id']}", f"{pos} {item['kind']}", value,
-                    lambda v, s=spec, fid=item["id"]: ["fx", s, f"#{fid}", *v.split()], hint,
+                    lambda v, s=spec, fid=item["id"]: ["fx", *s, f"#{fid}", *v.split()], hint,
                     shlex.join(target + item["params"].split()) if item["params"] else "")
-            row(f"{key}:+fx", "+ effect", "", lambda v, s=spec: ["fx", s, "add", *v.split()],
-                "KIND [SETTINGS]: " + " | ".join(effects()), f"fx {spec} add ")
+            row(f"{key}:+fx", "+ effect", "", lambda v, s=spec: ["fx", *s, "add", *v.split()],
+                "KIND [SETTINGS]: " + " | ".join(effects()), f"fx {' '.join(shown)} add ")
         head(f"project  {p.get('name')}")
         row("set:rate", "rate", str(p.rate), lambda v: ["set", "rate", v], hints["rate"])
         row("set:autorender", "autorender", p.render_mode,
@@ -646,7 +662,7 @@ class Tui:
                 value = fmt_ms(int(value))
             row(f"set:{key}", key, value, (lambda k: lambda v: ["set", k, v])(key), hints.get(key, "text"))
         head("master effects  (in order, before master gain and fades)")
-        fx_rows("master", "master", master_track(p)["fx"])
+        fx_rows(["master"], "master", master_track(p)["fx"])
         for t in p.tracks():
             n = str(t["n"])
             a, b = audible(t)
@@ -659,7 +675,28 @@ class Tui:
             row(f"t{n}:pan", "pan", fmt_pan(t["pan"]), lambda v, n=n: ["pan", n, v], "L30 | C | R30")
             row(f"t{n}:mute", "mute", "on" if t["mute"] else "off", lambda v, n=n: ["mute", n, v], "on | off")
             row(f"t{n}:solo", "solo", "on" if t["solo"] else "off", lambda v, n=n: ["solo", n, v], "on | off")
-            fx_rows(n, f"t{n}", t["fx"])
+            fx_rows([n], f"t{n}", t["fx"])
+            for part in t["parts"]:
+                label, ref = part_label(t["parts"], part), f"{PART_WORD}#{part['id']}"
+                begin = part_start(t, part)
+                end = begin + part["out_ms"] - part["in_ms"]
+                place = f"{PART_WORD}{t['parts'].index(part) + 1}"
+                head(f"track {n}  {t['name']}  part {place}" + (f" {part['name']}" if part["name"] else "")
+                     + ("  (muted)" if part["mute"] else ""))
+
+                def part_row(field, name, value, words, hint, n=n, label=label, ref=ref):
+                    row(f"{ref}:{field}", name, value, lambda v: [words[0], n, ref, *words[1:], v], hint,
+                        shlex.join([words[0], n, label, *words[1:], value]))
+
+                part_row("at", "at", fmt_ms(begin), ["move"], "where the part starts: 1:30; +1s or -1s moves it")
+                rows[-1]["cmd"] = lambda v, n=n, ref=ref: ["move", n, ref, v if v[:1] in "+-=" else "=" + v]
+                rows[-1]["copy"] = shlex.join(["move", n, label, "=" + fmt_ms(begin)])
+                part_row("start", "start", fmt_ms(begin), ["trim", "-st"], "heard from: 1:31, or +200ms / -1s")
+                part_row("end", "end", fmt_ms(end), ["trim", "-et"], "heard until: 1:45, or +200ms / -1s")
+                part_row("gain", "gain", f"{part['gain_db']:g}", ["gain"], "dB, on top of the track's")
+                part_row("pan", "pan", fmt_pan(part["pan"]), ["pan"], "L30 | C | R30")
+                part_row("mute", "mute", "on" if part["mute"] else "off", ["mute"], "on | off")
+                fx_rows([n, ref], ref, part["fx"], [n, label])
         return rows
 
     def sheet_open(self) -> None:

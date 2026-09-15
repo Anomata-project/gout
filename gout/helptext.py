@@ -103,13 +103,17 @@ TRACKS   (TRACK is the number shown by ls, or the track name)
   gout scan  sc                              register wav/mp3 you copied into {TRACK_DIR}/ yourself,
                                              at 0; reports tracks whose file has gone missing
   gout move  m  TRACK +TIME | -TIME | TIME   nudge later, nudge earlier, or place at a time
+  gout move  m  TRACK PART +TIME | TIME      a part along its track: move 3 p2 +1s, move 3 chorus 1:30
   gout move  m  TRACK... | all +TIME | TIME  several tracks, or all: by the same amount, or the
                                              earliest placed at TIME with the spacing kept
   gout trim  t  TRACK [-st T] [-et T|-el T]  soft trim: in/out points, the file is untouched;
                                              -et -5s is 5 s before the file's end
+  gout trim  t  TRACK PART [-st T] [-et T]   a part: where it is heard from and until, in timeline time;
+                                             +200ms or -1s moves that edge from where it is
   gout trim  t  TRACK -c                     soft trim off again (--clear)
   gout trim  t  TRACK -H [-st ..] [-et ..]   hard trim: rewrite the file, bakes the soft trim (--hard)
   gout rm    r  TRACK [-D]                   drop a track; -D also deletes its file (--delete)
+  gout rm    r  TRACK PART                   drop a part; the file and the other parts stay
   gout mute  mu TRACK [PART] [on|off]        toggle mute        (mute all off)
   gout solo  s  TRACK [on|off]               toggle solo        (solo all off)
   gout gain  g  TRACK [PART] DB              gain 2 -6, gain 2 p3 -6
@@ -123,7 +127,10 @@ TRACKS   (TRACK is the number shown by ls, or the track name)
                                              meet with a 10 ms crossfade, so a cut alone changes nothing you
                                              hear. join makes one piece again, or joins two neighbours;
                                              parts with settings of their own need -f, which drops them.
-                                             part TRACK alone lists them
+                                             A part moves along its track (move 3 p2 +1s), trims where you
+                                             hear it (trim 3 p2 -st 1:31 -et +2s) and goes (rm 3 p2). An edge
+                                             that no longer meets another part fades over 5 ms. part TRACK
+                                             alone lists them
 {{EFFECTS}}  -N (--no-mix) on any of these skips the automatic re-mix; -p DIR before a command picks
   the project. Long flags: --at --name --hard --clear --reencode --delete --mp3 --rate --width
 

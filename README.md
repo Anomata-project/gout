@@ -82,11 +82,12 @@ name (a unique prefix will do). `-N` / `--no-mix` on any change skips an automat
 | `ls` | `l` | | list tracks, positions, trims, flags |
 | `view` | `v` | `[-w COLS]` | print the timeline once: master first, tracks as waveforms |
 | `colors` | | `[--init [--project] [-f]]` | the colour and layout settings of `color.json` |
-| `move` | `m` | `TRACK... \| all +TIME \| -TIME \| TIME` | nudge later, nudge earlier, place at a time; `move 1 3 -12s` or `move all -12s` moves several by the same amount (one undo), and with `TIME` the earliest of them lands there with the spacing kept |
+| `move` | `m` | `TRACK [PART]... \| all +TIME \| -TIME \| TIME` | nudge later, nudge earlier, place at a time; `move 1 3 -12s` or `move all -12s` moves several by the same amount (one undo), and with `TIME` the earliest of them lands there with the spacing kept |
 | `trim` | `t` | `TRACK [-st T] [-et T \| -el T]` | soft trim, times count from the start of the track's file; with a minus from its end: `trim 2 -et -5s` leaves out the last 5 seconds |
+| `trim` | `t` | `TRACK PART [-st T] [-et T]` | a part: where it is heard from and until, in timeline time; `+200ms` or `-1s` moves that edge |
 | `trim` | `t` | `TRACK -c` | soft trim off (`--clear`) |
 | `trim` | `t` | `TRACK -H [-st ..] [-et ..] [-r]` | hard trim, rewrites the file; bakes the soft trim when no times given (`--hard`) |
-| `rm` | `r` | `TRACK [-D]` | drop a track; `-D` also deletes its file (`--delete`) |
+| `rm` | `r` | `TRACK [PART] [-D]` | drop a track; `-D` also deletes its file (`--delete`); with a part, only that part |
 | `mute` | `mu` | `TRACK [PART] [on\|off]` | toggle; `mute all off` |
 | `solo` | `s` | `TRACK [on\|off]` | toggle; `solo all off` |
 | `gain` | `g` | `TRACK [PART] DB` | `gain 2 -6`; `gain 2 p3 -6` only that part |
@@ -143,6 +144,17 @@ track's effects, gain and pan act on the sum. A part's reverb or delay rings on 
 Cutting a part that has effects gives both halves the same effects. Where two parts meet they overlap by 10 ms with a linear
 crossfade: a cut alone changes nothing you can hear (the difference measures -162 dB), and a part
 turned down does not click at its edges.
+
+A part can go its own way along the track. `move 3 p2 +1s` nudges it and `move 3 chorus 1:30`
+places it; `trim 3 p2 -st 1:31 -et 1:45` sets where it is heard from and until, in timeline time,
+and `trim 3 p2 -et +2s` moves one edge by that much. `rm 3 p2` leaves a part out, with the file
+untouched. A part edge that no longer meets its neighbour fades in or out over 5 ms, so a moved
+part does not click. Parts that overlap are both heard.
+
+On the timeline a track in parts shows `╷p1`, `╷chorus` ... in the row above it where each part
+starts, and its parts are drawn where they are. The parameter sheet has rows for every part (at,
+start, end, gain, pan, mute and its effects), and its command line copies them with the part's
+name. Tab completes part names after a track.
 
 `part 3 join` makes one piece again, and `part 3 join p2 p3` joins two neighbours. When the parts
 have settings of their own that joining would lose, gout says which and stops. `-f` joins anyway

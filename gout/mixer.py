@@ -120,25 +120,31 @@ def part_heads(project: "Project", t: dict, shift_ms: int = 0) -> list[tuple[dic
     parts = t["parts"]
     cross = at(CROSS_MS)
     out = []
+    first_in, last_out = audible(t)
     for k, part in enumerate(parts):
         lo, hi = at(part["in_ms"]), at(min(part["out_ms"], length))
         before = after = 0
-        if k > 0 and meets(parts[k - 1], part):
-            prev = parts[k - 1]
+        fade_in = fade_out = 0  # a cut edge left on its own (moved, trimmed, a neighbour removed) fades
+        prev = next((p for p in parts if meets(p, part)), None)
+        nxt = next((p for p in parts if meets(part, p)), None)
+        if prev is not None:
             before = min(cross, (hi - lo) // 2, (lo - at(prev["in_ms"])) // 2, lo)
-        if k + 1 < len(parts) and meets(part, parts[k + 1]):
-            nxt = parts[k + 1]
+        elif part["in_ms"] > first_in:
+            fade_in = min(cross, (hi - lo) // 2)
+        if nxt is not None:
             after = min(cross, (hi - lo) // 2, (at(min(nxt["out_ms"], length)) - hi) // 2, at(length) - hi)
+        elif part["out_ms"] < last_out:
+            fade_out = min(cross, (hi - lo) // 2)
         if part["mute"] or hi <= lo:
             continue
         start = at(t["offset_ms"] + part["shift_ms"]) + lo - before - at(shift_ms)
         size = hi + after - (lo - before)
         steps = [f"aformat=sample_rates={rate}:sample_fmts=fltp",
                  f"atrim=start_sample={lo - before}:end_sample={hi + after}", "asetpts=PTS-STARTPTS"]
-        if before:
-            steps.append(f"afade=t=in:ss=0:ns={2 * before}:curve=tri")
-        if after:
-            steps.append(f"afade=t=out:ss={size - 2 * after}:ns={2 * after}:curve=tri")
+        if before or fade_in:
+            steps.append(f"afade=t=in:ss=0:ns={2 * before or fade_in}:curve=tri")
+        if after or fade_out:
+            steps.append(f"afade=t=out:ss={size - (2 * after or fade_out)}:ns={2 * after or fade_out}:curve=tri")
         if start < 0:  # live playback from inside or after the part: cut what comes before the playhead
             if -start >= size:
                 continue

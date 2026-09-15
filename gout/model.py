@@ -9,7 +9,12 @@ def audible(t: dict) -> tuple[int, int]:
 
 
 def timeline(t: dict) -> tuple[int, int]:
-    """(start, end) of the audible part on the project timeline."""
+    """(start, end) of the audible part on the project timeline: from the first part to the last
+    for a track in parts, wherever they were moved."""
+    parts = t.get("parts")
+    if parts:
+        return (min(t["offset_ms"] + p["shift_ms"] + p["in_ms"] for p in parts),
+                max(t["offset_ms"] + p["shift_ms"] + p["out_ms"] for p in parts))
     a, b = audible(t)
     return t["offset_ms"] + a, t["offset_ms"] + b
 

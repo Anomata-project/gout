@@ -221,7 +221,7 @@ def cmd_ls(project: Project, args: Args) -> None:
           f"{'trim':<27} {'gain':<7} {'pan':<4} flags")
     for t in tracks:
         a, b = audible(t)
-        start, _ = timeline(t)
+        start, end = timeline(t)
         trimmed = a > 0 or b < t["length_ms"]
         trim = f"{fmt_ms(a)} > {fmt_ms(b)}" if trimmed else "-"
         flags = ("M" if t["mute"] else "-") + ("S" if t["solo"] else "-")
@@ -230,7 +230,7 @@ def cmd_ls(project: Project, args: Args) -> None:
         if t["fx"]:
             flags += "  fx " + " | ".join(fx_text(item) for item in t["fx"])
         print(f"{t['n']:>4}  {t['name']:<16} {t['kind']:<4} {t['channels']:>2}  {fmt_ms(start):<12} "
-              f"{fmt_ms(b - a):<12} {fmt_ms(t['length_ms']):<12} {trim:<27} "
+              f"{fmt_ms(end - start):<12} {fmt_ms(t['length_ms']):<12} {trim:<27} "
               f"{fmt_db(t['gain_db']):<7} {fmt_pan(t['pan']):<4} {flags}")
         for part in t["parts"]:
             begin = part_start(t, part)
@@ -249,7 +249,7 @@ def cmd_ls(project: Project, args: Args) -> None:
         print(f"      {MASTER_WAV} not rendered — gout mix")
 
 
-MOVE_USAGE = "gout move TRACK... | all +TIME | -TIME | TIME  (or =TIME)"
+MOVE_USAGE = "gout move TRACK [PART]... | all +TIME | -TIME | TIME  (or =TIME)"
 
 
 def cmd_move(project: Project, args: Args) -> None:
@@ -257,36 +257,57 @@ def cmd_move(project: Project, args: Args) -> None:
     places the earliest audible start there and keeps the spacing. One undo puts them all back."""
     words = args.positionals(MOVE_USAGE, 2)
     specs, delta = words[:-1], words[-1]
+    parts_of: dict[int, list[dict]] = {}  # track number -> the parts named after it, when not all of it moves
     if "all" in specs:
         chosen = project.tracks()
         if not chosen:
             die("the project has no tracks yet — gout add FILE")
     else:
-        try:
-            chosen = [project.track(spec) for spec in specs]
-        except GoutError as exc:
-            die(f"{exc}\nusage: {MOVE_USAGE}")
+        chosen = []
+        for spec in specs:
+            last = chosen[-1] if chosen else None
+            part = find_part(last, spec) if last is not None else None
+            if part is not None:  # a part of the track just named
+                parts_of.setdefault(last["n"], []).append(part)
+                continue
+            if last is not None and last["parts"] and re.fullmatch(rf"{PART_WORD}\d+", spec.lower()):
+                pick_part(last, spec)  # says which parts there are
+            try:
+                chosen.append(project.track(spec))
+            except GoutError as exc:
+                die(f"{exc}\nusage: {MOVE_USAGE}")
     chosen = list({t["n"]: t for t in chosen}.values())  # a track named twice moves once
+    whole = [t for t in chosen if t["n"] not in parts_of]
+    pieces = [(t, part) for t in chosen for part in {p["id"]: p for p in parts_of.get(t["n"], [])}.values()]
+    starts = [timeline(t)[0] for t in whole] + [part_start(t, part) for t, part in pieces]
     if delta[0] in "+-":
         step = parse_ms(delta[1:])
         shift = step if delta[0] == "+" else -step
     else:
         text = delta[1:] if delta[0] == "=" else delta
         at = parse_ms(text.lstrip("+-"))
-        shift = (-at if text.startswith("-") else at) - min(timeline(t)[0] for t in chosen)
-    project.record(f"move {'all' if 'all' in specs else ' '.join(t['name'] for t in chosen)} {delta}")
-    for t in chosen:
+        shift = (-at if text.startswith("-") else at) - min(starts)
+    project.record(f"move {'all' if 'all' in specs else ' '.join(specs)} {delta}")
+    for t in whole:
         offset = t["offset_ms"] + shift
         project.update(t["n"], offset_ms=offset)
         start, end = timeline({**t, "offset_ms": offset})
         cut = f"  (before 0:00: its first {-start / 1000:g} s is not heard)" if start < 0 else ""
         print(f"move  {t['n']:>2}  {t['name']:<16} at {fmt_ms(start)} -> {fmt_ms(end)}{cut}")
+    for t, part in pieces:
+        project.part_update(part["id"], shift_ms=part["shift_ms"] + shift)
+        start = part_start(t, part) + shift
+        cut = f"  (before 0:00: its first {-start / 1000:g} s is not heard)" if start < 0 else ""
+        print(f"move  {t['n']:>2}  {t['name']:<16} {part_label(t['parts'], part):<8} at {fmt_ms(start)} -> "
+              f"{fmt_ms(start + part['out_ms'] - part['in_ms'])}{cut}")
     autorender(project, args)
 
 
 TRIM_USAGE = ("gout trim TRACK [-st TIME] [-et TIME | -el TIME] [-c]          soft: file untouched\n"
               "       gout trim TRACK -H [-st ..] [-et ..|-el ..] [-r]           hard: rewrite the file\n"
-              "       times are measured from the start of the track's own file; -5s is 5 s before its end")
+              "       times are measured from the start of the track's own file; -5s is 5 s before its end\n"
+              "       gout trim TRACK PART [-st TIME] [-et TIME]                 a part: where you hear it start or\n"
+              "       end; +200ms or -1s moves that edge from where it is")
 
 
 def cmd_trim(project: Project, args: Args) -> None:
@@ -294,11 +315,17 @@ def cmd_trim(project: Project, args: Args) -> None:
     clear = args.flag("--clear", "-c")
     reencode = args.flag("-r", "--reencode")
     st, et, el = args.value("-st", "--start"), args.value("-et", "--end"), args.value("-el", "--length")
-    (spec,) = args.positionals(TRIM_USAGE, 1, 1)
+    words = args.positionals(TRIM_USAGE, 1, 2)
     if et and el:
         die("-et and -el are exclusive\n" + TRIM_USAGE)
-    t = project.track(spec)
+    t = project.track(words[0])
     length = t["length_ms"]
+    if len(words) == 2:
+        if hard or clear or el:
+            die("a part takes -st and -et: where it is heard to start and end (or +/- to move an edge)\n" + TRIM_USAGE)
+        trim_part(project, t, pick_part(t, words[1]), st, et)
+        autorender(project, args)
+        return
 
     def point(text: str) -> int:
         """A moment in the file: from its start, or with a minus back from its end."""
@@ -376,10 +403,64 @@ def cmd_trim(project: Project, args: Args) -> None:
     autorender(project, args)
 
 
+def trim_part(project: Project, t: dict, part: dict, st: str | None, et: str | None) -> None:
+    """A part's start and end, in timeline time; a sign moves an edge from where it is. What is
+    heard stays where it was on the timeline, only less or more of the file is heard."""
+    if not (st or et):
+        die("trim a part with -st and -et: gout trim 3 p2 -st +200ms -et 1:45")
+    label = part_label(t["parts"], part)
+    start = part_start(t, part)
+    end = start + part["out_ms"] - part["in_ms"]
+
+    def moment(text: str, edge: int) -> int:
+        return edge + (1 if text[0] == "+" else -1) * parse_ms(text[1:]) if text[0] in "+-" else parse_ms(text)
+
+    new_start = moment(st, start) if st else start
+    new_end = moment(et, end) if et else end
+    lo, hi = part["in_ms"] + new_start - start, part["in_ms"] + new_end - start
+    if lo < 0:
+        die(f"{label} cannot start before its file does: at {fmt_ms(start - part['in_ms'])} at the earliest")
+    if hi > t["length_ms"]:
+        die(f"{label} cannot end after its file does: at {fmt_ms(start - part['in_ms'] + t['length_ms'])} at the latest")
+    if hi - lo < MIN_PART_MS:
+        die(f"{label} would be shorter than {MIN_PART_MS} ms")
+    project.record(f"trim {t['name']} {label} {fmt_ms(new_start)}>{fmt_ms(new_end)}")
+    project.part_update(part["id"], in_ms=lo, out_ms=hi)
+    settle_bounds(project, t["n"])
+    others = [p for p in t["parts"] if p is not part and
+              part_start(t, p) < new_end and new_start < part_start(t, p) + p["out_ms"] - p["in_ms"]]
+    over = f"  (overlaps {', '.join(part_label(t['parts'], p) for p in others)}: both are heard)" if others else ""
+    print(f"trim  {t['n']:>2}  {t['name']:<16} {label:<8} {fmt_ms(new_start)} -> {fmt_ms(new_end)}{over}")
+
+
+def settle_bounds(project: Project, n: int) -> None:
+    """A track in parts reaches from its earliest part's start in the file to its latest part's end."""
+    t = project.track(str(n))
+    if t["parts"]:
+        lo, hi = min(p["in_ms"] for p in t["parts"]), max(p["out_ms"] for p in t["parts"])
+        project.update(n, in_ms=lo, out_ms=None if hi >= t["length_ms"] else hi)
+
+
 def cmd_rm(project: Project, args: Args) -> None:
     delete = args.flag("-D", "--delete")
-    (spec,) = args.positionals("gout rm TRACK [-D]", 1, 1)
-    t = project.track(spec)
+    words = args.positionals("gout rm TRACK [PART] [-D]", 1, 2)
+    t = project.track(words[0])
+    if len(words) == 2:
+        part = pick_part(t, words[1])
+        label = part_label(t["parts"], part)
+        if delete:
+            die("-D deletes a track's file; a part leaves the file alone, so rm TRACK PART takes no -D")
+        if len(t["parts"]) == 1:
+            die(f"{label} is all that is left of track {t['n']}: gout rm {t['n']} removes the track")
+        project.record(f"rm {t['name']} {label}")
+        project.part_delete(part["id"])
+        settle_bounds(project, t["n"])
+        rest = project.track(str(t["n"]))["parts"]
+        if len(rest) == 1 and not part_has_settings(rest[0]) and not rest[0]["shift_ms"]:
+            project.parts_clear(t["file"])  # one plain piece in place is the track, trimmed
+        print(f"rm    {t['name']} {label}  (the file stays; undo brings the part back)")
+        autorender(project, args)
+        return
     project.record(f"rm {t['name']}" + (" -D" if delete else ""), undoable=not delete)
     project.delete(t["n"])
     path = project.tracks_dir / t["file"]
@@ -499,6 +580,9 @@ PART_RESERVED = {"on", "off", "all", "here", "join", "name", "rm", "clear", "non
 def find_part(t: dict, word: str) -> dict | None:
     """One of a track's parts: p and its place from the left, or its name."""
     parts, word = t.get("parts") or [], word.lower()
+    by_id = re.fullmatch(rf"{PART_WORD}#(\d+)", word)  # p#17: the part whose id is 17, as the sheet says it
+    if by_id:
+        return next((p for p in parts if p["id"] == int(by_id.group(1))), None)
     match = re.fullmatch(rf"{PART_WORD}(\d+)", word)
     if match:
         k = int(match.group(1))

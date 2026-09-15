@@ -6,7 +6,7 @@ import textwrap
 
 from .core import CELL_ZERO, fmt_db, fmt_pan, fmt_short, MASTER_WAV
 from .media import ENV_RATE
-from .model import audible, is_heard
+from .model import audible, is_heard, part_label, part_start, timeline
 from .fx import Effect, effect, effects, FxContext, GUTTER
 from .settings import setting
 from .theme import load_theme
@@ -180,8 +180,8 @@ def render_timeline(project: "Project", width: int, styled: bool = False, playhe
     master_ms = int(project.get("master_ms") or 0) if project.master.exists() else 0
     head_ms = int(setting(project, "head"))
 
-    t0 = min(0, min(t["offset_ms"] for t in tracks))
-    t1 = max(max(t["offset_ms"] + t["length_ms"] for t in tracks), master_ms - head_ms, t0 + 1000)
+    t0 = min(0, min(min(t["offset_ms"], timeline(t)[0]) for t in tracks))
+    t1 = max(max(max(t["offset_ms"] + t["length_ms"], timeline(t)[1]) for t in tracks), master_ms - head_ms, t0 + 1000)
     scale = tw / (t1 - t0)  # columns per millisecond
     dot_ms = 1 / (scale * per_cell)
 
@@ -223,6 +223,36 @@ def render_timeline(project: "Project", width: int, styled: bool = False, playhe
                 dots.append((level(up), level(down), kind))
             out.append(dots)
         return out
+
+    def parts_columns(t: dict, wave: bytes, cls: str):
+        """A track in parts: each part's audio where the part is, muted ones dim; where parts
+        overlap, the louder dot shows."""
+        merged = None
+        for part in t["parts"]:
+            drawn = columns_for(wave, t["offset_ms"] + part["shift_ms"], t["length_ms"], part["in_ms"], part["out_ms"],
+                                "s" if part["mute"] else cls, False)
+            if merged is None:
+                merged = drawn
+                continue
+            for c, dots in enumerate(drawn):
+                merged[c] = [new if old is None or (new is not None and new[0] + new[1] > old[0] + old[1]) else old
+                             for old, new in zip(merged[c], dots)]
+        return merged
+
+    def part_marks(t: dict, row: tuple) -> tuple:
+        """The gap row above a track in parts, with a ╷ and the part's name where each part starts."""
+        label, cells, kind, classes, role = row
+        cells, classes = list(cells), list(classes)
+        marks = sorted((col(part_start(t, part)), part_label(t["parts"], part)) for part in t["parts"])
+        for k, (c, name) in enumerate(marks):
+            if not 0 <= c < tw:
+                continue
+            room = (marks[k + 1][0] if k + 1 < len(marks) else tw) - c - 1
+            text = ("╷" + name)[:max(1, room)]
+            for x, ch in enumerate(text):
+                if c + x < tw:
+                    cells[c + x], classes[c + x] = ch, "l"
+        return label, "".join(cells), kind, "".join(classes), role
 
     mh, th, gap, shown = fit_layout(theme if master_ms else {**theme, "master_height": 1}, len(tracks), max_rows)
 
@@ -282,8 +312,13 @@ def render_timeline(project: "Project", width: int, styled: bool = False, playhe
         strip = " ".join(part for part in (fmt_db(t["gain_db"]) if t["gain_db"] else "",
                                            fmt_pan(t["pan"]) if abs(t["pan"]) >= 0.005 else "") if part)
         lines = [(f"{t['n']:>2} {t['name'][:9]:<9} {flags}", "track_label"), (f"   {strip}", "ruler_labels")]
-        drawn = wave_rows(columns_for(wave, t["offset_ms"], t["length_ms"], a, b, cls, styled), th, style)
-        add_group(lines, drawn)
+        if t["parts"]:
+            columns = parts_columns(t, wave, cls)
+            if gap and rows and rows[-1][2] == "gap":
+                rows[-1] = part_marks(t, rows[-1])
+        else:
+            columns = columns_for(wave, t["offset_ms"], t["length_ms"], a, b, cls, styled)
+        add_group(lines, wave_rows(columns, th, style))
     if shown < len(tracks):
         rows.append(("", f"+{len(tracks) - shown} more tracks, not enough room — ls lists them", "note", "", ""))
 
@@ -316,12 +351,15 @@ COMMAND_SECTIONS = [
         ("scan", "sc", "", "register files you put in master/ yourself"),
         ("ls", "l", "", "list the tracks"),
         ("move", "m", "TRACK +1s | -500ms | 1:30", "later, earlier, or place at a time"),
+        ("", "", "TRACK PART +1s | 1:30", "a part along its track"),
         ("", "", "1 3 -12s | all -12s", "several tracks or all, one undo"),
         ("trim", "t", "TRACK -st 2s -et 1:40", "soft trim: the file is untouched"),
         ("", "", "TRACK -et -5s", "a minus counts back from the file's end"),
+        ("", "", "TRACK PART -st 1:31 -et +2s", "a part, where you hear it; + or - moves an edge"),
         ("trim", "t", "TRACK -H [-st ..] [-r]", "hard trim: rewrite the file"),
         ("trim", "t", "TRACK -c", "soft trim off"),
         ("rm", "r", "TRACK [-D]", "drop the track; -D deletes its file"),
+        ("rm", "r", "TRACK PART", "drop a part"),
     ]),
     ("MIXER", "", [
         ("mute", "mu", "TRACK [PART] [on|off]", "mute; mute all off"),

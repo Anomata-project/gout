@@ -62,7 +62,7 @@ class ProjectTest(GoutTest):
         self.assertEqual(offsets(), [2000, -250, 1750])
         err = self.gout("move", "1", "nope", "+1s", ok=False).stderr
         self.assertIn("no track named 'nope'", err)
-        self.assertIn("usage: gout move TRACK... | all", err)
+        self.assertIn("usage: gout move TRACK [PART]... | all", err)
         self.assertEqual(offsets(), [2000, -250, 1750])  # nothing moved
 
     def test_trim_counts_back_from_the_end_with_a_minus(self):
