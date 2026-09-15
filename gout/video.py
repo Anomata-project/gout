@@ -420,6 +420,8 @@ def worker_main() -> int:
     ctx.features = project_features(project)
     ctx.offline, ctx.playing, ctx.length_ms = True, True, job["length_ms"]
     showing = object()
+    if all(word is None for _, word, _ in job["tasks"]):  # no choice named: what opening the screen shows
+        screen.command(ctx, [])
     cuts, start = job.get("cuts", []), job.get("start_ms", 0)
     for frame, word, ms in job["tasks"]:
         shown = bisect.bisect_right(cuts, ms)

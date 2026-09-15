@@ -104,6 +104,19 @@ class VideoTest(GoutTest):
         self.assertIn("no such image or screen", self.gout("video", "nothing", ok=False).stderr)
         self.assertIn("fractal ((", self.gout("video", "fractal", "((", ok=False).stderr)  # checked before any work
 
+    def test_a_screen_without_a_choice_shows_what_it_opens_with(self):
+        shutil.copy(REPO / "examples" / "addons" / "fractal.py", self.addons / "fractal.py")
+        self.more_env["GOUT_VIDEO_WORKERS"] = "2"
+        song = self.tmp / "short.wav"
+        ffmpeg("-f", "lavfi", "-i", "sine=f=80:d=2", "-ar", "48000", str(song))
+        root = self.project("song", str(song))
+        (self.tmp / "config" / "gout").mkdir(parents=True, exist_ok=True)
+        (self.tmp / "config" / "gout" / "fractal.json").write_text('{"preset": "rings", "zoom_preset": "four"}')
+        for screen in ("zoom", "fractal"):
+            out = self.gout("video", screen, "-o", str(root / f"{screen}.mp4")).stdout  # no preset named: the remembered one
+            self.assertIn(f"the {screen} screen", out)
+            self.assertAlmostEqual(duration(root / f"{screen}.mp4"), 2.0, delta=0.1)
+
     def test_cuts_go_to_the_nearest_hit_and_choices_take_turns(self):
         cut_points, schedule = gout_attr("video", "cut_points"), gout_attr("video", "schedule")
         onset = [0.0] * 1200  # 30 s of 25 ms steps

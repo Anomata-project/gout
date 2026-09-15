@@ -1094,6 +1094,13 @@ def cmd_video(project: Project, args: Args) -> None:
                 screen.pick(ctx, word)
             except ValueError as exc:
                 die(f"{screen.name} {word}: {exc}")
+        if not choices:  # the screen as it opens in the ui: the fractal's last preset
+            try:
+                lines, ok = screen.command(ctx, [])
+            except ValueError as exc:
+                die(f"{screen.name}: {exc}")
+            if not ok:
+                die("; ".join(lines) or f"the {screen.name} screen wants a choice: gout video {screen.name} CHOICE")
         hint = older_example_hint(screen)
         if hint:
             print(f"video {hint.strip(' ()')}")
