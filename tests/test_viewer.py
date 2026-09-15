@@ -123,3 +123,31 @@ class ViewerTest(GoutTest):
         result = subprocess.run(["node", "--check", str(REPO / "gout" / "viewerpage" / "viewer.js")],
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_the_window_asks_the_ui_for_part_duplicate_loop_and_a_stretch_to_play(self):
+        root = self.song()
+        Project, Tui, Viewer = gout_attr("project", "Project"), gout_attr("tui", "Tui"), gout_attr("viewer", "Viewer")
+        with mock.patch.object(Viewer, "open", return_value="a test browser"), \
+                mock.patch.dict(os.environ, {"GOUT_PLAYER": "null"}):
+            project = Project(root)
+            ui = Tui(project, FakeScreen())
+            ui.handle("\x0f")
+            self.addCleanup(lambda: ui.viewer and ui.viewer.stop())
+            ui.viewer.keys.put({"argv": ["loop", "1000ms", "1500ms"]})
+            ui.viewer.keys.put({"argv": ["duplicate", "1", "1000ms", "1500ms"]})
+            ui.viewer.keys.put({"argv": ["rm", "1"]})  # not something the window may ask for
+            ui.tell_viewer()
+            self.assertEqual([t["name"] for t in project.tracks()], ["steps", "steps-copy"])
+            self.assertIn("> duplicate 1 1000ms 1500ms  (window)", ui.log)
+            ui.tell_viewer()
+            self.assertEqual(json.loads(ui.viewer.state)["loop"], {"from": 1000, "to": 1500, "on": True})
+            ui.viewer.keys.put({"play": [1000, 1300]})
+            ui.tell_viewer()
+            self.assertIsNotNone(ui.player)
+            self.assertEqual(ui.player.end_s, 1.3)  # a stretch plays to its end, and not round the loop
+            self.assertIsNone(ui.player.loop)
+            import time
+            time.sleep(1.2)
+            ui.check_player()
+            self.assertIsNone(ui.player)
+            self.assertEqual(ui.playhead_ms, 1000)  # back to where the stretch began

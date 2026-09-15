@@ -147,7 +147,7 @@ class Viewer:
         class Handler(RequestHandler):
             owner = viewer
 
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.server = QuietServer(("127.0.0.1", 0), Handler)
         self.server.daemon_threads = True
         self.port = self.server.server_address[1]
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -200,6 +200,13 @@ class Viewer:
             if stamp not in self.levels:
                 self.levels[stamp] = peak_levels(path, self.rate, self.root / ".gout" / "peaks")
             return self.levels[stamp]
+
+
+class QuietServer(ThreadingHTTPServer):
+    """The ui owns the terminal: a browser closing mid-answer must not print a traceback over it."""
+
+    def handle_error(self, request, client_address) -> None:
+        pass
 
 
 class RequestHandler(BaseHTTPRequestHandler):
@@ -353,6 +360,9 @@ def project_state(project, theme: dict) -> tuple[dict, dict[str, Path]]:
     colours = {name: hex_of(theme[name]) for name in ("master_wave", "track_label", "muted_wave", "trimmed_wave",
                                                      "center_line", "ruler", "ruler_labels", "playhead", "gap_line")}
     colours["track_palette"] = [hex_of(c) for c in theme["track_palette"]]
+    from .commands import loop_range
+    stretch = loop_range(project, every=True)
     state = {"name": project.get("name"), "rate": project.rate, "bpm": float(bpm) if bpm else None,
+             "loop": None if stretch is None else {"from": stretch[0], "to": stretch[1], "on": project.get("ui_loop_on") == "on"},
              "length_ms": max(ends, default=0), "master": master, "tracks": out, "colours": colours}
     return state, files

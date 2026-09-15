@@ -28,6 +28,21 @@ let take = null;             // {at, label, peaks: []}
 let follow = true;
 let lanes = [];              // [{kind, y, h, track}] as last drawn
 let needDraw = true;
+let selection = null;        // {lane, from, to} in project ms, from < to
+let noteTimer = 0;
+
+function note(text) {
+  const el = document.getElementById("note");
+  el.textContent = text;
+  clearTimeout(noteTimer);
+  noteTimer = setTimeout(() => { el.textContent = ""; }, 4000);
+}
+
+function showSelection() {
+  document.getElementById("sel").textContent = selection ?
+    `sel ${fmt(selection.from)} → ${fmt(selection.to)}  ${((selection.to - selection.from) / 1000).toFixed(3)} s` +
+    (selection.lane.kind === "track" ? `  track ${selection.lane.track.n}` : "") : "";
+}
 
 function q(path, extra = "") { return `${path}?t=${encodeURIComponent(token)}${extra}`; }
 
@@ -192,6 +207,13 @@ function drawRuler(ctx, w, h, c) {
       ctx.fillText(String(b + 1), x + 3, 16);
     }
   }
+  if (state.loop) {  // the loop: a band on the ruler, bright when on
+    const x0 = Math.max(LABEL, toX(state.loop.from)), x1 = Math.min(w, toX(state.loop.to));
+    if (x1 > x0) {
+      ctx.fillStyle = state.loop.on ? "rgba(135,175,215,0.55)" : "rgba(135,175,215,0.18)";
+      ctx.fillRect(x0, RULER - 6, x1 - x0, 5);
+    }
+  }
   ctx.fillStyle = c.gap_line;
   ctx.fillRect(0, RULER - 1, w, 1);
 }
@@ -272,7 +294,8 @@ function drawRange(ctx, row, w, file, zero, inMs, outMs, colour, gainDb = 0) {
     if (!got) continue;
     const half = row.h / 2 - 3;
     const top = Math.max(row.y, mid - Math.min(1, got[1]) * amp), bottom = Math.min(row.y + row.h, mid - Math.max(-1, got[0]) * amp);
-    if (amp > half && (got[1] * amp > half || -got[0] * amp > half)) ctx.fillStyle = "#ff3030";  // louder than the lane
+    const clipped = got[1] >= 0.999 || got[0] <= -0.999;  // full scale in the file itself
+    if (clipped || (amp > half && (got[1] * amp > half || -got[0] * amp > half))) ctx.fillStyle = "#ff3030";
     else ctx.fillStyle = colour;
     ctx.fillRect(x, top, 1, Math.max(1, bottom - top));
   }
@@ -371,6 +394,21 @@ function frame(now) {
     const dpr = window.devicePixelRatio || 1;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, over.width / dpr, over.height / dpr);
+    if (selection) {
+      const x0 = Math.max(LABEL, toX(selection.from)), x1 = Math.min(w, toX(selection.to));
+      if (x1 > x0) {
+        ctx.fillStyle = "rgba(255,255,255,0.07)";
+        ctx.fillRect(x0, RULER, x1 - x0, over.height / dpr - RULER);
+        const lane = lanes.find(l => l.kind === selection.lane.kind && (l.kind !== "track" || l.track.n === selection.lane.track.n));
+        if (lane) {
+          ctx.fillStyle = "rgba(255,255,255,0.16)";
+          ctx.fillRect(x0, lane.y, x1 - x0, lane.h);
+          ctx.fillStyle = "rgba(255,255,255,0.7)";
+          ctx.fillRect(Math.round(x0), lane.y, 1, lane.h);
+          ctx.fillRect(Math.round(x1) - 1, lane.y, 1, lane.h);
+        }
+      }
+    }
     const x = toX(pos);
     if (x >= LABEL && x <= w) {
       ctx.fillStyle = state.colours.playhead;
@@ -417,13 +455,49 @@ function listen() {
 
 // ---- keys and the mouse
 
+function cutSelection() {  // part TRACK at the selection's edges that fall inside the track and away from cuts
+  if (!selection || selection.lane.kind !== "track") { note("select on a track first"); return; }
+  const t = selection.lane.track;
+  const pieces = t.parts.length ? t.parts.map(p => [t.offset_ms + p.shift_ms + p.in_ms, t.offset_ms + p.shift_ms + p.out_ms])
+    : [[t.offset_ms + t.in_ms, t.offset_ms + t.out_ms]];
+  const edges = [selection.from, selection.to].map(Math.round).filter(at =>
+    pieces.some(([a, b]) => at - a >= 20 && b - at >= 20));
+  if (!edges.length) { note("nothing to cut there: the edges are outside the track or on its cuts"); return; }
+  send({ argv: ["part", String(t.n), ...edges.map(at => `${at}ms`)] });
+}
+
 addEventListener("keydown", (e) => {
   if (e.ctrlKey && (e.key === "r" || e.key === "R")) { e.preventDefault(); send({ key: "record" }); return; }
   if (e.ctrlKey || e.metaKey || e.altKey) return;
   const w = width();
   const middle = Math.max(LABEL, Math.min(w, toX(position(performance.now()))));
   switch (e.key) {
-    case " ": e.preventDefault(); follow = true; send({ key: "space" }); break;
+    case " ":
+      e.preventDefault();
+      follow = true;
+      if (selection && !play.playing) send({ play: [Math.round(selection.from), Math.round(selection.to)] });
+      else send({ key: "space" });
+      break;
+    case "c": cutSelection(); break;
+    case "d":
+      if (!selection || selection.lane.kind !== "track") { note("select on a track first"); break; }
+      send({ argv: ["duplicate", String(selection.lane.track.n), `${Math.round(selection.from)}ms`, `${Math.round(selection.to)}ms`] });
+      break;
+    case "l":
+      if (selection) send({ argv: ["loop", `${Math.round(selection.from)}ms`, `${Math.round(selection.to)}ms`] });
+      else if (state && state.loop) send({ argv: ["loop", state.loop.on ? "off" : "on"] });
+      else note("select a stretch first");
+      break;
+    case "z":
+      if (selection) {
+        const margin = (selection.to - selection.from) * 0.05;
+        view.start = selection.from - margin;
+        view.msPerPx = Math.max(MIN_MS_PER_PX, (selection.to - selection.from + 2 * margin) / (w - LABEL));
+        follow = false;
+        needDraw = true;
+      }
+      break;
+    case "Escape": selection = null; showSelection(); break;
     case "ArrowLeft": e.preventDefault(); send({ key: "left" }); break;
     case "ArrowRight": e.preventDefault(); send({ key: "right" }); break;
     case "+": case "=": zoomAt(middle, 0.5); break;
@@ -450,19 +524,33 @@ over.addEventListener("wheel", (e) => {
 
 let drag = null;
 over.addEventListener("mousedown", (e) => {
-  drag = { x: e.clientX, start: view.start, moved: false };
+  const rect = over.getBoundingClientRect();
+  const x = e.clientX - rect.left, y = e.clientY - rect.top;
+  const lane = y >= RULER ? lanes.find(l => y >= l.y && y < l.y + l.h) : null;
+  drag = { x: e.clientX, start: view.start, moved: false, lane, at: fromX(Math.max(LABEL, x)) };
 });
 addEventListener("mousemove", (e) => {
   if (!drag) return;
   const dx = e.clientX - drag.x;
   if (Math.abs(dx) > 3) drag.moved = true;
-  if (drag.moved) { view.start = drag.start - dx * view.msPerPx; follow = false; needDraw = true; }
+  if (!drag.moved) return;
+  if (drag.lane) {  // a selection on that lane
+    const rect = over.getBoundingClientRect();
+    const now = fromX(Math.max(LABEL, e.clientX - rect.left));
+    selection = { lane: drag.lane, from: Math.max(0, Math.min(drag.at, now)), to: Math.max(drag.at, now) };
+    showSelection();
+  } else {  // the ruler: scroll
+    view.start = drag.start - dx * view.msPerPx;
+    follow = false;
+    needDraw = true;
+  }
 });
 addEventListener("mouseup", (e) => {
   if (drag && !drag.moved) {
     const rect = over.getBoundingClientRect();
     const x = e.clientX - rect.left;
     if (x >= LABEL) send({ seek: Math.max(0, Math.round(fromX(x))) });
+    if (drag.lane) { selection = null; showSelection(); }  // a click clears a selection
   }
   drag = null;
 });

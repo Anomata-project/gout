@@ -1114,6 +1114,41 @@ def cmd_mix(project: Project, args: Args) -> None:
     mix(project, args.verbose, mp3)
 
 
+DUP_USAGE = "gout duplicate TRACK FROM TO [-a AT] [-n NAME]   (dup) a new track with what TRACK plays from FROM to TO"
+
+
+def cmd_duplicate(project: Project, args: Args) -> None:
+    """A stretch of a track's audio, as heard on the timeline, into a new file and a new track: at
+    the same time unless -a says where. The audio only; effects, gain and pan stay with the old track."""
+    at = args.value("--at", "-a")
+    name = args.value("--name", "-n")
+    words = args.positionals(DUP_USAGE, 3, 3)
+    t = project.track(words[0])
+    low, high = parse_ms(words[1]), parse_ms(words[2])
+    if high - low < MIN_PART_MS:
+        die(f"duplicate from {fmt_ms(low)} to {fmt_ms(high)}: {MIN_PART_MS} ms at least, and TO after FROM")
+    a, b = audible(t)
+    pieces = t["parts"] or [{"in_ms": a, "out_ms": b, "shift_ms": 0}]
+    heard = [p for p in pieces if part_start(t, p) < high and low < part_start(t, p) + p["out_ms"] - p["in_ms"]]
+    if not heard:
+        start, end = timeline(t)
+        die(f"track {t['n']} {t['name']} plays nothing from {fmt_ms(low)} to {fmt_ms(high)} (it plays {fmt_ms(start)} -> {fmt_ms(end)})")
+    if len({p["shift_ms"] for p in heard}) > 1:
+        die(f"that stretch covers parts of track {t['n']} that were moved apart; duplicate them one by one")
+    zero = t["offset_ms"] + heard[0]["shift_ms"]  # where the file starts on the timeline
+    file_from = max(min(p["in_ms"] for p in heard), low - zero)
+    file_to = min(max(p["out_ms"] for p in heard), high - zero)
+    track_name = project.unique_name(name or f"{t['name']}-copy")
+    dst = project.tracks_dir / f"{track_name}.wav"
+    run_quiet(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{file_from / 1000:.3f}",
+               "-t", f"{(file_to - file_from) / 1000:.3f}", "-i", str(project.tracks_dir / t["file"]),
+               "-map", "0:a:0", "-c:a", "pcm_f32le", str(dst)], args.verbose)
+    project.record(f"duplicate {t['name']} {fmt_ms(low)}>{fmt_ms(high)}")
+    ingest(project, dst, track_name, parse_ms(at) if at else zero + file_from, args.verbose, verb="dup")
+    project.created([dst.name])
+    autorender(project, args)
+
+
 LOOP_USAGE = "gout loop FROM TO | on | off   (loop alone says what it is; lo for short)"
 
 
@@ -1156,14 +1191,14 @@ def cmd_loop(project: Project, args: Args) -> None:
               + ("on: playing goes round it" if on else "off (loop on brings it back)"))
 
 
-def player_for(project: Project, from_ms: int, render: bool = False, loop: bool = True) -> Player:
+def player_for(project: Project, from_ms: int, render: bool = False, loop: bool = True, to_ms: int | None = None) -> Player:
     """A player for the project from from_ms: master.wav when it matches the project (or after
     rendering it, with render), otherwise the project streamed live. Not started yet. With the loop
     on (and loop), it plays to the loop's end and then round the loop; from outside it, from its start."""
     if render and not project.master_is_current():
         print(f"play  rendering {MASTER_WAV} first")
         mix(project)
-    stretch = loop_range(project) if loop else None
+    stretch = loop_range(project) if loop and to_ms is None else None  # a stretch played to its end does not loop
     if stretch is not None and not stretch[0] <= from_ms < stretch[1]:
         from_ms = stretch[0]
     if project.master_is_current():
@@ -1174,7 +1209,8 @@ def player_for(project: Project, from_ms: int, render: bool = False, loop: bool 
         if stretch is not None:
             high = min(length, stretch[1] / 1000 + head)
             return Player(project.master, from_ms / 1000 + head, length, loop=(stretch[0] / 1000 + head, high))
-        return Player(project.master, from_ms / 1000 + head, length)
+        return Player(project.master, from_ms / 1000 + head, length,
+                      end_s=None if to_ms is None else min(length, to_ms / 1000 + head))
     warnings: set[str] = set()
     if stretch is not None:
         source = live_source(project, stretch[0], warnings)
@@ -1194,7 +1230,8 @@ def player_for(project: Project, from_ms: int, render: bool = False, loop: bool 
     args, length_ms = source
     if length_ms <= 0:
         die(f"{fmt_ms(from_ms)} is past the end of the project")
-    return Player(None, from_ms / 1000, (from_ms + length_ms) / 1000, stream=args)
+    end = (from_ms + length_ms) / 1000
+    return Player(None, from_ms / 1000, end, stream=args, end_s=None if to_ms is None else min(end, to_ms / 1000))
 
 
 def head_seconds(project: Project) -> float:
@@ -1209,16 +1246,22 @@ def progress_bar(position: float, length: float, width: int = 30) -> str:
 
 def cmd_play(project: Project, args: Args) -> None:
     render = args.flag("--render", "-r")
-    pos = args.positionals("gout play [FROM] [-r]   e.g. gout play 1:30  (-r renders first; ctrl-c stops)", 0, 1)
+    pos = args.positionals("gout play [FROM [TO]] [-r]   e.g. gout play 1:30, gout play 1:30 1:45  (-r renders first; ctrl-c stops)", 0, 2)
     start = parse_ms(pos[0]) / 1000 if pos else 0.0
-    player = player_for(project, round(start * 1000), render).start()
+    to_ms = parse_ms(pos[1]) if len(pos) > 1 else None
+    if to_ms is not None and to_ms <= start * 1000:
+        die(f"play FROM TO: {fmt_ms(to_ms)} is not after {fmt_ms(start * 1000)}")
+    player = player_for(project, round(start * 1000), render, to_ms=to_ms).start()
     head = 0.0 if player.live else head_seconds(project)
     length = player.length_s
     what = "live (master.wav is out of date; mix or play -r renders it)" if player.live else MASTER_WAV
     stretch = loop_range(project)
-    if stretch is not None:
+    if stretch is not None and to_ms is None:
         start = player.start_s - head
         what += f", round the loop {fmt_ms(stretch[0])} -> {fmt_ms(stretch[1])} (gout loop off ends it)"
+    if to_ms is not None:
+        what += f" to {fmt_ms(to_ms)}"
+        length = player.end_s
     print(f"play  {what} from {fmt_ms(start * 1000)}  ({player.backend}; ctrl-c stops)")
     live = sys.stdout.isatty()
     try:

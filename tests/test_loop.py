@@ -59,3 +59,38 @@ class LoopTest(GoutTest):
         project = Project(root)
         self.assertIn("aloop", " ".join(player_for(project, 0).source_args()))
         self.assertNotIn("aloop", " ".join(player_for(project, 0, loop=False).source_args()))  # what a take plays along to
+
+    def test_play_from_to_stops_there_and_does_not_loop(self):
+        root = self.project("song", "click.wav")
+        self.gout("loop", "1.5s", "2.5s")
+        out = self.tmp / "heard.wav"
+        self.more_env["GOUT_PLAYER"] = f"file:{out}"
+        said = self.gout("play", "1.8s", "2.3s").stdout
+        self.assertIn("to 00:00:02.300", said)
+        self.assertNotIn("round the loop", said)
+        time.sleep(1.0)
+        from helpers import duration
+        self.assertAlmostEqual(duration(out), 0.5, delta=0.03)
+        self.assertEqual([round(t, 2) for t, _ in hits(out)], [0.2])
+        self.assertIn("is not after", self.gout("play", "2s", "1s", ok=False).stderr)
+
+    def test_duplicate_puts_a_stretch_on_a_new_track_at_the_same_time(self):
+        root = self.project("song", "click.wav")
+        from helpers import peak_db, samples
+        self.gout("mix")
+        (single,) = samples(root / "master.wav", 1)
+        out = self.gout("dup", "1", "1.5s", "2.5s").stdout
+        self.assertIn("click-copy", out)
+        track = self.dump()["tracks"][1]
+        self.assertEqual((track["name"], track["offset_ms"], track["length_ms"]), ("click-copy", 1500, 1000))
+        self.gout("mix")
+        (doubled,) = samples(root / "master.wav", 1)
+        self.assertAlmostEqual(peak_db(doubled) - peak_db(single), 6.0, delta=0.1)  # the copy sits sample on sample
+        self.gout("undo")
+        self.assertFalse((root / "master" / "click-copy.wav").exists())
+        self.assertIn("plays nothing", self.gout("dup", "1", "5s", "6s", ok=False).stderr)
+        self.gout("part", "1", "2s")
+        self.gout("move", "1", "p2", "+300ms")
+        self.assertIn("moved apart", self.gout("dup", "1", "1.5s", "2.5s", ok=False).stderr)
+        self.gout("dup", "1", "2.3s", "2.8s", "-a", "5s", "-n", "later")
+        self.assertEqual(self.dump()["tracks"][-1]["offset_ms"], 5000)

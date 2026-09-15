@@ -21,6 +21,7 @@ from .commands import (
     cmd_import,
     cmd_ls,
     cmd_mix,
+    cmd_duplicate,
     cmd_loop,
     cmd_move,
     cmd_part,
@@ -52,7 +53,7 @@ from .cut import cmd_cut
 
 
 BASE_PROJECT_COMMANDS = {
-    "add": cmd_add, "scan": cmd_scan, "ls": cmd_ls, "move": cmd_move, "part": cmd_part, "loop": cmd_loop, "trim": cmd_trim, "rm": cmd_rm,
+    "add": cmd_add, "scan": cmd_scan, "ls": cmd_ls, "move": cmd_move, "part": cmd_part, "loop": cmd_loop, "duplicate": cmd_duplicate, "trim": cmd_trim, "rm": cmd_rm,
     "mute": cmd_mute, "solo": cmd_solo, "gain": cmd_gain, "pan": cmd_pan, "fx": cmd_fx,
     "set": cmd_set, "stats": cmd_stats, "mix": cmd_mix, "undo": cmd_undo, "dump": cmd_dump,
     "saveas": cmd_saveas, "stems": cmd_stems, "import": cmd_import,

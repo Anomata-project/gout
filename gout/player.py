@@ -43,13 +43,14 @@ class Player:
     that produce the audio, as live playback of an unrendered project does."""
 
     def __init__(self, path: Path | None, start_s: float, length_s: float, stream: list[str] | None = None,
-                 loop: tuple[float, float] | None = None, stream_start: float = 0.0):
+                 loop: tuple[float, float] | None = None, stream_start: float = 0.0, end_s: float | None = None):
         """loop: (from, to) in the same seconds as start_s: play from start_s to `to`, then from `from` to
         `to` over and over, inside ffmpeg (aloop), so the turn has no gap. stream_start: where a
         stream's own time 0 is."""
         self.path, self.start_s, self.length_s = path, max(0.0, start_s), length_s
         self.stream = stream
         self.loop, self.stream_start = loop, stream_start
+        self.end_s = end_s  # stop there by itself (a selection played to its end), in start_s's seconds
         self.procs: list[subprocess.Popen] = []
         self.backend = ""
         self.t0 = 0.0
@@ -95,17 +96,18 @@ class Player:
         self.backend = choose_backend()
         quiet = {"stdin": subprocess.DEVNULL, "stderr": subprocess.DEVNULL, **detached()}
         ffmpeg = ["ffmpeg", "-hide_banner", "-loglevel", "quiet", "-nostdin"]
-        raw = ["-f", "s16le", "-ac", "2", "-ar", str(RATE), "-"]
+        until = ["-t", f"{max(0.0, self.end_s - self.start_s):.3f}"] if self.end_s is not None and self.loop is None else []
+        raw = [*until, "-f", "s16le", "-ac", "2", "-ar", str(RATE), "-"]
         if self.backend.startswith("file:"):  # for tests: write what would be heard, as fast as possible
             enough = ["-t", f"{self.loop[1] - self.start_s + 2 * (self.loop[1] - self.loop[0]):.3f}"] if self.loop else []
-            self.procs = [subprocess.Popen([*ffmpeg, "-y", *self.source_args(), *enough, "-ac", "2", "-ar", str(RATE),
+            self.procs = [subprocess.Popen([*ffmpeg, "-y", *self.source_args(), *enough, *until, "-ac", "2", "-ar", str(RATE),
                                             "-c:a", "pcm_s16le", self.backend[5:]], stdout=subprocess.DEVNULL, **quiet)]
         elif self.backend == "null":
-            self.procs = [subprocess.Popen([*ffmpeg, *self.source_args(realtime=True), "-f", "null", "-"],
+            self.procs = [subprocess.Popen([*ffmpeg, *self.source_args(realtime=True), *until, "-f", "null", "-"],
                                            stdout=subprocess.DEVNULL, **quiet)]
         elif self.backend == "ffplay" and self.stream is None and self.loop is None:
             self.procs = [subprocess.Popen(["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet",
-                                            "-ss", f"{self.start_s:.3f}", str(self.path)], stdout=subprocess.DEVNULL, **quiet)]
+                                            "-ss", f"{self.start_s:.3f}", *until, str(self.path)], stdout=subprocess.DEVNULL, **quiet)]
         else:
             decoder = subprocess.Popen([*ffmpeg, *self.source_args(), *raw], stdout=subprocess.PIPE, **quiet)
             sink = {
@@ -129,7 +131,7 @@ class Player:
             low, high = self.loop
             first = high - self.start_s
             return self.start_s + elapsed if elapsed < first else low + (elapsed - first) % (high - low)
-        return min(self.length_s, self.start_s + elapsed)
+        return min(self.length_s if self.end_s is None else self.end_s, self.start_s + elapsed)
 
     def running(self) -> bool:
         if not self.procs:

@@ -22,12 +22,16 @@ PROJECT
                                   names from where gout was started, right arrow takes the grey
                                   suggestion after the cursor; ctrl-o (or window) opens the timeline in a
                                   browser window, in high definition
-  gout play  pl [FROM] [-r]       play from FROM (1:30, 45s): master.wav when it matches the project,
+  gout play  pl [FROM [TO]] [-r]  play from FROM (1:30, 45s), to TO when given: master.wav when it matches the project,
                                   otherwise the project streamed live, effects and all, at once
                                   (-r renders first instead); ctrl-c stops. In the ui: space on an
                                   empty line plays and stops, left/right there move the playhead 5 s,
                                   play FROM / stop work at the prompt. Player: ffplay, else pw-cat,
                                   paplay or aplay; GOUT_PLAYER picks one (null plays in silence)
+  gout duplicate dup TRACK FROM TO [-a AT] [-n NAME]
+                                  a new track with what TRACK plays from FROM to TO (timeline times):
+                                  that stretch of its audio in a new wav in master/, at the same time
+                                  unless -a moves it; effects, gain and pan stay with the old track
   gout loop  lo FROM TO | on | off  play a stretch of the song over and over: space in the ui and
                                   gout play go round it, from its start or from inside it to its end,
                                   without a gap (ffmpeg's aloop). The ruler shows it thick. loop alone

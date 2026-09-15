@@ -394,6 +394,7 @@ COMMAND_SECTIONS = [
         ("trim", "t", "TRACK -c", "soft trim off"),
         ("rm", "r", "TRACK [-D]", "drop the track; -D deletes its file"),
         ("rm", "r", "TRACK PART", "drop a part"),
+        ("duplicate", "dup", "TRACK FROM TO [-a AT]", "that stretch on a new track, same time"),
     ]),
     ("MIXER", "", [
         ("mute", "mu", "TRACK [PART] [on|off]", "mute; mute all off"),
@@ -404,7 +405,7 @@ COMMAND_SECTIONS = [
         ("part", "pt", "TRACK PART name NAME", "call a part by a name"),
         ("part", "pt", "TRACK join [PART PART] [-f]", "one piece again; -f drops part settings"),
         ("mix", "x", "[-3] [-v]", "render master.wav; -3 also master.mp3"),
-        ("play", "pl", "[FROM] [-r]", "hear it; live when master.wav is out of date"),
+        ("play", "pl", "[FROM [TO]] [-r]", "hear it; live when master.wav is out of date"),
         ("loop", "lo", "FROM TO | on | off", "play goes round that stretch, no gap"),
         ("record", "rec", "[FROM] [-t 30s] [-n NAME] [-d]", "a new track while the project plays; -d without"),
         ("inputs", "in", "[N | default]", "what can be recorded; N picks one"),

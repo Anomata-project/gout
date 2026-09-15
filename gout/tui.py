@@ -72,6 +72,7 @@ class Tui:
         self.palette = Palette(self.theme)
         self.player: Player | None = None
         self.playhead_ms = 0  # project time; stays where playback stopped
+        self.play_back_to: int | None = None  # a stretch played to its end puts the playhead back here
         self.render_proc: subprocess.Popen | None = None  # a background mix, in its own process
         self.render_state = ""       # the project state that render is making master.wav of
         self.seen_state = ""         # the state at the last look, to notice changes
@@ -418,20 +419,23 @@ class Tui:
     def check_player(self) -> None:
         if self.player is not None and not self.player.running():
             self.player = None
-            self.playhead_ms = 0  # played to the end: back to the start
+            # played to the end: back to the start, or to where a played stretch began
+            self.playhead_ms = self.play_back_to if self.play_back_to is not None else 0
+            self.play_back_to = None
 
-    def start_playing(self, from_ms: int | None = None, again: bool = False) -> None:
+    def start_playing(self, from_ms: int | None = None, again: bool = False, to_ms: int | None = None) -> None:
         """Play from the playhead (or from_ms): master.wav when it matches the project, the project
-        streamed live when it does not, so a change is heard at once."""
+        streamed live when it does not, so a change is heard at once. to_ms: stop there."""
         self.stop_playing(keep=False)
         if from_ms is not None:
             self.playhead_ms = max(0, from_ms)
+        self.play_back_to = self.playhead_ms if to_ms is not None else None
         p = self.project
         buf = io.StringIO()
         for attempt in (0, 1):
             try:
                 with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
-                    player = player_for(p, self.playhead_ms)
+                    player = player_for(p, self.playhead_ms, to_ms=to_ms)
                     player.start()
                 break
             except GoutError as exc:
@@ -476,7 +480,8 @@ class Tui:
         now = time.monotonic()
         if now - self.viewer_checked > 0.4:
             self.viewer_checked = now
-            state = self.project.state_fingerprint() + str(self.project.master_is_current())
+            state = (self.project.state_fingerprint() + str(self.project.master_is_current())
+                     + (self.project.get("ui_loop") or "") + (self.project.get("ui_loop_on") or ""))
             if state != self.viewer_state:
                 self.viewer_state = state
                 viewer.publish_state(*project_state(self.project, self.theme))
@@ -501,6 +506,19 @@ class Tui:
                 self.seek(-5000 if key == "left" else 5000)
             elif key == "record":
                 self.handle("\x12")
+            elif isinstance(message.get("play"), list) and len(message["play"]) == 2 and self.take is None:
+                low, high = (int(v) for v in message["play"])  # a selection, to its end
+                self.log.append(f"> play {fmt_ms(low)} {fmt_ms(high)}  (window)")
+                self.start_playing(low, to_ms=high)
+            elif isinstance(message.get("argv"), list) and message["argv"][:1] in (["part"], ["duplicate"], ["loop"]):
+                argv = [str(word) for word in message["argv"]]
+                if self.take is not None:
+                    self.log.append(f"{argv[0]}: waits until the take ends")
+                    continue
+                self.log.append("> " + " ".join(argv) + "  (window)")
+                self.scroll = 0
+                self.run_command(argv, argv[0], False)
+                self.viewer_checked = 0  # tell the window at once
             elif isinstance(message.get("seek"), (int, float)) and self.take is None:
                 if self.player is not None:
                     self.start_playing(int(message["seek"]))

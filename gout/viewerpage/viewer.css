@@ -7,6 +7,8 @@ html, body { margin: 0; height: 100%; background: #181818; color: #d0d0d0;
 #where { font-variant-numeric: tabular-nums; min-width: 9ch; }
 #mode.rec { color: #b00000; font-weight: bold; }
 #hint { color: #1c3550; overflow: hidden; text-overflow: ellipsis; }
+#sel { font-variant-numeric: tabular-nums; }
+#note { color: #5f1f1f; font-weight: bold; }
 #scroller { position: absolute; top: 30px; left: 0; right: 0; bottom: 0; overflow-y: auto; overflow-x: hidden; }
 #stack { position: relative; }
 canvas { position: absolute; left: 0; top: 0; display: block; }

@@ -100,6 +100,7 @@ name (a unique prefix will do). `-N` / `--no-mix` on any change skips an automat
 | `comp` | `cp` | `TRACK SETTINGS... \| PRESET \| on \| off \| clear` | compressor after the eq; `comp TRACK` shows its curve |
 | `fx` | `f` | `TRACK [add KIND ... \| N SETTINGS \| N on\|off\|rm \| N move M \| clear]` | the track's (or master's) effect chain, in order; `fx kinds` lists every effect |
 | `loop` | `lo` | `FROM TO \| on \| off` | play round a stretch of the song, over and over |
+| `duplicate` | `dup` | `TRACK FROM TO [-a AT] [-n NAME]` | what the track plays from FROM to TO, as a new track (a new wav), at the same time unless `-a` |
 | `play` | `pl` | `[FROM] [-r]` | play `master.wav`, or the project live when it is out of date; in the ui, space plays and stops |
 | `mix` | `x` | `[-3] [-v]` | render `master.wav`; `-3` / `--mp3` also writes `master.mp3` |
 | `record` | `rec` | `[FROM] [-t LENGTH] [-n NAME] [-i INPUT] [-c N] [-s] [-d]` | record a new track while the project plays from `FROM`; see Recording |
@@ -350,9 +351,16 @@ master, every track with its trimmed-away audio dimmed, parts with their names a
 muted parts grey, and a take growing as you record. With `set bpm` the ruler numbers the bars.
 
 In the window: `space` plays and stops, `←` `→` move 5 s, the mouse wheel zooms around the pointer,
-shift and the wheel (or dragging) scrolls, a click places the playhead, `+` `-` zoom, `0` fits the
-song, `f` turns following the playhead on and off, and `ctrl-r` records as in the ui. It only looks:
-changes are made in the ui, and the window redraws when they are.
+shift and the wheel (or dragging the ruler) scrolls, a click places the playhead, `+` `-` zoom, `0`
+fits the song, `f` turns following the playhead on and off, and `ctrl-r` records as in the ui.
+Samples at full scale are drawn red, in every track.
+
+Dragging across a track selects a stretch of it; the bar shows where it starts and ends and how long
+it is, and a click or `esc` lets it go. With a selection: `c` cuts the track into a part there
+(`part` at its edges), `d` puts it on a new track at the same time (`duplicate`), `space` plays it and
+stops at its end, `l` loops it (`loop`; without a selection `l` switches the loop off and on), and `z`
+zooms to it. Each of these runs in the ui as the command it stands for, so it shows in the log and
+undo takes it back. The loop shows as a band on the window's ruler.
 
 gout serves the page from this computer only (127.0.0.1) at a link with a secret in it, so nothing
 else can read the project, and turns away requests for any other host name. It opens in Chromium,
