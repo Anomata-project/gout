@@ -160,7 +160,8 @@ def fit_layout(theme: dict, tracks: int, max_rows: int | None) -> tuple[int, int
 
 def render_timeline(project: "Project", width: int, styled: bool = False, playhead_ms: int | None = None,
                     max_rows: int | None = None, theme: dict | None = None,
-                    take: tuple[int, list[float], str] | None = None) -> list[tuple[str, str, str, str, str]]:
+                    take: tuple[int, list[float], str] | None = None,
+                    loop: tuple[int, int] | None = None) -> list[tuple[str, str, str, str, str]]:
     """Rows of (label, cells, kind, classes, label role) for a timeline `width` columns wide.
 
     The master comes first, then every track, each a waveform some rows tall with a gap row
@@ -276,8 +277,14 @@ def render_timeline(project: "Project", width: int, styled: bool = False, playhe
                 labels[c:c + len(text)] = list(text)
                 last_end = c + len(text)
         tick += step
+    ruler_classes = ["r"] * tw
+    if loop:  # the loop as a thick stretch of the ruler
+        for c in range(max(0, col(loop[0])), min(tw, col(loop[1]) + 1)):
+            if ruler[c] == "─":
+                ruler[c] = "━"
+            ruler_classes[c] = "l"
     rows = [("", "".join(labels), "axis", "l" * tw, ""),
-            ("", "".join(ruler), "ruler", "r" * tw, "")]
+            ("", "".join(ruler), "ruler", "".join(ruler_classes), "")]
     zero = col(0) if t0 < 0 else -1
 
     def add_group(label_lines: list[tuple[str, str]], drawn: list[tuple[str, str]]) -> None:
@@ -398,6 +405,7 @@ COMMAND_SECTIONS = [
         ("part", "pt", "TRACK join [PART PART] [-f]", "one piece again; -f drops part settings"),
         ("mix", "x", "[-3] [-v]", "render master.wav; -3 also master.mp3"),
         ("play", "pl", "[FROM] [-r]", "hear it; live when master.wav is out of date"),
+        ("loop", "lo", "FROM TO | on | off", "play goes round that stretch, no gap"),
         ("record", "rec", "[FROM] [-t 30s] [-n NAME] [-d]", "a new track while the project plays; -d without"),
         ("inputs", "in", "[N | default]", "what can be recorded; N picks one"),
         ("record", "rec", "calibrate [-i INPUT]", "clicks out and back in: takes land on time"),

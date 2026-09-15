@@ -15,7 +15,7 @@ import threading
 import time
 from pathlib import Path
 
-from .core import __version__, bar, detached, fmt_ms, fmt_pan, gout_command, GoutError, is_master, MASTER_N, MASTER_WAV, \
+from .core import __version__, bar, detached, fmt_ms, fmt_pan, fmt_short, gout_command, GoutError, is_master, MASTER_N, MASTER_WAV, \
     parse_time, stop_process
 from . import analysis
 from .model import audible, part_label, part_start, PART_WORD, timeline
@@ -31,7 +31,7 @@ from .player import Player
 from .screens import screen_for_key, screen_named, ScreenContext, screens
 from .window import TerminalWindow
 from .theme import load_theme, Palette
-from .commands import Args, head_seconds, player_for, start_take, Take
+from .commands import Args, head_seconds, loop_range, player_for, start_take, Take
 
 
 # arrow, paging and editing sequences as curses key names, for terminals that send the plain form
@@ -268,6 +268,9 @@ class Tui:
                 where = self.play_position_ms() if self.take is None else self.take.position_ms()
                 state = (f"  ▶ {fmt_ms(where)}{'  live' if self.player.live else ''}  space stops" if self.player
                          else (f"  ■ {fmt_ms(where)}  space plays" if where else "  space plays"))
+                stretch = loop_range(p)
+                if stretch is not None and self.take is None:
+                    state += f"  ↻ {fmt_short(stretch[0], 1)}–{fmt_short(stretch[1], 1)}"
                 if self.take is not None:
                     state = f"  ● {'CHECK' if self.take.checking else 'REC'} {fmt_ms(where)}  ctrl-r stops"
                 if self.render_proc is not None:
@@ -279,7 +282,7 @@ class Tui:
                 take = None if self.take is None else (self.take.at_ms, self.take.peaks, "check" if self.take.checking else "rec")
                 rows = render_timeline(p, right_w, styled=True,
                                        playhead_ms=where if (self.player or self.take or where) else None,
-                                       max_rows=room, theme=self.theme, take=take)
+                                       max_rows=room, theme=self.theme, take=take, loop=stretch)
                 for y, (label, cells, kind, classes, role) in enumerate(rows, 1):
                     if y >= h:
                         break

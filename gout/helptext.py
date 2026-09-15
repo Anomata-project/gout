@@ -28,6 +28,10 @@ PROJECT
                                   empty line plays and stops, left/right there move the playhead 5 s,
                                   play FROM / stop work at the prompt. Player: ffplay, else pw-cat,
                                   paplay or aplay; GOUT_PLAYER picks one (null plays in silence)
+  gout loop  lo FROM TO | on | off  play a stretch of the song over and over: space in the ui and
+                                  gout play go round it, from its start or from inside it to its end,
+                                  without a gap (ffmpeg's aloop). The ruler shows it thick. loop alone
+                                  says what it is; a take does not loop
   gout record rec [FROM] [-t LENGTH] [-n NAME] [-i INPUT] [-c N] [-s] [-d] [-M]
                                   record from an input into a new track at FROM (default 0:00) while
                                   the project plays from there: a 32-bit float wav in {TRACK_DIR}/ called

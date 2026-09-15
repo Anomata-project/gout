@@ -99,6 +99,7 @@ name (a unique prefix will do). `-N` / `--no-mix` on any change skips an automat
 | `reverb` | `rv` | `TRACK DECAY [pN dN wN] \| PRESET \| on \| off \| clear` | reverb after the fader; `reverb TRACK` draws its decay |
 | `comp` | `cp` | `TRACK SETTINGS... \| PRESET \| on \| off \| clear` | compressor after the eq; `comp TRACK` shows its curve |
 | `fx` | `f` | `TRACK [add KIND ... \| N SETTINGS \| N on\|off\|rm \| N move M \| clear]` | the track's (or master's) effect chain, in order; `fx kinds` lists every effect |
+| `loop` | `lo` | `FROM TO \| on \| off` | play round a stretch of the song, over and over |
 | `play` | `pl` | `[FROM] [-r]` | play `master.wav`, or the project live when it is out of date; in the ui, space plays and stops |
 | `mix` | `x` | `[-3] [-v]` | render `master.wav`; `-3` / `--mp3` also writes `master.mp3` |
 | `record` | `rec` | `[FROM] [-t LENGTH] [-n NAME] [-i INPUT] [-c N] [-s] [-d]` | record a new track while the project plays from `FROM`; see Recording |
@@ -180,6 +181,14 @@ It plays through `ffplay` when ffmpeg came with it, otherwise it pipes decoded a
 (PipeWire), `paplay` (PulseAudio) or `aplay` (ALSA). `GOUT_PLAYER=paplay` picks one;
 `GOUT_PLAYER=null` plays in real time without sound; `GOUT_PLAYER=file:out.wav` writes what would be
 heard to a file.
+
+`gout loop 1:30 1:45` (`lo` for short) makes playing go round that stretch: `gout play` and space in
+the ui play to its end and then from its start again, over and over, until you stop. Starting
+outside the loop starts at its beginning; starting inside it plays on to its end first. The turn is
+made inside ffmpeg (`aloop`), so there is no gap (measured: a click in a 0.5 s loop comes back every
+0.500 s). `loop off` and `loop on` switch it without forgetting it, `loop` alone says what it is,
+the timeline draws it as a thick stretch of the ruler, and the window sets it from a selection with
+`l`. A take never loops.
 
 In the ui, space on an empty prompt plays and stops, like the space bar in a DAW. Stopping leaves
 the playhead where it was and the next play carries on from there; `stop` again, or playing to the

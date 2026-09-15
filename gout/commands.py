@@ -1114,19 +1114,78 @@ def cmd_mix(project: Project, args: Args) -> None:
     mix(project, args.verbose, mp3)
 
 
-def player_for(project: Project, from_ms: int, render: bool = False) -> Player:
+LOOP_USAGE = "gout loop FROM TO | on | off   (loop alone says what it is; lo for short)"
+
+
+def loop_range(project: Project, every: bool = False) -> tuple[int, int] | None:
+    """The loop (from, to) in project ms when it is on (or set at all, with every)."""
+    text = project.get("ui_loop") or ""
+    if not every and project.get("ui_loop_on") != "on":
+        return None
+    try:
+        low, high = (int(v) for v in text.split("-", 1))
+    except ValueError:
+        return None
+    return (low, high) if high > low else None
+
+
+def cmd_loop(project: Project, args: Args) -> None:
+    """Play a stretch of the song over and over: in the ui, gout play, and the window (l)."""
+    words = args.positionals(LOOP_USAGE, 0, 2)
+    low_words = [w.lower() for w in words]
+    if low_words == ["off"]:
+        project.set("ui_loop_on", "off")
+    elif low_words == ["on"]:
+        if loop_range(project, every=True) is None:
+            die(f"no loop to switch on yet: gout loop 1:30 1:45\nusage: {LOOP_USAGE}")
+        project.set("ui_loop_on", "on")
+    elif len(words) == 2:
+        low, high = parse_ms(words[0]), parse_ms(words[1])
+        if high - low < 50:
+            die(f"a loop ends after it starts, 50 ms at least: {fmt_ms(low)} -> {fmt_ms(high)}")
+        project.set("ui_loop", f"{low}-{high}")
+        project.set("ui_loop_on", "on")
+    elif words:
+        die(f"usage: {LOOP_USAGE}")
+    shown = loop_range(project, every=True)
+    if shown is None:
+        print("loop  none (gout loop 1:30 1:45 sets one)")
+    else:
+        on = project.get("ui_loop_on") == "on"
+        print(f"loop  {fmt_ms(shown[0])} -> {fmt_ms(shown[1])}  {fmt_ms(shown[1] - shown[0])} long, "
+              + ("on: playing goes round it" if on else "off (loop on brings it back)"))
+
+
+def player_for(project: Project, from_ms: int, render: bool = False, loop: bool = True) -> Player:
     """A player for the project from from_ms: master.wav when it matches the project (or after
-    rendering it, with render), otherwise the project streamed live. Not started yet."""
+    rendering it, with render), otherwise the project streamed live. Not started yet. With the loop
+    on (and loop), it plays to the loop's end and then round the loop; from outside it, from its start."""
     if render and not project.master_is_current():
         print(f"play  rendering {MASTER_WAV} first")
         mix(project)
+    stretch = loop_range(project) if loop else None
+    if stretch is not None and not stretch[0] <= from_ms < stretch[1]:
+        from_ms = stretch[0]
     if project.master_is_current():
         length = probe(project.master)["duration"]
         head = head_seconds(project)
         if from_ms / 1000 + head >= length:
             die(f"{fmt_ms(from_ms)} is past the end of {MASTER_WAV} ({fmt_ms((length - head) * 1000)})")
+        if stretch is not None:
+            high = min(length, stretch[1] / 1000 + head)
+            return Player(project.master, from_ms / 1000 + head, length, loop=(stretch[0] / 1000 + head, high))
         return Player(project.master, from_ms / 1000 + head, length)
     warnings: set[str] = set()
+    if stretch is not None:
+        source = live_source(project, stretch[0], warnings)
+        for warning in sorted(warnings):
+            print(f"      {warning}")
+        if source is None:
+            die(f"nothing to play in the loop {fmt_ms(stretch[0])} -> {fmt_ms(stretch[1])}")
+        args, length_ms = source
+        high = stretch[0] + min(length_ms, stretch[1] - stretch[0])
+        return Player(None, from_ms / 1000, high / 1000, stream=args, loop=(stretch[0] / 1000, high / 1000),
+                      stream_start=stretch[0] / 1000)
     source = live_source(project, from_ms, warnings)
     for warning in sorted(warnings):
         print(f"      {warning}")
@@ -1156,6 +1215,10 @@ def cmd_play(project: Project, args: Args) -> None:
     head = 0.0 if player.live else head_seconds(project)
     length = player.length_s
     what = "live (master.wav is out of date; mix or play -r renders it)" if player.live else MASTER_WAV
+    stretch = loop_range(project)
+    if stretch is not None:
+        start = player.start_s - head
+        what += f", round the loop {fmt_ms(stretch[0])} -> {fmt_ms(stretch[1])} (gout loop off ends it)"
     print(f"play  {what} from {fmt_ms(start * 1000)}  ({player.backend}; ctrl-c stops)")
     live = sys.stdout.isatty()
     try:
@@ -1182,7 +1245,7 @@ def play_along(project: Project, from_ms: int) -> list[str] | None:
     """ffmpeg arguments for what plays from from_ms (master.wav when current, else live), or None
     when nothing is audible from there."""
     try:
-        return player_for(project, from_ms).source_args()
+        return player_for(project, from_ms, loop=False).source_args()  # a take goes straight on
     except GoutError as exc:
         print(f"rec   {exc}: recording without playing")
         return None
@@ -1875,7 +1938,7 @@ def cmd_view(project: Project, args: Args) -> None:
              else f"{MASTER_WAV} not rendered")
     print(f"proj  {project.get('name')}  {project.rate} Hz  {len(tracks)} track"
           f"{'' if len(tracks) == 1 else 's'}  {state}")
-    for label, cells, _, _, _ in render_timeline(project, width):
+    for label, cells, _, _, _ in render_timeline(project, width, loop=loop_range(project)):
         print(f"{label:<{LABEL_W}} {cells}".rstrip())
 
 
