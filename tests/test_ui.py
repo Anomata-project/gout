@@ -1,11 +1,16 @@
 import curses
 import os
-import pty
 import select
 import struct
 import subprocess
 import sys
 import time
+import unittest
+
+try:
+    import pty  # Unix only: Windows skips the tests that need a real terminal
+except ImportError:
+    pty = None
 
 from helpers import GoutTest, gout_attr, gout_cmd, wait_for_exit
 
@@ -355,6 +360,7 @@ class UiTest(GoutTest):
         self.keys(ui, curses.KEY_RIGHT)
         self.assertEqual(ui.input, "gain 1 -3")
 
+    @unittest.skipIf(pty is None, "a real terminal")
     def test_real_terminal_session(self):
         root = self.project("song", "bass.wav")
         pid, fd = pty.fork()

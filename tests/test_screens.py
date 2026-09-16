@@ -2,12 +2,17 @@ import curses
 import importlib.util
 import json
 import os
-import pty
 import select
 import shutil
 import struct
 import sys
 import time
+import unittest
+
+try:
+    import pty  # Unix only: Windows skips the tests that need a real terminal
+except ImportError:
+    pty = None
 
 from helpers import REPO, GoutTest, ffmpeg, gout_attr, gout_cmd, wait_for_exit
 from test_ui import FakeScreen
@@ -378,6 +383,7 @@ class ScreenTest(GoutTest):
         self.assertEqual(ui.mode, "prompt")
         self.assertIn("broken screen: RuntimeError: no picture", "\n".join(ui.log))
 
+    @unittest.skipIf(pty is None, "a real terminal")
     def test_real_terminal_ctrl_space(self):
         shutil.copy(FRACTAL, self.addons / "fractal.py")
         root = self.project("song", "tone.wav")
