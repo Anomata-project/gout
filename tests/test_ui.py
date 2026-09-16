@@ -7,7 +7,7 @@ import subprocess
 import sys
 import time
 
-from helpers import GoutTest, gout_attr, gout_cmd
+from helpers import GoutTest, gout_attr, gout_cmd, wait_for_exit
 
 
 class FakeScreen:
@@ -386,9 +386,10 @@ class UiTest(GoutTest):
         for keys in (b"ls\n", b"\x14", b"\x14", b"gan 1 -2", b"\x1b[H", b"\x1b[C", b"\x1b[C", b"i\n", b"quit\n"):
             os.write(fd, keys)
             drain(0.8)
-        _, status = os.waitpid(pid, 0)
+        code = wait_for_exit(pid, fd, output)
         text = output.decode("utf-8", "replace")
-        self.assertEqual(os.waitstatus_to_exitcode(status), 0, text[-2000:])
+        self.assertIsNotNone(code, f"gout never left the terminal:\n{text[-2000:]}")
+        self.assertEqual(code, 0, text[-2000:])
         self.assertIn("timeline", text)
         self.assertNotIn("Traceback", text)
         self.assertEqual(self.dump()["tracks"][0]["gain_db"], -2.0)  # home and right arrow edited the line

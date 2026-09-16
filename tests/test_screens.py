@@ -9,7 +9,7 @@ import struct
 import sys
 import time
 
-from helpers import REPO, GoutTest, ffmpeg, gout_attr, gout_cmd
+from helpers import REPO, GoutTest, ffmpeg, gout_attr, gout_cmd, wait_for_exit
 from test_ui import FakeScreen
 
 FRACTAL = REPO / "examples" / "addons" / "fractal.py"
@@ -414,9 +414,10 @@ class ScreenTest(GoutTest):
         drain(1.0)
         os.write(fd, b"quit\n")
         drain(1.0)
-        _, status = os.waitpid(pid, 0)
+        code = wait_for_exit(pid, fd, output)
         text = output.decode("utf-8", "replace")
-        self.assertEqual(os.waitstatus_to_exitcode(status), 0, text[-2000:])
+        self.assertIsNotNone(code, f"gout never left the terminal:\n{text[-2000:]}")
+        self.assertEqual(code, 0, text[-2000:])
         self.assertIn("z³ + 7", seen)
         self.assertIn("esc back to gout", seen)
         self.assertNotIn("Traceback", text)

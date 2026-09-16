@@ -10,11 +10,14 @@ import importlib
 import json
 import math
 import os
+import select
 import shutil
+import signal
 import struct
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import wave
 from pathlib import Path
@@ -170,6 +173,26 @@ def write_click(path: Path, seconds: float = 4.0, at: float = 2.0, rate: int = 4
         i = int(at * rate)
         frames[2 * i:2 * i + 2] = struct.pack("<h", 30000)
         w.writeframes(bytes(frames))
+
+
+def wait_for_exit(pid: int, fd: int, output: bytearray, seconds: float = 20.0) -> int | None:
+    """Wait for a terminal test's child to leave, reading what it prints while it goes: a terminal
+    nobody reads fills up (after about a kilobyte on macOS) and the child blocks half-way through a
+    draw, for ever. Its exit code, or None when it outstayed its welcome and was killed."""
+    end = time.time() + seconds
+    while time.time() < end:
+        ready, _, _ = select.select([fd], [], [], 0.05)
+        if ready:
+            try:
+                output.extend(os.read(fd, 65536))
+            except OSError:  # the terminal went with the child
+                pass
+        done, status = os.waitpid(pid, os.WNOHANG)
+        if done:
+            return os.waitstatus_to_exitcode(status)
+    os.kill(pid, signal.SIGKILL)
+    os.waitpid(pid, 0)
+    return None
 
 
 class Fixtures:
