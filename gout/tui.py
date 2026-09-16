@@ -130,8 +130,8 @@ class Tui:
 
     def load_history(self) -> list[str]:
         try:
-            lines = (self.project.root / HISTORY_FILE).read_text().splitlines()
-        except OSError:
+            lines = (self.project.root / HISTORY_FILE).read_text(encoding="utf-8").splitlines()
+        except (OSError, ValueError):  # ValueError: a history file that is not utf-8 any more
             return []
         return [line for line in lines if line.strip()][-HISTORY_KEEP:]
 
@@ -139,7 +139,7 @@ class Tui:
         path = self.project.root / HISTORY_FILE
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text("\n".join(self.line.history[-HISTORY_KEEP:]) + "\n")
+            path.write_text("\n".join(self.line.history[-HISTORY_KEEP:]) + "\n", encoding="utf-8")
         except OSError:
             pass
 
@@ -602,7 +602,7 @@ class Tui:
         if not p.tracks() or p.master_is_current():
             return
         self.render_proc = subprocess.Popen([*gout_command(), "-p", str(p.root), "mix"], stdout=subprocess.PIPE,
-                                            stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, text=True,
+                                            stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, text=True, encoding="utf-8",
                                             **detached())
         self.render_state = state
 

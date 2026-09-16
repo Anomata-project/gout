@@ -162,7 +162,7 @@ def load_theme(project_root: Path | None = None) -> tuple[dict, list[str], Path 
     if path is None:
         return theme, problems, None
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         return theme, [f"{path}: cannot read it ({exc}); using the defaults"], path
     if not isinstance(data, dict):

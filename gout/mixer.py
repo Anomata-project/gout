@@ -312,7 +312,7 @@ def mix(project: Project, verbose: bool = False, mp3: bool = False) -> None:
         cmd += ["-c:a", BITS_CODEC[bits], *tag_args(project), str(final)]
         if verbose:
             print("  $ " + " ".join(cmd), file=sys.stderr)
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
         if result.returncode != 0:
             problems = [l for l in result.stderr.splitlines() if "rror" in l or "nvalid" in l]
             die("ffmpeg failed:\n" + "\n".join(problems[-12:]))

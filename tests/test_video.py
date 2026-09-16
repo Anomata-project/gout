@@ -49,7 +49,7 @@ class VideoTest(GoutTest):
         self.assertIn("rendering master.wav first", out)
         video = root / "master.mp4"
         streams = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_name,width,height,r_frame_rate",
-                                  "-of", "csv=p=0", str(video)], capture_output=True, text=True).stdout.split()
+                                  "-of", "csv=p=0", str(video)], capture_output=True, text=True, encoding="utf-8").stdout.split()
         self.assertEqual(sorted(streams), ["aac,0/0", "h264,480,288,25/1"])  # audio has no frame rate
         self.assertAlmostEqual(duration(video), 6.0, delta=0.1)
         frame = frame_at(video, 1.0, 480, 288)
@@ -96,7 +96,7 @@ class VideoTest(GoutTest):
         self.assertIn("2 processes drawing", out)
         video = root / "master.mp4"
         frames = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v", "-count_frames", "-show_entries",
-                                 "stream=nb_read_frames", "-of", "csv=p=0", str(video)], capture_output=True, text=True).stdout
+                                 "stream=nb_read_frames", "-of", "csv=p=0", str(video)], capture_output=True, text=True, encoding="utf-8").stdout
         self.assertEqual(frames.strip(), "150")
         early, later = frame_at(video, 1.0, 480, 288), frame_at(video, 1.2, 480, 288)
         self.assertNotEqual(early, later)  # it moves
@@ -111,7 +111,7 @@ class VideoTest(GoutTest):
         ffmpeg("-f", "lavfi", "-i", "sine=f=80:d=2", "-ar", "48000", str(song))
         root = self.project("song", str(song))
         (self.tmp / "config" / "gout").mkdir(parents=True, exist_ok=True)
-        (self.tmp / "config" / "gout" / "fractal.json").write_text('{"preset": "rings", "zoom_preset": "four"}')
+        (self.tmp / "config" / "gout" / "fractal.json").write_text('{"preset": "rings", "zoom_preset": "four"}', encoding="utf-8")
         for screen in ("zoom", "fractal"):
             out = self.gout("video", screen, "-o", str(root / f"{screen}.mp4")).stdout  # no preset named: the remembered one
             self.assertIn(f"the {screen} screen", out)
@@ -153,7 +153,7 @@ class VideoTest(GoutTest):
         self.assertEqual(module.Fractal().choices()[:2], ["seven", "classic"])
 
     def test_every_worker_knows_when_its_choice_began(self):
-        (self.addons / "probe.py").write_text(PROBE)
+        (self.addons / "probe.py").write_text(PROBE, encoding="utf-8")
         root = self.beat_project()
         ScreenFrames, schedule, Project = gout_attr("video", "ScreenFrames"), gout_attr("video", "schedule"), gout_attr("project", "Project")
         tasks = schedule(10, 1, 500, [2000, 5000], ["a", "b"])[2:]  # 1 fps, half a second of head, a cover over two frames
@@ -164,13 +164,13 @@ class VideoTest(GoutTest):
         self.assertEqual(drawn, ["a 1500", "b 2000", "b 2000", "b 2000", "a 5000", "a 5000", "a 5000", "a 5000"])
 
     def test_addons_examples_update_keeps_the_old_one(self):
-        (self.addons / "fractal.py").write_text("# an older copy\n")
+        (self.addons / "fractal.py").write_text("# an older copy\n", encoding="utf-8")
         (self.addons / "tremolo.py").write_bytes((REPO / "examples" / "addons" / "tremolo.py").read_bytes())
         out = self.gout("addons", "examples").stdout
         self.assertIn("--update replaces it", out)
         out = self.gout("addons", "examples", "--update").stdout
         self.assertIn("fractal.py               updated", out)
-        self.assertEqual((self.addons / "fractal.py.bak").read_text(), "# an older copy\n")
+        self.assertEqual((self.addons / "fractal.py.bak").read_text(encoding="utf-8"), "# an older copy\n")
         self.assertFalse((self.addons / "tremolo.py.bak").exists())  # the same file stays as it is
 
     def test_the_title_over_the_cover_then_the_fractal(self):

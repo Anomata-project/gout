@@ -15,7 +15,7 @@ class AddonTest(GoutTest):
         if text is None:
             shutil.copy(EXAMPLES / name, target)
         else:
-            target.write_text(text)
+            target.write_text(text, encoding="utf-8")
         return target
 
     def test_example_addon_is_a_first_class_effect(self):
@@ -189,12 +189,12 @@ class ExampleAddonTest(GoutTest):
         self.assertNotIn("not loaded", report)
 
     def test_the_guide_builds_a_phaser_that_keeps_its_level(self):
-        guide = (REPO / "docs" / "addons.md").read_text()
+        guide = (REPO / "docs" / "addons.md").read_text(encoding="utf-8")
         blocks = re.findall(r"```python\n(.*?)```", guide, re.S)
         (phaser,) = [b for b in blocks if "class Phaser" in b]
         (bars,) = [b for b in blocks if "class Bars" in b]
-        (self.addons / "phaser.py").write_text(phaser)
-        (self.addons / "bars.py").write_text(bars)
+        (self.addons / "phaser.py").write_text(phaser, encoding="utf-8")
+        (self.addons / "bars.py").write_text(bars, encoding="utf-8")
         report = self.gout("addons").stdout
         self.assertIn("phaser.py                phaser", report)
         self.assertIn("bars (screen, ctrl-b)", report)
@@ -210,27 +210,27 @@ class ExampleAddonTest(GoutTest):
         self.assertIn("fast and deep", self.gout("phaser", "presets").stdout)
 
     def test_an_addon_says_which_api_it_needs_and_examples_copy_in(self):
-        (self.addons / "future.py").write_text("def register(gout):\n    gout.requires(gout.version + 1)\n")
+        (self.addons / "future.py").write_text("def register(gout):\n    gout.requires(gout.version + 1)\n", encoding="utf-8")
         (self.addons / "now.py").write_text("from gout.fx import Effect\n\nclass Now(Effect):\n    name = 'now'\n"
                                             "    def parse(self, text):\n        return {}\n    def format(self, params):\n"
                                             "        return ''\n\ndef register(gout):\n    gout.requires(1)\n"
-                                            "    gout.add_effect(Now())\n")
+                                            "    gout.add_effect(Now())\n", encoding="utf-8")
         report = self.gout("addons").stdout
         self.assertIn("future.py                not loaded: it needs gout's addon API 2, and this gout has 1: "
                       "update gout", report)
         self.assertIn("now.py                   now", report)
 
-        (self.addons / "tremolo.py").write_text("# my own tremolo\n")
+        (self.addons / "tremolo.py").write_text("# my own tremolo\n", encoding="utf-8")
         copied = self.gout("addons", "examples").stdout
         self.assertIn("tremolo.py               already there, kept as it is", copied)
         self.assertIn("fractal.py               copied", copied)
-        self.assertEqual((self.addons / "tremolo.py").read_text(), "# my own tremolo\n")
-        self.assertEqual((self.addons / "chorus.py").read_text(), (EXAMPLES / "chorus.py").read_text())
+        self.assertEqual((self.addons / "tremolo.py").read_text(encoding="utf-8"), "# my own tremolo\n")
+        self.assertEqual((self.addons / "chorus.py").read_text(encoding="utf-8"), (EXAMPLES / "chorus.py").read_text(encoding="utf-8"))
         self.gout("addons", "nonsense", ok=False)
 
     def test_gout_runs_itself_again(self):
         gout_command = gout_attr("core", "gout_command")
-        result = subprocess.run([*gout_command(), "version"], capture_output=True, text=True, env=self.env(),
+        result = subprocess.run([*gout_command(), "version"], capture_output=True, text=True, encoding="utf-8", env=self.env(),
                                 cwd=self.tmp)
         self.assertEqual(result.stdout.splitlines()[0], f"gout {gout_attr('core', '__version__')}")  # then warnings
         arrows = gout_attr("tui", "ARROW_NAMES")

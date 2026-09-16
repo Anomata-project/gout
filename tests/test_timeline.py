@@ -83,7 +83,7 @@ class TimelineTest(GoutTest):
         root = self.project("song", "tone.wav")
         (root / "color.json").write_text(json.dumps({
             "track_height": 3, "gap_rows": 0, "wave_style": "blocks", "wave_scale": "db",
-            "master_wave": "#zz", "bogus": 1, "_comment": "ignored"}))
+            "master_wave": "#zz", "bogus": 1, "_comment": "ignored"}), encoding="utf-8")
         theme, problems, path = gout_attr("theme", "load_theme")(root)
         self.assertEqual(path, root / "color.json")
         self.assertEqual((theme["track_height"], theme["gap_rows"], theme["wave_style"]), (3, 0, "blocks"))
@@ -99,7 +99,7 @@ class TimelineTest(GoutTest):
     def test_db_scale_makes_quiet_material_taller(self):
         root = self.project("song", "tone.wav")  # a sine at -18 dBFS
         def dots(scale):
-            (root / "color.json").write_text(json.dumps({"wave_scale": scale}))
+            (root / "color.json").write_text(json.dumps({"wave_scale": scale}), encoding="utf-8")
             theme = gout_attr("theme", "load_theme")(root)[0]
             rows = self.rows(root, theme=theme)
             return sum(bin(ord(ch) - 0x2800).count("1") for _, cells, kind, _, _ in rows if kind == "wave"
@@ -109,7 +109,7 @@ class TimelineTest(GoutTest):
     def test_colors_init_writes_every_setting_with_help(self):
         self.gout("colors", "--init")
         path = self.tmp / "config" / "gout" / "color.json"
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
         settings = [k for k in data if not k.startswith("_")]
         self.assertEqual(len(settings), 25)
         self.assertEqual(set(settings), set(data["_help"]))

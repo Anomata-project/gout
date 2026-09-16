@@ -121,7 +121,7 @@ class ViewerTest(GoutTest):
     @unittest.skipUnless(shutil.which("node"), "node checks the page's script")
     def test_the_page_script_parses(self):
         result = subprocess.run(["node", "--check", str(REPO / "gout" / "viewerpage" / "viewer.js")],
-                                capture_output=True, text=True)
+                                capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_the_window_asks_the_ui_for_part_duplicate_loop_and_a_stretch_to_play(self):

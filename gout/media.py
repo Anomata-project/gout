@@ -29,7 +29,7 @@ def probe(path: Path) -> dict:
             "stream=codec_name,bit_rate,channels,sample_rate:format=duration,bit_rate,format_name",
             "-of", "json", str(path),
         ],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     if out.returncode != 0:
         die(f"ffprobe failed on {path}:\n{out.stderr.strip()}")
@@ -392,7 +392,7 @@ def measure_loudness(path: Path, target: float = -23.0, ceiling: float = -1.0) -
     result = subprocess.run(
         ["ffmpeg", "-hide_banner", "-nostats", "-i", str(path),
          "-af", f"loudnorm=I={target}:TP={ceiling}:LRA=11:print_format=json", "-f", "null", "-"],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     match = re.search(r"\{\s*\"input_i\".*?\}", result.stderr, re.S)
     if result.returncode != 0 or not match:

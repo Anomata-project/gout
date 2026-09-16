@@ -53,14 +53,14 @@ def ffmpeg(*args: str) -> None:
 
 def duration(path: Path) -> float:
     out = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0",
-                          str(path)], capture_output=True, text=True, check=True)
+                          str(path)], capture_output=True, text=True, encoding="utf-8", check=True)
     return float(out.stdout.strip())
 
 
 def stream_info(path: Path) -> dict:
     out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries",
                           "stream=codec_name,channels,sample_rate:format_tags", "-of", "json", str(path)],
-                         capture_output=True, text=True, check=True)
+                         capture_output=True, text=True, encoding="utf-8", check=True)
     data = json.loads(out.stdout)
     info = dict(data["streams"][0])
     info["tags"] = {k.lower(): v for k, v in (data.get("format", {}).get("tags") or {}).items()}
@@ -105,7 +105,7 @@ def peak_db(values) -> float:
 
 def loudness(path: Path) -> float:
     out = subprocess.run(["ffmpeg", "-hide_banner", "-nostats", "-i", str(path), "-af",
-                          "loudnorm=print_format=json", "-f", "null", "-"], capture_output=True, text=True)
+                          "loudnorm=print_format=json", "-f", "null", "-"], capture_output=True, text=True, encoding="utf-8")
     text = out.stderr[out.stderr.rindex("{"):]
     return float(json.loads(text[:text.index("}") + 1])["input_i"])
 
@@ -242,7 +242,7 @@ class GoutTest(unittest.TestCase):
 
     def gout(self, *args: str, ok: bool = True, cwd: Path | None = None) -> subprocess.CompletedProcess:
         result = subprocess.run([*gout_cmd(), *args], cwd=cwd or self.cwd, env=self.env(),
-                                capture_output=True, text=True)
+                                capture_output=True, text=True, encoding="utf-8")
         if ok and result.returncode != 0:
             raise GoutError(f"gout {' '.join(args)} failed ({result.returncode}):\n{result.stdout}{result.stderr}")
         if not ok and result.returncode == 0:

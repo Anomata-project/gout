@@ -119,12 +119,12 @@ class Fractal(Screen):
         if not path.exists():
             try:
                 path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(json.dumps(DOCUMENT, indent=2, ensure_ascii=False) + "\n")
+                path.write_text(json.dumps(DOCUMENT, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
                 notes.append(f"fractal: wrote the presets to {path}")
             except OSError as exc:
                 notes.append(f"fractal: could not write {path}: {exc}")
         try:
-            doc = json.loads(path.read_text()) if path.exists() else DOCUMENT
+            doc = json.loads(path.read_text(encoding="utf-8")) if path.exists() else DOCUMENT
             if not isinstance(doc, dict):
                 raise ValueError("it is not a json object")
         except (OSError, ValueError) as exc:
@@ -163,11 +163,11 @@ class Fractal(Screen):
     def remember(self) -> None:
         path = config_file(FILE)
         try:
-            doc = json.loads(path.read_text())
+            doc = json.loads(path.read_text(encoding="utf-8"))
             if isinstance(doc, dict) and doc.get(self.remembered) != self.presets[self.current]["name"]:
                 doc[self.remembered] = self.presets[self.current]["name"]
                 tmp = path.with_suffix(".part")
-                tmp.write_text(json.dumps(doc, indent=2, ensure_ascii=False) + "\n")
+                tmp.write_text(json.dumps(doc, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
                 tmp.replace(path)
         except (OSError, ValueError):
             pass  # a file the user broke stays as it is

@@ -1870,7 +1870,7 @@ def read_document(path: Path) -> dict:
     if not path.is_file():
         die(f"no such file: {path}")
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         die(f"cannot read {path}: {exc}")
     if not isinstance(data, dict) or not ("project" in data or "tracks" in data):
@@ -2077,7 +2077,7 @@ def cmd_colors(root_hint: Path | None, args: Args) -> None:
         if target.exists() and not force:
             die(f"{target} already exists — pass -f to replace it with the defaults")
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(default_document())
+        target.write_text(default_document(), encoding="utf-8")
         print(f"colors wrote {target}  ({len(DEFAULTS)} settings, each explained under _help)")
         return
     theme, problems, path = load_theme(project.root if project else None)

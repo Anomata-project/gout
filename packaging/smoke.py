@@ -29,7 +29,7 @@ def main() -> None:
     env = dict(os.environ, GOUT_PLAYER="null", GOUT_ADDONS=str(work / "addons"), XDG_CONFIG_HOME=str(work / "config"))
 
     def step(*args: str, cwd: Path = work, expect: str = "") -> str:
-        result = subprocess.run([gout, *args], cwd=cwd, env=env, capture_output=True, text=True, timeout=300)
+        result = subprocess.run([gout, *args], cwd=cwd, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
         out = result.stdout + result.stderr
         print(f"$ gout {' '.join(args)}\n{out.rstrip()}\n", flush=True)
         if result.returncode != 0 or expect not in out:

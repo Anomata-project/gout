@@ -503,12 +503,12 @@ class Project:
         text = json.dumps(self.document(), indent=2) + "\n"
         path = self.root / SIDECAR
         try:
-            if path.exists() and path.read_text() == text:
+            if path.exists() and path.read_text(encoding="utf-8") == text:
                 return
             tmp = path.with_name(SIDECAR + ".part")
-            tmp.write_text(text)
+            tmp.write_text(text, encoding="utf-8")
             tmp.replace(path)
-        except OSError as exc:
+        except (OSError, ValueError) as exc:  # ValueError: a gout.json that is not utf-8 any more
             print(f"      could not write {SIDECAR}: {exc}", file=sys.stderr)
 
     def reorder(self, files: list[str]) -> None:

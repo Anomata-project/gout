@@ -166,7 +166,7 @@ class ScreenTest(GoutTest):
         zoom.last = None
         straight = "".join(t for t, _ in frame(0.5)[0])  # the same moment at its real depth
         self.assertGreater(sum(a == b for a, b in zip(jumped, straight)) / len(jumped), 0.95)
-        self.assertEqual(json.loads((self.tmp / "config" / "gout" / "fractal.json").read_text())["zoom_preset"], "seven")
+        self.assertEqual(json.loads((self.tmp / "config" / "gout" / "fractal.json").read_text(encoding="utf-8"))["zoom_preset"], "seven")
 
     def test_fractal_presets_live_in_a_file_and_change_by_key_or_word(self):
         Fractal = load_fractal().Fractal
@@ -176,12 +176,12 @@ class ScreenTest(GoutTest):
         self.assertTrue(go)
         self.assertTrue(path.exists())
         self.assertIn("wrote the presets", lines[0])
-        self.assertEqual(len(json.loads(path.read_text())["presets"]), 10)
+        self.assertEqual(len(json.loads(path.read_text(encoding="utf-8"))["presets"]), 10)
         self.assertEqual(fractal.status(None), "1 seven  w = z³ + 7")
 
         fractal.key_pressed(None, "5")
         self.assertEqual(fractal.status(None), "5 rings  w = z⁸ + 15z⁴ - 16")
-        self.assertEqual(json.loads(path.read_text())["preset"], "rings")  # remembered
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["preset"], "rings")  # remembered
         again = Fractal()
         again.command(None, [])
         self.assertEqual(again.status(None), "5 rings  w = z⁸ + 15z⁴ - 16")
@@ -201,10 +201,10 @@ class ScreenTest(GoutTest):
         with self.assertRaisesRegex(ValueError, "unknown name 'x'"):
             again.command(None, ["x^2"])
 
-        doc = json.loads(path.read_text())
+        doc = json.loads(path.read_text(encoding="utf-8"))
         doc["presets"] += [{"name": "mine", "formula": "z^4 - 3i"}, {"name": "bad", "formula": "z^^2"}]
         doc["status_seconds"] = 0
-        path.write_text(json.dumps(doc))
+        path.write_text(json.dumps(doc), encoding="utf-8")
         lines, _ = again.command(None, ["mine"])
         self.assertIn("bad", "\n".join(lines))
         self.assertEqual(again.status(None), "mine  w = z⁴ - 3i")
@@ -212,7 +212,7 @@ class ScreenTest(GoutTest):
         self.assertEqual(len(again.frame(type("C", (), {"position_ms": 0, "band": lambda *a: 0.0,
                                                         "travel": lambda *a: 0.0})(), 40, 12)), 12)
 
-        path.write_text("{ not json")
+        path.write_text("{ not json", encoding="utf-8")
         lines, _ = Fractal().command(None, [])
         self.assertIn("unreadable", "\n".join(lines))
 
@@ -325,7 +325,7 @@ class ScreenTest(GoutTest):
         config = self.tmp / "config" / "gout" / "fractal.json"
         config.parent.mkdir(parents=True, exist_ok=True)
         config.write_text(json.dumps({"preset": "star", "status_seconds": 0.2,
-                                      "presets": [{"name": "star", "formula": "z^5 - 1"}]}))
+                                      "presets": [{"name": "star", "formula": "z^5 - 1"}]}), encoding="utf-8")
 
         root = self.project("song", "tone.wav")
         Project, Tui = gout_attr("project", "Project"), gout_attr("tui", "Tui")

@@ -32,7 +32,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PACK = ROOT / "packaging"
 BUILD = ROOT / "build"
 DIST = ROOT / "dist"
-VERSION = re.search(r'__version__ = "([^"]+)"', (ROOT / "gout" / "core.py").read_text()).group(1)
+VERSION = re.search(r'__version__ = "([^"]+)"', (ROOT / "gout" / "core.py").read_text(encoding="utf-8")).group(1)
 IDENTIFIER = "eu.anomata.gout"
 HOMEPAGE = "https://github.com/Anomata-project/gout"
 MAINTAINER = "Anomata Project <admin@anomata.eu>"
@@ -110,7 +110,7 @@ def deb() -> Path:
         "Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/\n"
         f"Upstream-Name: gout\nSource: {HOMEPAGE}\n\n"
         "Files: *\nCopyright: 2026 Anomata Project\nLicense: GPL-3.0-or-later\n"
-        " On Debian and Ubuntu the full text is in /usr/share/common-licenses/GPL-3.\n")
+        " On Debian and Ubuntu the full text is in /usr/share/common-licenses/GPL-3.\n", encoding="utf-8")
 
     debian = stage / "DEBIAN"
     debian.mkdir()
@@ -135,9 +135,9 @@ Description: command-line DAW: stack tracks on a timeline, mix and play them
  them through effect chains (eq, compressor, delay, reverb and addons) and
  mixes them to a stereo master.wav, from a command line or a terminal ui
  with waveforms, an effect panel and full-screen visuals.
-""")
-    (debian / "postinst").write_text("#!/bin/sh\nset -e\npython3 -m compileall -q /usr/lib/gout/gout || true\n")
-    (debian / "prerm").write_text("#!/bin/sh\nset -e\nfind /usr/lib/gout -name __pycache__ -type d -exec rm -rf {} + || true\n")
+""", encoding="utf-8")
+    (debian / "postinst").write_text("#!/bin/sh\nset -e\npython3 -m compileall -q /usr/lib/gout/gout || true\n", encoding="utf-8")
+    (debian / "prerm").write_text("#!/bin/sh\nset -e\nfind /usr/lib/gout -name __pycache__ -type d -exec rm -rf {} + || true\n", encoding="utf-8")
     for script in ("postinst", "prerm"):
         (debian / script).chmod(0o755)
     DIST.mkdir(exist_ok=True)
@@ -179,11 +179,11 @@ def fetch_ffmpeg(folder: Path) -> None:
         probe = folder / "ffmpeg"
     else:
         sys.exit("the bundled ffmpeg is for macOS and Windows; the Linux package depends on the system's")
-    version = subprocess.run([probe, "-version"], capture_output=True, text=True).stdout.splitlines()[0]
+    version = subprocess.run([probe, "-version"], capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.splitlines()[0]
     lines.append(f"Version: {version}")
-    licence = subprocess.run([probe, "-hide_banner", "-L"], capture_output=True, text=True).stdout
-    (folder / "LICENSE.txt").write_text(licence)  # what this build says about its own licence
-    (folder / "SOURCE.txt").write_text("\n".join(lines) + "\n")
+    licence = subprocess.run([probe, "-hide_banner", "-L"], capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
+    (folder / "LICENSE.txt").write_text(licence, encoding="utf-8")  # what this build says about its own licence
+    (folder / "SOURCE.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
     say(version)
 
 
@@ -199,7 +199,7 @@ def app() -> Path:
         shutil.copy2(PACK / "gout-start", out / "gout-start.command")
         (out / "gout-start.command").chmod(0o755)
     program = out / ("gout.exe" if sys.platform == "win32" else "gout")
-    result = run([program, "version"], capture_output=True, text=True)
+    result = run([program, "version"], capture_output=True, text=True, encoding="utf-8", errors="replace")
     say(result.stdout.strip())
     if "cannot start" in result.stdout:
         sys.exit("the terminal ui would not start in this build")
@@ -218,10 +218,10 @@ def pkg() -> Path:
     shutil.copytree(program, lib, symlinks=True)
     bindir = root / "usr" / "local" / "bin"
     bindir.mkdir(parents=True)
-    (bindir / "gout").write_text('#!/bin/sh\nexec /usr/local/lib/gout/gout "$@"\n')
+    (bindir / "gout").write_text('#!/bin/sh\nexec /usr/local/lib/gout/gout "$@"\n', encoding="utf-8")
     (bindir / "gout").chmod(0o755)
     start = lib / "gout-start.command"
-    start.write_text(start.read_text().replace("gout version", "export PATH=\"/usr/local/bin:$PATH\"\ngout version", 1))
+    start.write_text(start.read_text(encoding="utf-8").replace("gout version", "export PATH=\"/usr/local/bin:$PATH\"\ngout version", 1), encoding="utf-8")
     apps = root / "Applications"
     apps.mkdir()
     # an app to open from Launchpad: it opens Terminal on gout-start.command (open needs no permission)
@@ -237,9 +237,9 @@ def pkg() -> Path:
     for name in ("welcome.html", "conclusion.html"):
         shutil.copy2(PACK / "macos" / name, resources / name)
     shutil.copy2(ROOT / "LICENSE", resources / "LICENSE.txt")
-    distribution = (PACK / "macos" / "distribution.xml").read_text().replace("@VERSION@", VERSION) \
+    distribution = (PACK / "macos" / "distribution.xml").read_text(encoding="utf-8").replace("@VERSION@", VERSION) \
         .replace("@ARCH@", arch).replace("@IDENTIFIER@", IDENTIFIER)
-    (BUILD / "distribution.xml").write_text(distribution)
+    (BUILD / "distribution.xml").write_text(distribution, encoding="utf-8")
     out = DIST / f"gout-{VERSION}-macos-{arch}.pkg"
     run(["productbuild", "--distribution", BUILD / "distribution.xml", "--resources", resources,
          "--package-path", BUILD, out])

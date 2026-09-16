@@ -88,7 +88,7 @@ def choose_backend() -> str:
 def output_of(cmd: list[str], stderr: bool = False) -> str:
     env = dict(os.environ, LC_ALL="C")  # pactl translates its field names otherwise
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, errors="replace", env=env, timeout=15)
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", env=env, timeout=15)
     except (OSError, subprocess.TimeoutExpired):
         return ""
     return result.stderr if stderr else result.stdout
@@ -224,7 +224,7 @@ def settings_path() -> Path:
 
 def load_settings() -> dict:
     try:
-        data = json.loads(settings_path().read_text())
+        data = json.loads(settings_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
@@ -239,7 +239,7 @@ def save_settings(**changes) -> None:
             data[key] = value
     path = settings_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2) + "\n")
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
 
 def find_input(inputs: list[Input], spec: str) -> Input:

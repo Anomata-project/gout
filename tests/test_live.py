@@ -71,7 +71,7 @@ class LiveTest(GoutTest):
         env["GOUT_PLAYER"] = backend
         import subprocess
         from helpers import gout_cmd
-        result = subprocess.run([*gout_cmd(), "play", *args], cwd=self.cwd, env=env, capture_output=True, text=True)
+        result = subprocess.run([*gout_cmd(), "play", *args], cwd=self.cwd, env=env, capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return result.stdout
 

@@ -148,7 +148,7 @@ class ChainTest(GoutTest):
                   "tracks": [{"file": "bass.wav", "name": "bass", "offset_ms": 250, "eq": "hp80",
                               "comp": "-18 4:1 a20 r200 k6", "comp_on": 0}]}
         path = self.tmp / "legacy.json"
-        path.write_text(json.dumps(legacy))
+        path.write_text(json.dumps(legacy), encoding="utf-8")
         out = self.gout("import", str(path)).stdout
         self.assertNotIn("ignored", out)
         doc = self.dump()

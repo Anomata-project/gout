@@ -270,7 +270,7 @@ def stop_process(proc: subprocess.Popen) -> None:
 def run_quiet(cmd: list[str], verbose: bool = False) -> subprocess.CompletedProcess:
     if verbose:
         print("  $ " + " ".join(cmd), file=sys.stderr)
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if result.returncode != 0:
         die(f"{cmd[0]} failed:\n{result.stderr.strip()}")
     return result

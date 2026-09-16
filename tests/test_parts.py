@@ -71,7 +71,7 @@ class PartTest(GoutTest):
         self.gout("part", "1", "p2", "name", "Chorus")
         self.gout("gain", "1", "chorus", "-6")
         self.assertEqual([(p["name"], p["gain_db"]) for p in parts()], [(None, 0), ("chorus", -6), (None, 0)])
-        self.assertEqual(json.loads((root / "gout.json").read_text())["tracks"][0]["parts"], parts())
+        self.assertEqual(json.loads((root / "gout.json").read_text(encoding="utf-8"))["tracks"][0]["parts"], parts())
         for bad, why in (("on", "something else"), ("l30", "something else"), ("p5", "something else"),
                          ("warm", "preset of eq"), ("chorus", "already has")):
             self.assertIn(why, self.gout("part", "1", "p3" if bad == "chorus" else "p1", "name", bad, ok=False).stderr, bad)

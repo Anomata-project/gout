@@ -131,7 +131,7 @@ def measured_output_db(ctx, p):
     cache = ctx.cache("distortion", key[:20] + ".txt")
     if cache.exists():
         try:
-            return float(cache.read_text())
+            return float(cache.read_text(encoding="utf-8"))
         except ValueError:
             pass
     length = ctx.track.get("length_ms", 0) / 1000
@@ -151,7 +151,7 @@ def measured_output_db(ctx, p):
     if float(before) <= -69 or float(after) <= -69:  # silence, or too short to measure
         return None
     gain = max(-60.0, min(24.0, float(before) - float(after)))
-    cache.write_text(f"{gain:.3f}")
+    cache.write_text(f"{gain:.3f}", encoding="utf-8")
     return gain
 
 

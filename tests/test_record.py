@@ -125,7 +125,7 @@ class RecordTest(GoutTest):
 
         def start():
             proc = subprocess.Popen([*gout_cmd(), "record", "2s"], cwd=root, env=self.env(),
-                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
             self.assertTrue(proc.stdout.readline().startswith("rec"))  # recording from here
             time.sleep(1.2)
             return proc
@@ -153,9 +153,9 @@ class RecordTest(GoutTest):
         self.assertIn("system default", out)
         settings = self.tmp / "config" / "gout" / "recording.json"
         self.assertIn("picked for this computer", self.gout("in", "1").stdout)
-        self.assertEqual(json.loads(settings.read_text()), {"input": "null"})
+        self.assertEqual(json.loads(settings.read_text(encoding="utf-8")), {"input": "null"})
         self.gout("inputs", "default")
-        self.assertEqual(json.loads(settings.read_text()), {})
+        self.assertEqual(json.loads(settings.read_text(encoding="utf-8")), {})
         self.assertIn("no input matches", self.gout("inputs", "7", ok=False).stderr)
 
 
@@ -191,7 +191,7 @@ class RecordAlongTest(GoutTest):
         self.recorder = "loopback:960:1"
         out = self.gout("record", "calibrate").stdout
         self.assertIn("20.0 ms outside the buffers (10 of 10 clicks, within 0.0 ms)", out)
-        table = json.loads((self.tmp / "config" / "gout" / "recording.json").read_text())["calibration"]
+        table = json.loads((self.tmp / "config" / "gout" / "recording.json").read_text(encoding="utf-8"))["calibration"]
         self.assertEqual(table["loopback -> default @ 48000 Hz / 2048"]["samples"], 960)
         self.assertIn("calibrated with default (48000 Hz): 20.0 ms", self.gout("inputs").stdout)
         self.assertIn("(calibrated)", self.gout("record", "-t", "3s").stdout)
@@ -227,7 +227,7 @@ class RecordAlongTest(GoutTest):
 
         def start():
             proc = subprocess.Popen([*gout_cmd(), "record"], cwd=root, env=self.env(),
-                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
             self.assertIn("playing from there", proc.stdout.readline())
             time.sleep(1.2)
             return proc
@@ -446,7 +446,7 @@ class MonitorTest(GoutTest):
         """A stand-in for pw-loopback: writes its pid and arguments, then waits to be stopped."""
         script = self.tmp / "fake-loopback"
         log = self.tmp / "monitor.log"
-        script.write_text(f"#!/bin/sh\necho $$ \"$@\" > {log}\nexec sleep 30\n")
+        script.write_text(f"#!/bin/sh\necho $$ \"$@\" > {log}\nexec sleep 30\n", encoding="utf-8")
         script.chmod(0o755)
         self.more_env["GOUT_MONITOR"] = f"cmd:{script}"
         return log
@@ -475,7 +475,7 @@ class MonitorTest(GoutTest):
         log = self.fake_monitor()
         out = self.gout("record", "-t", "1s").stdout
         self.assertIn("you hear the input", out)
-        pid, *words = log.read_text().split()
+        pid, *words = log.read_text(encoding="utf-8").split()
         self.assertEqual(words[words.index("-l") + 1], "10")
         time.sleep(0.2)
         with self.assertRaises(ProcessLookupError):  # stopped with the take

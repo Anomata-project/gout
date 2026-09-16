@@ -101,7 +101,7 @@ class ProjectTest(GoutTest):
         self.gout("trim", "1", "-st", "500ms", "-et", "3s")
         self.gout("gain", "1", "-4")
         self.gout("set", "lufs", "-14")
-        self.assertEqual(json.loads((root / "gout.json").read_text()), self.dump())
+        self.assertEqual(json.loads((root / "gout.json").read_text(encoding="utf-8")), self.dump())
         before = self.gout("ls").stdout
         (root / "gout.db").unlink()
         self.gout("rebuild")
