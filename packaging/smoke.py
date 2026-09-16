@@ -24,6 +24,12 @@ def tone(path: Path, freq: float, seconds: float = 3.0, rate: int = 44100) -> No
 
 
 def main() -> None:
+    if os.name == "nt":  # gout prints ━ ▶ and braille waves; a pipe on Windows is cp1252 otherwise
+        for stream in (sys.stdout, sys.stderr):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except (AttributeError, ValueError):
+                pass
     gout = str(Path(sys.argv[1]).resolve()) if os.sep in sys.argv[1] or "/" in sys.argv[1] else shutil.which(sys.argv[1])
     work = Path(tempfile.mkdtemp(prefix="gout-smoke-"))
     env = dict(os.environ, GOUT_PLAYER="null", GOUT_ADDONS=str(work / "addons"), XDG_CONFIG_HOME=str(work / "config"))
