@@ -12,6 +12,7 @@ const GAP = 2;
 const TAKE_POLL_MS = 100;   // a take's peaks come every 0.1 s
 const MIN_MS_PER_PX = 0.02; // about one sample per px at 48 kHz, and closer
 const DIM = 0.55;
+const GRIP = 16;            // px at the top of a track's lane: dragging there moves the part (or the track)
 
 const wave = document.getElementById("wave");
 const over = document.getElementById("over");
@@ -394,6 +395,17 @@ function frame(now) {
     const dpr = window.devicePixelRatio || 1;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, over.width / dpr, over.height / dpr);
+    if (drag && drag.grip && drag.moved) {  // where the part would go: an outline on its lane
+      const lane = lanes.find(l => l.kind === "track" && l.track.n === drag.grip.track.n);
+      const x0 = toX(drag.grip.start + drag.delta), x1 = toX(drag.grip.end + drag.delta);
+      if (lane) {
+        ctx.fillStyle = "rgba(255,255,255,0.10)";
+        ctx.fillRect(x0, lane.y, x1 - x0, lane.h);
+        ctx.strokeStyle = "rgba(255,255,255,0.8)";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(Math.round(x0) + 0.5, lane.y + 0.5, Math.round(x1 - x0), lane.h - 1);
+      }
+    }
     if (selection) {
       const x0 = Math.max(LABEL, toX(selection.from)), x1 = Math.min(w, toX(selection.to));
       if (x1 > x0) {
@@ -454,6 +466,28 @@ function listen() {
 }
 
 // ---- keys and the mouse
+
+// what lies under the grip strip at x on a track's lane: a part, or the whole track when it is one piece
+function gripAt(lane, x, y) {
+  if (!lane || lane.kind !== "track" || y - lane.y >= GRIP) return null;
+  const t = lane.track, at = fromX(x);
+  if (!t.parts.length) {
+    const start = t.offset_ms + t.in_ms, end = t.offset_ms + t.out_ms;
+    return at >= start && at < end ? { track: t, label: null, start, end } : null;
+  }
+  for (const p of t.parts) {
+    const start = t.offset_ms + p.shift_ms + p.in_ms, end = start + p.out_ms - p.in_ms;
+    if (at >= start && at < end) return { track: t, label: p.label, start, end };
+  }
+  return null;
+}
+
+// where a moved start lands: with shift held, on the nearest beat (with a bpm) or tenth of a second
+function snapped(start, shift) {
+  if (!shift) return start;
+  const step = state.bpm ? 60000 / state.bpm : 100;
+  return Math.round(start / step) * step;
+}
 
 function cutSelection() {  // part TRACK at the selection's edges that fall inside the track and away from cuts
   if (!selection || selection.lane.kind !== "track") { note("select on a track first"); return; }
@@ -527,14 +561,30 @@ over.addEventListener("mousedown", (e) => {
   const rect = over.getBoundingClientRect();
   const x = e.clientX - rect.left, y = e.clientY - rect.top;
   const lane = y >= RULER ? lanes.find(l => y >= l.y && y < l.y + l.h) : null;
-  drag = { x: e.clientX, start: view.start, moved: false, lane, at: fromX(Math.max(LABEL, x)) };
+  drag = { x: e.clientX, start: view.start, moved: false, lane, at: fromX(Math.max(LABEL, x)),
+           grip: x >= LABEL ? gripAt(lane, x, y) : null, delta: 0 };
+});
+over.addEventListener("mousemove", (e) => {  // the grip strip shows a hand
+  if (drag) return;
+  const rect = over.getBoundingClientRect();
+  const x = e.clientX - rect.left, y = e.clientY - rect.top;
+  const lane = lanes.find(l => y >= l.y && y < l.y + l.h);
+  over.style.cursor = x >= LABEL && gripAt(lane, x, y) ? "grab" : "crosshair";
 });
 addEventListener("mousemove", (e) => {
   if (!drag) return;
   const dx = e.clientX - drag.x;
   if (Math.abs(dx) > 3) drag.moved = true;
   if (!drag.moved) return;
-  if (drag.lane) {  // a selection on that lane
+  if (drag.grip) {  // moving a part (or the track) along its lane
+    const rect = over.getBoundingClientRect();
+    const wanted = drag.grip.start + fromX(Math.max(LABEL, e.clientX - rect.left)) - drag.at;
+    drag.delta = Math.round(snapped(wanted, e.shiftKey) - drag.grip.start);
+    over.style.cursor = "grabbing";
+    document.getElementById("sel").textContent =
+      `move ${drag.grip.label || `track ${drag.grip.track.n}`} ${drag.delta >= 0 ? "+" : "-"}${(Math.abs(drag.delta) / 1000).toFixed(3)} s` +
+      `  to ${fmt(drag.grip.start + drag.delta)}`;
+  } else if (drag.lane) {  // a selection on that lane
     const rect = over.getBoundingClientRect();
     const now = fromX(Math.max(LABEL, e.clientX - rect.left));
     selection = { lane: drag.lane, from: Math.max(0, Math.min(drag.at, now)), to: Math.max(drag.at, now) };
@@ -546,6 +596,17 @@ addEventListener("mousemove", (e) => {
   }
 });
 addEventListener("mouseup", (e) => {
+  if (drag && drag.grip && drag.moved) {
+    const g = drag.grip;
+    if (Math.abs(drag.delta) >= 1) {
+      const by = `${drag.delta > 0 ? "+" : "-"}${Math.abs(drag.delta)}ms`;
+      send({ argv: g.label ? ["move", String(g.track.n), g.label, by] : ["move", String(g.track.n), by] });
+    }
+    showSelection();
+    over.style.cursor = "grab";
+    drag = null;
+    return;
+  }
   if (drag && !drag.moved) {
     const rect = over.getBoundingClientRect();
     const x = e.clientX - rect.left;

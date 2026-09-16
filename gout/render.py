@@ -506,7 +506,7 @@ KEY_SECTIONS = [
         ("ctrl-k", "cheat sheet on and off"),
         ("ctrl-g", "effect pictures on and off; the name line stays (eq N, comp N pick the track)"),
         ("ctrl-e", "the parameter sheet"),
-        ("ctrl-o", "the timeline in a browser window: real waveforms, zoom to single samples"),
+        ("ctrl-o", "the timeline in a browser window: real waveforms, zoom to single samples, select, drag parts"),
         ("tab shift-tab", "on an empty line: flip the cheat sheet"),
         ("ctrl-n ctrl-p", "the cheat sheet a line at a time"),
         ("pgup pgdn", "scroll the log"),

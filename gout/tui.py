@@ -510,7 +510,7 @@ class Tui:
                 low, high = (int(v) for v in message["play"])  # a selection, to its end
                 self.log.append(f"> play {fmt_ms(low)} {fmt_ms(high)}  (window)")
                 self.start_playing(low, to_ms=high)
-            elif isinstance(message.get("argv"), list) and message["argv"][:1] in (["part"], ["duplicate"], ["loop"]):
+            elif isinstance(message.get("argv"), list) and message["argv"][:1] in (["part"], ["duplicate"], ["loop"], ["move"]):
                 argv = [str(word) for word in message["argv"]]
                 if self.take is not None:
                     self.log.append(f"{argv[0]}: waits until the take ends")

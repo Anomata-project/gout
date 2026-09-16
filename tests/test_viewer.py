@@ -136,8 +136,10 @@ class ViewerTest(GoutTest):
             ui.viewer.keys.put({"argv": ["loop", "1000ms", "1500ms"]})
             ui.viewer.keys.put({"argv": ["duplicate", "1", "1000ms", "1500ms"]})
             ui.viewer.keys.put({"argv": ["rm", "1"]})  # not something the window may ask for
+            ui.viewer.keys.put({"argv": ["move", "1", "p2", "+300ms"]})  # a part dragged by its strip
             ui.tell_viewer()
             self.assertEqual([t["name"] for t in project.tracks()], ["steps", "steps-copy"])
+            self.assertEqual([p["shift_ms"] for p in project.tracks()[0]["parts"]], [0, 300])
             self.assertIn("> duplicate 1 1000ms 1500ms  (window)", ui.log)
             ui.tell_viewer()
             self.assertEqual(json.loads(ui.viewer.state)["loop"], {"from": 1000, "to": 1500, "on": True})

@@ -362,6 +362,11 @@ stops at its end, `l` loops it (`loop`; without a selection `l` switches the loo
 zooms to it. Each of these runs in the ui as the command it stands for, so it shows in the log and
 undo takes it back. The loop shows as a band on the window's ruler.
 
+The top strip of a track's lane, where the part names are, is a handle: dragging there moves that
+part along its track (`move 3 p2 +1.250s`), or the whole track when it is one piece. An outline shows
+where it will land and the bar says by how much; holding shift snaps its start to the nearest beat
+(with `set bpm`) or tenth of a second.
+
 gout serves the page from this computer only (127.0.0.1) at a link with a secret in it, so nothing
 else can read the project, and turns away requests for any other host name. It opens in Chromium,
 Chrome, Brave or Edge as an app window when one is installed, otherwise in the default browser.
