@@ -70,6 +70,55 @@ class PlayTest(GoutTest):
         self.assertIsNone(ui.player)
         self.assertFalse(ui.running)
 
+    def test_a_held_arrow_is_one_jump_and_one_restart(self):
+        # a held arrow repeats every 30 ms or so, and starting playback again takes about 0.2 s: one
+        # restart per press left gout busy for 20 s after 4 s of holding left. The presses already
+        # waiting are one jump now, from the terminal (both ways arrows arrive) and from the window.
+        import curses
+        import queue
+        from unittest import mock
+        root = self.project("song", "tone.wav")
+        self.gout("move", "1", "20s")  # 26 s long
+        os.environ["GOUT_PLAYER"] = "null"
+        os.environ["GOUT_ADDONS"] = str(self.addons)
+        project = gout_attr("project", "Project")(root)
+        screen = FakeScreen(30, 120)
+        ui = gout_attr("tui", "Tui")(project, screen)
+        ui.input = "play 15s"
+        ui.submit()
+        with mock.patch.object(ui, "start_playing", wraps=ui.start_playing) as restarts:
+            screen.queue = [curses.KEY_LEFT] * 20 + ["\x1b", "[", "D"] * 5 + ["x", curses.KEY_LEFT]
+            ui.handle(curses.KEY_LEFT)
+            self.assertEqual(restarts.call_count, 1)
+            self.assertLess(ui.play_position_ms(), 500)  # back to the start, and not before it
+            self.assertEqual(ui.pending, ["x", curses.KEY_LEFT])  # what came after waits its turn
+            ui.pending.clear()
+
+            ui.seek(15000)
+            restarts.reset_mock()
+            screen.queue = ["[", "D", "\x1b", "[", "D"]  # a terminal that sends the plain form
+            ui.handle("\x1b")
+            self.assertEqual(restarts.call_count, 1)
+            self.assertGreaterEqual(ui.play_position_ms(), 5000)  # two presses: 10 s back
+            self.assertLess(ui.play_position_ms(), 5500)
+            self.assertEqual(screen.queue + ui.pending, [])
+
+            class Window:  # what tell_viewer needs of the viewer
+                keys = queue.Queue()
+                def publish_state(self, *args): pass
+                def publish_play(self, *args): pass
+            ui.viewer = Window()
+            ui.seek(-10000)
+            restarts.reset_mock()
+            for key in ("right", "right", "right", "left"):  # a held right, then left: 10 s on
+                ui.viewer.keys.put({"key": key})
+            ui.tell_viewer()
+            self.assertEqual(restarts.call_count, 1)
+            self.assertGreaterEqual(ui.play_position_ms(), 10000)
+            self.assertLess(ui.play_position_ms(), 10500)
+        ui.viewer = None
+        ui.stop_playing(keep=False)
+
     def test_a_change_while_playing_is_heard_at_once(self):
         root = self.project("song", "tone.wav")  # 6 s
         self.gout("set", "head", "1s")

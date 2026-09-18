@@ -73,6 +73,7 @@ class Tui:
         self.player: Player | None = None
         self.playhead_ms = 0  # project time; stays where playback stopped
         self.play_back_to: int | None = None  # a stretch played to its end puts the playhead back here
+        self.pending: list = []  # keys already read from the terminal and not handled yet (arrow_repeats)
         self.render_proc: subprocess.Popen | None = None  # a background mix, in its own process
         self.render_state = ""       # the project state that render is making master.wav of
         self.seen_state = ""         # the state at the last look, to notice changes
@@ -384,7 +385,7 @@ class Tui:
                 else:
                     self.scr.timeout(50 if self.viewer else 100 if self.player or self.take else (250 if waiting else -1))
                 try:
-                    key = self.scr.get_wch()
+                    key = self.pending.pop(0) if self.pending else self.scr.get_wch()
                 except KeyboardInterrupt:
                     break
                 except curses.error:
@@ -489,12 +490,19 @@ class Tui:
         viewer.publish_play(take.position_ms() if take else self.play_position_ms(), bool(self.player or take),
                             None if take is None else {"at": take.at_ms, "peaks": take.peaks,
                                                         "label": "check" if take.checking else "rec"})
+        jump = 0  # left and right in a row are one jump: a held key repeats faster than playback restarts
         while True:
             try:
                 message = viewer.keys.get_nowait()
             except queue.Empty:
                 break
             key = message.get("key")
+            if key in ("left", "right") and self.take is None:
+                jump += -5000 if key == "left" else 5000
+                continue
+            if jump:
+                self.seek(jump)
+                jump = 0
             if key == "space":
                 if self.take is not None:
                     self.stop_take()
@@ -502,8 +510,6 @@ class Tui:
                     self.stop_playing()
                 else:
                     self.start_playing()
-            elif key in ("left", "right") and self.take is None:
-                self.seek(-5000 if key == "left" else 5000)
             elif key == "record":
                 self.handle("\x12")
             elif isinstance(message.get("play"), list) and len(message["play"]) == 2 and self.take is None:
@@ -524,6 +530,8 @@ class Tui:
                     self.start_playing(int(message["seek"]))
                 else:
                     self.playhead_ms = max(0, int(message["seek"]))
+        if jump:
+            self.seek(jump)
 
     # ---- recording: a take runs while the ui goes on drawing
 
@@ -704,7 +712,8 @@ class Tui:
             else:
                 self.start_playing()
         elif key in (curses.KEY_LEFT, curses.KEY_RIGHT) and not self.input and (self.player or self.playhead_ms):
-            self.seek(-5000 if key == curses.KEY_LEFT else 5000)  # empty line: move the playhead 5 s
+            steps = 1 + self.arrow_repeats(key)  # empty line: move the playhead 5 s a press
+            self.seek((-5000 if key == curses.KEY_LEFT else 5000) * steps)
         elif key == curses.KEY_LEFT:
             self.line.left()
         elif key in (curses.KEY_RIGHT, "\x06"):  # right, ctrl-f: move, or take the suggestion at the end
@@ -1058,6 +1067,34 @@ class Tui:
         except (curses.error, ValueError):
             return b""
 
+    def arrow_repeats(self, key: int) -> int:
+        """How many more presses of this arrow are waiting, taken off the input. A held arrow repeats
+        every 30 ms or so, and each press used to start playback again (about 0.2 s), so the presses
+        piled up and gout stayed busy long after the key was let go. The first other key, and
+        everything after it, waits in self.pending."""
+        import curses
+        self.scr.nodelay(True)
+        try:
+            while len(self.pending) < 4096:
+                try:
+                    self.pending.append(self.scr.get_wch())
+                except curses.error:
+                    break
+        finally:
+            self.scr.nodelay(False)
+        plain = {seq for seq, name in ESCAPE_KEYS.items() if getattr(curses, name) == key}
+        count = 0
+        while self.pending:
+            if self.pending[0] == key:
+                del self.pending[0]
+            elif (self.pending[0] == "\x1b" and all(isinstance(ch, str) for ch in self.pending[1:3])
+                  and "".join(self.pending[1:3]) in plain):
+                del self.pending[:3]
+            else:
+                break
+            count += 1
+        return count
+
     def read_escape(self) -> str:
         """The rest of an escape sequence curses did not recognise, or '' for a bare Esc."""
         import curses
@@ -1066,7 +1103,7 @@ class Tui:
         try:
             for _ in range(8):
                 try:
-                    ch = self.scr.get_wch()
+                    ch = self.pending.pop(0) if self.pending else self.scr.get_wch()
                 except curses.error:
                     break
                 if not isinstance(ch, str):
@@ -1199,7 +1236,7 @@ class Tui:
             else:
                 self.start_playing()
         elif key in (curses.KEY_LEFT, curses.KEY_RIGHT):
-            self.seek(-5000 if key == curses.KEY_LEFT else 5000)
+            self.seek((-5000 if key == curses.KEY_LEFT else 5000) * (1 + self.arrow_repeats(key)))
         elif key == curses.KEY_RESIZE:
             return
         else:
