@@ -178,7 +178,8 @@ class Engine:
         return self.frames
 
     def ended_by_itself(self) -> bool:
-        return not self.stopping and not self.full
+        """As Recorder's: the engine had ended before stop() was asked for, and not at max_frames."""
+        return not self.running() and not self.stopping and not self.full
 
     def complaint(self) -> str:
         if self.error:

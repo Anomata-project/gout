@@ -597,8 +597,9 @@ class Recorder:
         return self.frames
 
     def ended_by_itself(self) -> bool:
-        """The input stopped on its own: not stop(), not max_frames."""
-        return not self.stopping and not self.full
+        """The input stopped on its own: it had ended before stop() was asked for, and not at max_frames.
+        Asked before stop(), so a take stopped with ctrl-c, ctrl-r or space is still running here."""
+        return not self.running() and not self.stopping and not self.full
 
     def complaint(self) -> str:
         """What the capture program said, or the error that stopped the take."""

@@ -135,6 +135,7 @@ class RecordTest(GoutTest):
         out, err = proc.communicate(timeout=20)
         self.assertEqual(proc.returncode, 0, err)
         self.assertIn("silent", out)  # the null input
+        self.assertNotIn("by itself", out)  # ctrl-c stopped it
         track = self.dump()["tracks"][0]
         self.assertEqual(track["offset_ms"], 2000)
         self.assertGreater(track["length_ms"], 900)
@@ -146,6 +147,38 @@ class RecordTest(GoutTest):
         self.assertTrue(crashed.exists())
         self.assertGreater(duration(crashed), 0.4)  # the header was brought up to date as it went
         self.assertIn("rec-2", self.gout("scan").stdout)
+
+    @unittest.skipIf(os.name == "nt", "signals")
+    def test_only_an_input_that_really_stopped_is_said_to_have_stopped_by_itself(self):
+        # a take stopped with ctrl-r, space or ctrl-c said "the input stopped by itself", with whatever
+        # the engine last wrote to stderr (an ALSA underrun, 2026-09-18): it was asked before the stop
+        root = self.project("song", "tone.wav")
+        from test_ui import FakeScreen
+        from unittest import mock
+        env = {"GOUT_ADDONS": str(self.addons), "GOUT_RECORDER": "loopback:0", "GOUT_MONITOR": "none",
+               "GOUT_PLAYER": "null"}
+        with mock.patch.dict(os.environ, env):
+            project = gout_attr("project", "Project")(root)
+            ui = gout_attr("tui", "Tui")(project, FakeScreen(30, 140))
+            for stop in ("\x12", " "):  # ctrl-r, space
+                ui.handle("\x12")
+                time.sleep(0.8)
+                ui.check_take()
+                self.assertIsNotNone(ui.take)
+                ui.handle(stop)
+                self.assertIsNone(ui.take)
+                self.assertTrue(any("in time with what played" in line for line in ui.log[-4:]), ui.log[-6:])
+                self.assertFalse(any("by itself" in line for line in ui.log), ui.log[-6:])
+            ui.handle("\x12")
+            time.sleep(0.8)
+            ui.take.recorder.proc.kill()  # the engine dies under the take
+            deadline = time.monotonic() + 10
+            while ui.take is not None and time.monotonic() < deadline:
+                ui.check_take()
+                time.sleep(0.05)
+            self.assertIsNone(ui.take)
+            self.assertTrue(any("the input stopped by itself" in line for line in ui.log), ui.log[-6:])
+            self.assertEqual([t["name"] for t in project.tracks()], ["tone", "rec", "rec-2", "rec-3"])
 
     def test_inputs_lists_and_picks_for_this_computer(self):
         out = self.gout("inputs").stdout
@@ -237,6 +270,7 @@ class RecordAlongTest(GoutTest):
         out, err = proc.communicate(timeout=30)
         self.assertEqual(proc.returncode, 0, err)
         self.assertIn("in time with what played", out)
+        self.assertNotIn("by itself", out)
         self.assertGreater(self.tracks()["rec"]["length_ms"], 900)
 
         proc = start()
