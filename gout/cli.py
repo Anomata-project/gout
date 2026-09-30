@@ -39,6 +39,9 @@ from .commands import (
     cmd_set,
     cmd_solo,
     cmd_sync,
+    cmd_interp,
+    cmd_opacity,
+    cmd_fade,
     cmd_warp,
     cmd_stats,
     cmd_stems,
@@ -59,7 +62,7 @@ BASE_PROJECT_COMMANDS = {
     "mute": cmd_mute, "solo": cmd_solo, "gain": cmd_gain, "pan": cmd_pan, "fx": cmd_fx,
     "set": cmd_set, "stats": cmd_stats, "mix": cmd_mix, "undo": cmd_undo, "dump": cmd_dump,
     "saveas": cmd_saveas, "stems": cmd_stems, "import": cmd_import,
-    "view": cmd_view, "sync": cmd_sync, "warp": cmd_warp, "ui": cmd_ui, "play": cmd_play, "record": cmd_record, "video": cmd_video,
+    "view": cmd_view, "sync": cmd_sync, "warp": cmd_warp, "interp": cmd_interp, "opacity": cmd_opacity, "fade": cmd_fade, "ui": cmd_ui, "play": cmd_play, "record": cmd_record, "video": cmd_video,
 }
 
 

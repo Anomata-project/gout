@@ -42,7 +42,7 @@ ESCAPE_KEYS = {"[A": "KEY_UP", "OA": "KEY_UP", "[B": "KEY_DOWN", "OB": "KEY_DOWN
                "[F": "KEY_END", "OF": "KEY_END", "[4~": "KEY_END", "[8~": "KEY_END", "[3~": "KEY_DC"}
 
 # commands whose first word is a track (or master); the rest take files where they take anything
-TRACK_FIRST = {"move", "part", "trim", "rm", "mute", "solo", "gain", "pan", "fx", "sync", "warp"}
+TRACK_FIRST = {"move", "part", "trim", "rm", "mute", "solo", "gain", "pan", "fx", "sync", "warp", "interp", "opacity", "fade"}
 UI_WORDS = ("quit", "clear", "split", "sheet", "view", "help")
 HISTORY_FILE = ".gout/ui-history"
 IDLE_RENDER_SECONDS = 1.5  # how long nothing must change before the ui renders in the background

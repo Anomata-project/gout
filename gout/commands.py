@@ -265,7 +265,8 @@ def cmd_ls(project: Project, args: Args) -> None:
             v = t["video"]
             print(f"{t['n']:>4}  {t['name']:<16} {'video':<5} {'-':>2}  {fmt_ms(start):<12} "
                   f"{fmt_ms(end - start):<12} {fmt_ms(t['length_ms']):<12} {trim:<27} {'-':<7} {'-':<4} "
-                  f"{v['width']}x{v['height']} {v['fps']:.3g} fps{video_state(t)}")
+                  f"{v['width']}x{v['height']} {v['fps']:.3g} fps {v['mode']}"
+                  + (f" {v['opacity'] * 100:g}%" if v["opacity"] < 1 else "") + video_state(t))
             continue
         flags = ("M" if t["mute"] else "-") + ("S" if t["solo"] else "-")
         if not is_heard(t, any_solo):
@@ -1629,7 +1630,9 @@ VIDEO_USAGE = ("gout video IMAGE [-T] [-o FILE]                          a still
                "       gout video SCREEN [CHOICE... | all] [-e 10s] [-c IMAGE] [-T] [-o FILE]  a screen moving with the song,\n"
                "       e.g. gout video fractal 3 1 0 -c cover.jpg  (the cover first, a new fractal every 10 s on a drum hit;\n"
                "       gout video zoom 3 dives into preset 3 for the whole song;\n"
-               "       the title and artist from set title / set artist at the start unless -T)")
+               "       the title and artist from set title / set artist at the start unless -T)\n"
+               "       gout video [TRACK...] [-m nearest|blend|flow] [--preview] [-r FPS] [-s WxH] [--flow-size PX] [-o FILE]\n"
+               "       the video tracks (all of them, or those named) laid over each other with the song")
 
 
 def cmd_video(project: Project, args: Args) -> None:
@@ -1644,7 +1647,22 @@ def cmd_video(project: Project, args: Args) -> None:
     every = args.value("--every", "-e")
     cover = args.value("--cover", "-c")
     no_title = args.flag("--no-title", "-T")
-    words = args.positionals(VIDEO_USAGE, 1)
+    tracks_mode, fps_text, size_text = args.value("--mode", "-m"), args.value("--fps", "-r"), args.value("--size", "-s")
+    flow_size, preview = args.value("--flow-size"), args.flag("--preview")
+    words = args.positionals(VIDEO_USAGE, 0)
+    pictures = project.videos()
+    chosen = [find_video(pictures, w) for w in words]
+    if (not words and pictures) or (words and all(chosen)):
+        if cover or every or no_title:
+            die("-c, -e and -T are for screens and images, not for video tracks")
+        video_of_tracks(project, args, chosen if words else pictures, out, tracks_mode, fps_text, size_text, flow_size, preview)
+        return
+    if not words:
+        die(f"usage: {VIDEO_USAGE}")
+    if any(chosen):
+        die(f"{words[[i for i, c in enumerate(chosen) if c][0]]} is a video track and {words[0]} is not: name video tracks, or an image or a screen")
+    if tracks_mode or fps_text or size_text or flow_size or preview:
+        die("-m, -r, -s, --flow-size and --preview are for video tracks; an image or a screen is 1920x1080 at 25 fps")
     target = Path(out).expanduser() if out else project.root / "master.mp4"
     image = Path(words[0]).expanduser()
     screen = None if image.is_file() else screen_named(words[0])
@@ -1741,6 +1759,60 @@ def cmd_video(project: Project, args: Args) -> None:
         die(str(exc) if isinstance(exc, GoutError) else "video stopped; nothing written")
     progress.close()
     encoder.finish()
+    print(f"      {target}  {fmt_size(target.stat().st_size)}")
+
+
+def find_video(pictures: list[dict], word: str) -> dict | None:
+    """The video track a word names, by number or by name, or None."""
+    return next((t for t in pictures if word == str(t["n"]) or word == t["name"]), None)
+
+
+def video_of_tracks(project: Project, args: Args, videos: list[dict], out: str | None, mode: str | None,
+                    fps_text: str | None, size_text: str | None, flow_size: str | None, preview: bool) -> None:
+    """An mp4 of video tracks with the song: each through its time map, laid over each other, the
+    last on top, with its fades and opacity."""
+    from .video import FPS
+    from .vrender import FLOW_W, output_size, render
+    videos = sorted({t["n"]: t for t in videos}.values(), key=lambda t: t["n"])
+    if mode is not None and mode not in VIDEO_MODES:
+        die(f"-m {mode}: one of {', '.join(VIDEO_MODES)}")
+    try:
+        fps = float(fps_text) if fps_text else float(FPS)
+    except ValueError:
+        die(f"-r {fps_text}: a number of frames per second")
+    if not 1 <= fps <= 120:
+        die("-r: between 1 and 120 frames per second")
+    flow_width = int(number(flow_size, "--flow-size", 160, 4096)) if flow_size else FLOW_W
+    short = [t for t in videos if t["video"]["warp"] and
+             (t["video"]["want_ms"][1] if len(t["video"]["want_ms"]) == 2 else 0) - t["video"]["warp"][-1][0] >= 40]
+    for t in short:
+        gap = t["video"]["want_ms"][1] - t["video"]["warp"][-1][0]
+        print(f"video track {t['n']} {t['name']} is short by {gap / 1000:.1f} s: gout sync {t['n']} --loop | --pingpong | --duplicate"
+              f" | --add FILE (or warp {t['n']} clear, or sync it to a shorter stretch)")
+    if short:
+        die("a video that ends before the music does is not made until you choose what fills the rest")
+    if not project.master_is_current():
+        print(f"video rendering {MASTER_WAV} first")
+        mix(project)
+    if not project.master.exists():
+        die("nothing audible to make a video of")
+    seconds = probe(project.master)["duration"]
+    size = output_size(videos, size_text, preview)
+    if preview and not mode:
+        mode = "nearest"
+    target = Path(out).expanduser() if out else project.root / ("master-preview.mp4" if preview else "master.mp4")
+    modes = sorted({mode or t["video"]["mode"] for t in videos})
+    print(f"video {target.name}  {size[0]}x{size[1]} {fps:g} fps  {fmt_ms(seconds * 1000)}  "
+          f"{len(videos)} video track{'' if len(videos) == 1 else 's'}: {', '.join(t['name'] for t in videos)}  "
+          f"({'/'.join(modes)}{', preview' if preview else ''})  (ctrl-c stops)", flush=True)
+    if "flow" in modes:
+        print(f"      flow is slow: about 0.2 s a frame at 960 px wide where it was measured (working at {flow_width} px here,"
+              f" --flow-size changes that); the bar shows the time left once it is going", flush=True)
+    try:
+        render(project, videos, project.master, target, seconds=seconds, head_ms=int(setting(project, "head")), fps=fps,
+               size=size, mode=mode, preview=preview, flow_width=flow_width)
+    except KeyboardInterrupt:
+        die("video stopped; nothing written")
     print(f"      {target}  {fmt_size(target.stat().st_size)}")
 
 
@@ -2069,6 +2141,76 @@ def copy_video_track(project: Project, t: dict, start_ms: int) -> dict:
           f"  at {fmt_ms(start_ms)}")
     return project.track(str(track["n"]))
 
+
+
+def video_tracks_named(project: Project, word: str, what: str) -> list[dict]:
+    """The video track a command names, or all of them for `all`."""
+    if word.lower() == "all":
+        found = project.videos()
+        if not found:
+            die("there are no video tracks yet — gout add CLIP.mp4")
+        return found
+    t = project.track(word)
+    if not is_video(t):
+        die(f"track {t['n']} {t['name']} is not a video track: {what} is for pictures")
+    return [t]
+
+
+def cmd_interp(project: Project, args: Args) -> None:
+    words = args.positionals("gout interp TRACK|all [nearest | blend | flow]", 1, 2)
+    targets = video_tracks_named(project, words[0], "interp")
+    if len(words) == 1:
+        for t in targets:
+            print(f"interp {t['n']:>2}  {t['name']:<16} {t['video']['mode']}")
+        print("       nearest: the frame nearest in time (fast, steppy when slowed); blend: frames mixed by how near they are;"
+              " flow: motion interpolation (slow, looks best on real motion)")
+        return
+    mode = words[1].lower()
+    if mode not in VIDEO_MODES:
+        die(f"{words[1]!r}: one of {', '.join(VIDEO_MODES)}")
+    project.record(f"interp {words[0]} {mode}")
+    for t in targets:
+        project.video_set(t["file"], mode=mode)
+        print(f"interp {t['n']:>2}  {t['name']:<16} {mode}")
+
+
+def cmd_opacity(project: Project, args: Args) -> None:
+    words = args.positionals("gout opacity TRACK|all [50% | 0.5 | 100]   (a fraction up to 1, else a percentage)", 1, 2)
+    targets = video_tracks_named(project, words[0], "opacity")
+    if len(words) == 1:
+        for t in targets:
+            print(f"opacity {t['n']:>2}  {t['name']:<16} {t['video']['opacity'] * 100:g}%")
+        return
+    text = words[1].strip()
+    try:
+        value = float(text.removesuffix("%"))
+    except ValueError:
+        die(f"{text!r}: expected 50%, 0.5 or 100")
+    value = value / 100 if text.endswith("%") or value > 1 else value
+    if not 0 <= value <= 1:
+        die("opacity is between 0% and 100%")
+    project.record(f"opacity {words[0]} {text}")
+    for t in targets:
+        project.video_set(t["file"], opacity=value)
+        print(f"opacity {t['n']:>2}  {t['name']:<16} {value * 100:g}%")
+
+
+def cmd_fade(project: Project, args: Args) -> None:
+    words = args.positionals("gout fade TRACK|all [IN [OUT]]   (times like 500ms or 2s; 0 is a cut; one time is both)", 1, 3)
+    targets = video_tracks_named(project, words[0], "fade")
+    if len(words) == 1:
+        for t in targets:
+            v = t["video"]
+            print(f"fade  {t['n']:>2}  {t['name']:<16} in {fmt_ms(v['fade_in_ms'])}  out {fmt_ms(v['fade_out_ms'])}")
+        return
+    fade_in = parse_ms(words[1])
+    fade_out = parse_ms(words[2]) if len(words) == 3 else fade_in
+    if fade_in < 0 or fade_out < 0:
+        die("a fade cannot be negative")
+    project.record(f"fade {' '.join(words)}")
+    for t in targets:
+        project.video_set(t["file"], fade_in_ms=fade_in, fade_out_ms=fade_out)
+        print(f"fade  {t['n']:>2}  {t['name']:<16} in {fmt_ms(fade_in)}  out {fmt_ms(fade_out)}")
 
 
 def fmt_point(t: dict, n: int, point: list[int], ratio: float | None) -> str:

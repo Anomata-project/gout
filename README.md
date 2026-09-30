@@ -79,6 +79,9 @@ name (a unique prefix will do). `-N` / `--no-mix` on any change skips an automat
 | `new` | `n` | `NAME [-R HZ]` | create a project (48 kHz by default) |
 | `add` | `a` | `FILE... [-a TIME] [-n NAME]` | add tracks at `TIME` (default 0); a video file becomes a video track, see Video tracks |
 | `sync` | `sy` | `VIDEO [-st T] [-et T] [--slow K] [--fast K] [--depth D] [--loop \| --pingpong \| --once]` | fit a video track to the music, see Video tracks |
+| `interp` | `ip` | `VIDEO\|all [nearest \| blend \| flow]` | how frames between the picture's own are made |
+| `opacity` | `op` | `VIDEO\|all [50%]` | how much of a picture shows over what is below it |
+| `fade` | `fd` | `VIDEO\|all [IN [OUT]]` | fade in and out, 500 ms by default, 0 is a cut |
 | `warp` | `wp` | `VIDEO [add T SRC \| mv N T \| src N SRC \| rm N \| reset \| clear]` | the map's warp points, and editing them |
 | `scan` | `sc` | | register wav/mp3 and video files you copied into `master/` yourself; reports missing ones |
 | `ls` | `l` | | list tracks, positions, trims, flags |
@@ -144,6 +147,47 @@ it like any track, and `move all` moves the pictures with the sound. A picture c
 hear, so adding, moving or trimming one never makes `master.wav` out of date. Commands that only
 make sense for sound (`gain`, `pan`, `mute`, `solo`, `part`, `duplicate`, the effects) say
 so when given a video track, and `trim -H` refuses: gout does not rewrite a picture.
+
+### Making the video
+
+```sh
+gout video                           # every video track with the song, to master.mp4
+gout video --preview                 # quick: nearest frame, at most 640 wide
+gout interp 2 flow && gout video 2   # motion interpolation for track 2 only
+gout opacity 3 60% && gout fade 3 2s # a second picture over the first, fading in over 2 s
+```
+
+`gout video` with no name makes an mp4 of all the video tracks, with `master.wav` under them (rendered
+first when it is out of date). Each picture is shown through its time map; where there is none it
+plays as it is, from where it lies. The tracks are laid over black and over each other, the
+last in the list on top, so **two pictures that overlap both show**, as two sounds that overlap
+both play. A clip fades in over what is below it and fades out at its end (500 ms by default, `fade`
+changes it, `fade 2 0` is a hard cut), and `opacity` lets what is below through. Where a track above
+covers the end of a clip, the clip does not fade out: the one above dissolves in over it, so a
+crossfade is just two clips that overlap. Where nothing shows, the frame is black. A sync that
+gives a picture a copy or another file after it (`--duplicate`, `--add`) overlaps them by the
+fade, so the join dissolves.
+
+The size is the pictures' own when they all share one, otherwise 1920x1080, and never more (`-s
+WxH` says); 25 frames a second, or `-r`. `--preview` is nearest-frame, at most 640 wide and quick
+to make, and goes to `master-preview.mp4`. Title and artist are not drawn on video tracks.
+
+What happens between the picture's own frames, when a stretch is slowed down, is each track's
+`interp`: `nearest` shows the frame nearest in time (quick, and steppy when slowed), `blend` mixes the
+frames on either side by how near they are (the default; measured about 5% more than nearest for
+the same video) and `flow` interpolates motion (ffmpeg's `minterpolate`). Blending often suits
+morphing pictures better than flow, which can tear where nothing moves in a way it can follow.
+**Flow is slow**: measured here, 0.18 s for every output frame at 960 px wide and 0.68 s at
+1920x1080, which is about 22 minutes for five minutes of video at 960. It works at most `--flow-size`
+wide (960 by default) and scales up again; ctrl-c stops and nothing is written. `-m` picks a mode for
+one render without changing the tracks.
+
+It is one ffmpeg run: the time map becomes a single `setpts` expression per picture, then the
+interpolation, the fades and an overlay, and the raw picture is never re-encoded except for
+the cycle of a loop or bounce, which is made once under `.gout/video/` and reused. Checked against
+a picture whose every frame is one step lighter than the one before: the frame on screen is where
+the map says within one source frame in nearest mode, and on average exactly in blend.
+A picture that is short of the music is not rendered, and `video` names the choices.
 
 ### Fitting a picture to the music
 

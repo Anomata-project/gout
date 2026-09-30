@@ -292,7 +292,7 @@ BASE_COMMANDS = {
     "new": ("n",), "cheat": ("c",), "help": ("h", "?"), "ui": ("tui",), "cut": (), "addons": (),
     "quit": ("q", "exit"), "clear": ("cl",), "split": ("sp",), "sheet": ("sh",), "version": ("-V",),
     "play": ("pl",), "stop": (), "colors": ("colours",), "record": ("rec", "rc"), "inputs": ("in",),
-    "video": ("vd",), "sync": ("sy",), "warp": ("wp",), "part": ("pt",), "window": ("wd",), "loop": ("lo",), "duplicate": ("dup",),
+    "video": ("vd",), "sync": ("sy",), "warp": ("wp",), "interp": ("ip",), "opacity": ("op",), "fade": ("fd",), "part": ("pt",), "window": ("wd",), "loop": ("lo",), "duplicate": ("dup",),
 }
 
 

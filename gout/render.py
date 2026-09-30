@@ -408,9 +408,6 @@ COMMAND_SECTIONS = [
     ("TRACKS", "", [
         ("add", "a", "FILE... [-a TIME] [-n NAME]", "copy files into master/ (other formats become wav)"),
         ("add", "a", "CLIP.mp4 [-a TIME]", "a video track: a picture, silent in the mix"),
-        ("sync", "sy", "VIDEO [--slow 4] [--depth .6]", "fit a video to the music: a time map, busy to busy"),
-        ("", "", "VIDEO --loop | --pingpong | --duplicate | --add F", "a video too short: you choose how to fill it"),
-        ("warp", "wp", "VIDEO [add T SRC | mv N T | rm N | reset]", "see and edit the map's points"),
         ("scan", "sc", "", "register files you put in master/ yourself"),
         ("ls", "l", "", "list the tracks"),
         ("move", "m", "TRACK +1s | -500ms | 1:30", "later, earlier, or place at a time"),
@@ -424,6 +421,15 @@ COMMAND_SECTIONS = [
         ("rm", "r", "TRACK [-D]", "drop the track; -D deletes its file"),
         ("rm", "r", "TRACK PART", "drop a part"),
         ("duplicate", "dup", "TRACK FROM TO [-a AT]", "that stretch on a new track, same time"),
+    ]),
+    ("VIDEO TRACKS", "a picture with a position and trims, silent in the mix", [
+        ("sync", "sy", "VIDEO [--slow 4] [--depth .6]", "fit a video to the music: a time map, busy to busy"),
+        ("", "", "VIDEO --loop | --pingpong | --duplicate | --add F", "a video too short: you choose how to fill it"),
+        ("warp", "wp", "VIDEO [add T SRC | mv N T | rm N | reset]", "see and edit the map's points"),
+        ("interp", "ip", "VIDEO nearest | blend | flow", "how frames between the picture's own are made"),
+        ("opacity", "op", "VIDEO 50%", "how much shows over what is below"),
+        ("fade", "fd", "VIDEO [IN [OUT]]", "fade in and out, 500 ms by default; 0 is a cut"),
+        ("video", "vd", "[VIDEO] [--preview] [-m MODE]", "an mp4 of the video tracks with the song"),
     ]),
     ("MIXER", "", [
         ("mute", "mu", "TRACK [PART] [on|off]", "mute; mute all off"),

@@ -74,6 +74,28 @@ PROJECT
                                   it; -T leaves them out. 1920x1080 25 fps, H.264 and AAC 320k, to
                                   master.mp4 unless -o. A fractal video takes about 3 times the song's
                                   length on 4 cores, a zoom up to half as long again
+  gout video vd [TRACK...] [-m nearest|blend|flow] [--preview] [-r FPS] [-s WxH] [--flow-size PX] [-o FILE]
+                                  the video tracks (all, or those named) with {MASTER_WAV} under them, an mp4
+                                  (H.264, AAC 320k) to master.mp4 unless -o: every picture through its time
+                                  map (sync, warp), laid over black and each other, the last track on top;
+                                  where a clip starts over another it fades in over it, and fades at its
+                                  ends over black (fade, opacity). -m overrides the tracks' modes for this
+                                  render: nearest = the frame nearest in time, steppy when slowed down;
+                                  blend = frames mixed by how near they are (cheap: a few percent more than
+                                  nearest); flow = motion interpolation (slow: about 0.2 s a frame at 960 px
+                                  wide, it works at --flow-size, default 960, and scales back up). --preview:
+                                  nearest, at most 640 wide, quick to make, master-preview.mp4. Size: the
+                                  pictures' own when they share one, else 1920x1080, never more; 25 fps or
+                                  -r. A picture that is short of the music is not rendered until you choose
+                                  how to fill it (sync). A loop or bounce is read from a file made once
+                                  under .gout/video/; the pictures themselves are never rewritten
+  gout interp ip TRACK|all [nearest | blend | flow]
+                                  how frames between the picture's own are made when it is slowed down:
+                                  per video track, blend by default
+  gout opacity op TRACK|all [50% | 0.5]  how much of a picture shows over what is below it (100% default)
+  gout fade  fd TRACK|all [IN [OUT]]     fade in and out of a clip over black or what is below, 500 ms
+                                  default; one time is both, 0 is a cut. A clip under another does not
+                                  fade out where the other covers its end: the one above fades in over it
   gout view  v                    print the timeline once: the master first, then each track as a
                                   waveform (braille dots from the real highest and lowest points)
   gout colors [--init [--project]]  the 25 colour and layout settings from color.json: which file is in
