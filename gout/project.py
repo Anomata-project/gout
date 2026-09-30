@@ -537,6 +537,19 @@ class Project:
                 item.pop("id", None)
         return hashlib.sha1(json.dumps(snap, sort_keys=True).encode()).hexdigest()
 
+    def video_fingerprint(self) -> str:
+        """A hash of the video tracks and their files: the window redraws when it changes. They are not
+        in state_fingerprint, which is what master.wav sounds like."""
+        items = []
+        for t in self.videos():
+            try:
+                st = (self.tracks_dir / t["file"]).stat()
+                t["file_stat"] = [st.st_size, st.st_mtime]
+            except OSError:
+                t["file_stat"] = None
+            items.append(t)
+        return hashlib.sha1(json.dumps(items, sort_keys=True).encode()).hexdigest()
+
     def master_is_current(self) -> bool:
         return self.master.exists() and self.get("master_state") == self.state_fingerprint()
 

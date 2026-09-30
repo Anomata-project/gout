@@ -141,6 +141,9 @@ class Viewer:
         self.levels: dict[str, list[array]] = {}
         self.levels_lock = threading.Lock()
         self.known_channels: dict[Path, int] = {}
+        self.plans: dict[str, dict] = {}      # video file -> how its thumbnail strip is cut
+        self.strips: dict[str, Path] = {}
+        self.strips_lock = threading.Lock()
         self.stopping = False
         viewer = self
 
@@ -180,6 +183,7 @@ class Viewer:
 
     def publish_state(self, state: dict, files: dict[str, Path]) -> None:
         self.files = dict(files)
+        self.plans = {v["file"]: v["thumbs"] for v in state.get("videos", [])}
         self.version += 1
         self.state = json.dumps({**state, "version": self.version}).encode()
 
@@ -190,6 +194,18 @@ class Viewer:
         if path not in self.known_channels:
             self.known_channels[path] = channels_of(path)
         return self.known_channels[path]
+
+    def thumbs(self, name: str) -> bytes | None:
+        """A video file's strip of thumbnails, made on the first request (a few seconds for a long file)."""
+        from .vthumbs import strip
+        path, plan = self.files.get("video/" + name), self.plans.get(name)
+        if path is None or plan is None:
+            return None
+        with self.strips_lock:
+            try:
+                return strip(self.root, path, plan).read_bytes()
+            except Exception:  # noqa: BLE001 - a file ffmpeg cannot read is a missing picture, not a crash
+                return None
 
     def peaks(self, name: str) -> list[array]:
         path = self.files.get(name)
@@ -256,6 +272,12 @@ class RequestHandler(BaseHTTPRequestHandler):
                 return
             head = array("I", [self.owner.rate, PEAK_BLOCK, len(levels), *[len(level) // 2 for level in levels]])
             self.reply(head.tobytes() + b"".join(level.tobytes() for level in levels), "application/octet-stream")
+        elif url.path == "/thumbs":
+            data = self.owner.thumbs(query.get("file", [""])[0])
+            if data is None:
+                self.send_error(404, "no such picture")
+                return
+            self.reply(data, "image/jpeg")
         elif url.path == "/samples":
             path = self.owner.files.get(query.get("file", [""])[0])
             try:
@@ -319,9 +341,10 @@ class RequestHandler(BaseHTTPRequestHandler):
 def project_state(project, theme: dict) -> tuple[dict, dict[str, Path]]:
     """What the page draws, from the ui's thread (it reads the database): the tracks with their parts,
     the master, colours from color.json. And the files the page may ask for, by name."""
-    from .model import audible, is_heard, part_label, timeline
+    from .model import audible, is_heard, part_label, timeline, video_points
     from .settings import setting
     from .video import rgb
+    from .vthumbs import plan
 
     def hex_of(value) -> str:
         return "#%02x%02x%02x" % rgb(value)
@@ -349,13 +372,30 @@ def project_state(project, theme: dict) -> tuple[dict, dict[str, Path]]:
                     "parts": [{"label": part_label(t["parts"], p), "in_ms": p["in_ms"], "out_ms": p["out_ms"],
                                "shift_ms": p["shift_ms"], "mute": bool(p["mute"]), "gain_db": p["gain_db"],
                                "fx": [item["kind"] for item in p.get("fx", [])]} for p in t["parts"]]})
+    pictures = []
+    for i, t in enumerate(project.all_tracks()):
+        if t["kind"] != "video":
+            continue
+        v = t["video"]
+        a, b = audible(t)
+        path = project.tracks_dir / t["file"]
+        files["video/" + t["file"]] = path
+        start, end = timeline(t)
+        wanted = t["offset_ms"] + v["want_ms"][1] if v["warp"] and len(v["want_ms"]) == 2 else end
+        pictures.append({"n": t["n"], "name": t["name"], "file": t["file"], "stamp": stamp(path), "color": i,
+                         "offset_ms": t["offset_ms"], "in_ms": a, "out_ms": b, "length_ms": t["length_ms"],
+                         "start_ms": start, "end_ms": end, "short_ms": max(0, wanted - end),
+                         "synced": bool(v["warp"]), "points": video_points(t), "tail": v["tail"],
+                         "mode": v["mode"], "opacity": v["opacity"], "fade_in_ms": v["fade_in_ms"],
+                         "fade_out_ms": v["fade_out_ms"], "fps": v["fps"], "width": v["width"], "height": v["height"],
+                         "thumbs": plan(t["length_ms"], v["width"], v["height"])})
     master = None
     master_ms = int(project.get("master_ms") or 0)
     if project.master.exists() and master_ms:
         files["master.wav"] = project.master
         master = {"file": "master.wav", "stamp": stamp(project.master), "length_ms": master_ms,
                   "head_ms": int(setting(project, "head")), "current": project.master_is_current()}
-    ends = [timeline(t)[1] for t in tracks] + ([master_ms - master["head_ms"]] if master else [])
+    ends = [timeline(t)[1] for t in tracks] + [p["end_ms"] for p in pictures] + ([master_ms - master["head_ms"]] if master else [])
     bpm = setting(project, "bpm")
     colours = {name: hex_of(theme[name]) for name in ("master_wave", "track_label", "muted_wave", "trimmed_wave",
                                                      "center_line", "ruler", "ruler_labels", "playhead", "gap_line")}
@@ -364,5 +404,5 @@ def project_state(project, theme: dict) -> tuple[dict, dict[str, Path]]:
     stretch = loop_range(project, every=True)
     state = {"name": project.get("name"), "rate": project.rate, "bpm": float(bpm) if bpm else None,
              "loop": None if stretch is None else {"from": stretch[0], "to": stretch[1], "on": project.get("ui_loop_on") == "on"},
-             "length_ms": max(ends, default=0), "master": master, "tracks": out, "colours": colours}
+             "length_ms": max(ends, default=0), "master": master, "tracks": out, "videos": pictures, "colours": colours}
     return state, files

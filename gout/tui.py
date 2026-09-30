@@ -483,7 +483,8 @@ class Tui:
         if now - self.viewer_checked > 0.4:
             self.viewer_checked = now
             state = (self.project.state_fingerprint() + str(self.project.master_is_current())
-                     + (self.project.get("ui_loop") or "") + (self.project.get("ui_loop_on") or ""))
+                     + (self.project.get("ui_loop") or "") + (self.project.get("ui_loop_on") or "")
+                     + self.project.video_fingerprint())
             if state != self.viewer_state:
                 self.viewer_state = state
                 viewer.publish_state(*project_state(self.project, self.theme))

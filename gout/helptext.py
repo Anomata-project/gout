@@ -21,7 +21,8 @@ PROJECT
                                   (kept per project), tab completes commands, tracks, presets and file
                                   names from where gout was started, right arrow takes the grey
                                   suggestion after the cursor; ctrl-o (or window) opens the timeline in a
-                                  browser window, in high definition
+                                  browser window, in high definition (video tracks too: thumbnails through
+                                  the time map, the warp points, what is short; dragging one moves it)
   gout play  pl [FROM [TO]] [-r]  play from FROM (1:30, 45s), to TO when given: master.wav when it matches the project,
                                   otherwise the project streamed live, effects and all, at once
                                   (-r renders first instead); ctrl-c stops. In the ui: space on an

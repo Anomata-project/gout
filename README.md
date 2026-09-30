@@ -496,6 +496,19 @@ part along its track (`move 3 p2 +1.250s`), or the whole track when it is one pi
 where it will land and the bar says by how much; holding shift snaps its start to the nearest beat
 (with `set bpm`) or tenth of a second.
 
+**Video tracks** have a lane of their own under the sound, 64 px tall, with thumbnails. A picture is
+shown through its time map: each tile is the moment of the picture that the map puts at that place on the
+timeline, so a slowed stretch shows the same picture for longer and you can see the sync. The
+numbered ticks are the warp points (the numbers `warp` lists); a thin bar along the bottom edge is how
+slow each stretch is (brighter is slower, green is faster than the file). A picture with no map is
+drawn as it lies: the whole file dim, and what its soft trim keeps bright. Where a picture ends before
+the music does, the missing stretch is hatched red and says how short; the lane's label carries the
+size, frame rate, `interp` mode, opacity and loop or bounce. Darkened ends are the fades. Dragging the top
+strip of the lane moves the picture with its map (`move 2 +1.250s`), like a sound. The thumbnails
+are one JPEG strip per file (one small picture every 1.5 s at most, never more than 200), made the first time
+the window asks (a few seconds for a long file) and kept in `.gout/video/`; the picture itself is never
+touched. The window redraws when a video track changes, though none of that changes `master.wav`.
+
 gout serves the page from this computer only (127.0.0.1) at a link with a secret in it, so nothing
 else can read the project, and turns away requests for any other host name. It opens in Chromium,
 Chrome, Brave or Edge as an app window when one is installed, otherwise in the default browser.

@@ -8,6 +8,7 @@ const LABEL = 150;          // px for the names on the left
 const RULER = 34;           // px for the time (and bars) on top
 const MASTER_H = 64;
 const TAKE_H = 56;
+const VIDEO_H = 64;         // a video track's lane: thumbnails along the time map
 const GAP = 2;
 const TAKE_POLL_MS = 100;   // a take's peaks come every 0.1 s
 const MIN_MS_PER_PX = 0.02; // about one sample per px at 48 kHz, and closer
@@ -22,6 +23,8 @@ let version = -1;
 const peaks = {};            // file -> {stamp, rate, block, levels: [Float32Array of lo,hi pairs]}
 const pending = {};          // file -> stamp being fetched
 const samples = {};          // file -> {from, to, rate, data: Float32Array interleaved stereo}
+const strips = {};           // video file -> {stamp, img, ready}: its thumbnails side by side
+const videoLoads = {};       // video file -> stamp being fetched
 let samplesTimer = 0;
 let view = { start: 0, msPerPx: 20, fitted: false };
 let play = { pos: 0, playing: false, base: 0, baseAt: performance.now() };
@@ -42,7 +45,7 @@ function note(text) {
 function showSelection() {
   document.getElementById("sel").textContent = selection ?
     `sel ${fmt(selection.from)} → ${fmt(selection.to)}  ${((selection.to - selection.from) / 1000).toFixed(3)} s` +
-    (selection.lane.kind === "track" ? `  track ${selection.lane.track.n}` : "") : "";
+    (selection.lane.track ? `  track ${selection.lane.track.n}` : "") : "";
 }
 
 function q(path, extra = "") { return `${path}?t=${encodeURIComponent(token)}${extra}`; }
@@ -72,9 +75,21 @@ async function loadState() {
   for (const [file, stamp] of files) {
     if ((!peaks[file] || peaks[file].stamp !== stamp) && pending[file] !== stamp) loadPeaks(file, stamp);
   }
+  for (const v of state.videos || []) {
+    const have = strips[v.file];
+    if ((!have || have.stamp !== v.stamp) && videoLoads[v.file] !== v.stamp) loadStrip(v);
+  }
   if (!view.fitted) fit();
   document.getElementById("song").textContent = state.name || "gout";
   needDraw = true;
+}
+
+function loadStrip(v) {  // the thumbnails of a video file: the server makes the strip on the first request
+  videoLoads[v.file] = v.stamp;
+  const img = new Image();
+  img.onload = () => { strips[v.file] = { stamp: v.stamp, img, ready: true }; delete videoLoads[v.file]; needDraw = true; };
+  img.onerror = () => { strips[v.file] = { stamp: v.stamp, img: null, ready: false }; delete videoLoads[v.file]; needDraw = true; };
+  img.src = q("/thumbs", `&file=${encodeURIComponent(v.file)}&s=${encodeURIComponent(v.stamp)}`);
 }
 
 async function loadPeaks(file, stamp) {
@@ -100,7 +115,7 @@ async function loadPeaks(file, stamp) {
 function fit() {
   if (!state) return;
   const end = Math.max(state.length_ms, take ? take.at + take.peaks.length * TAKE_POLL_MS : 0, 1000);
-  view.start = Math.min(0, ...state.tracks.map(t => t.offset_ms), 0);
+  view.start = Math.min(0, ...state.tracks.map(t => t.offset_ms), ...(state.videos || []).map(v => v.start_ms), 0);
   view.msPerPx = Math.max(MIN_MS_PER_PX, (end - view.start + 2000) / Math.max(100, width() - LABEL - 10));
   view.fitted = true;
   needDraw = true;
@@ -119,9 +134,11 @@ function layout() {
   const rows = [];
   let y = RULER;
   if (state.master) { rows.push({ kind: "master", y, h: MASTER_H }); y += MASTER_H + GAP; }
-  const free = scroller.clientHeight - y - (take ? TAKE_H + GAP : 0);
+  const pictures = state.videos || [];
+  const free = scroller.clientHeight - y - (take ? TAKE_H + GAP : 0) - pictures.length * (VIDEO_H + GAP);
   const h = Math.max(48, Math.min(140, Math.floor(free / Math.max(1, state.tracks.length)) - GAP));
   for (const t of state.tracks) { rows.push({ kind: "track", y, h, track: t }); y += h + GAP; }
+  for (const v of pictures) { rows.push({ kind: "video", y, h: VIDEO_H, track: v }); y += VIDEO_H + GAP; }
   if (take) { rows.push({ kind: "take", y, h: TAKE_H }); y += TAKE_H + GAP; }
   return { rows, height: y };
 }
@@ -160,10 +177,13 @@ function draw() {
     ctx.beginPath();
     ctx.rect(LABEL, row.y, w - LABEL, row.h);
     ctx.clip();
-    ctx.fillStyle = c.center_line;
-    ctx.fillRect(LABEL, row.y + row.h / 2, w - LABEL, 1);
+    if (row.kind !== "video") {
+      ctx.fillStyle = c.center_line;
+      ctx.fillRect(LABEL, row.y + row.h / 2, w - LABEL, 1);
+    }
     if (row.kind === "master") drawMaster(ctx, row, w, c);
     else if (row.kind === "track") drawTrack(ctx, row, w, c);
+    else if (row.kind === "video") drawVideo(ctx, row, w, c);
     else drawTake(ctx, row, w, c);
     ctx.restore();
     drawLabel(ctx, row, c);
@@ -235,6 +255,20 @@ function drawLabel(ctx, row, c) {
   if (row.kind === "take") {
     ctx.fillStyle = c.playhead;
     ctx.fillText(`● ${take.label}`, 8, row.y + 6);
+    return;
+  }
+  if (row.kind === "video") {
+    const v = row.track;
+    ctx.fillStyle = c.track_label;
+    ctx.fillText(`${v.n} ${v.name} ▶`.slice(0, 17), 8, row.y + 6);
+    ctx.font = "11px ui-monospace, monospace";
+    ctx.fillStyle = c.ruler_labels;
+    ctx.fillText(`${v.width}x${v.height} ${Number(v.fps.toFixed(2))} fps`, 8, row.y + 22);
+    ctx.fillText(`${v.mode}${v.opacity < 1 ? ` ${Math.round(v.opacity * 100)}%` : ""}${v.tail ? ` ${v.tail}` : ""}`, 8, row.y + 36);
+    if (v.short_ms >= 40) {
+      ctx.fillStyle = "#ff6060";
+      ctx.fillText(`short by ${(v.short_ms / 1000).toFixed(1)} s`, 8, row.y + 50);
+    }
     return;
   }
   const t = row.track;
@@ -338,6 +372,122 @@ function drawTrack(ctx, row, w, c) {
   }
 }
 
+// the moment of the picture shown at project time t (ms), along the points; null outside the map
+function sourceAt(v, t) {
+  const pts = v.points;
+  if (t < pts[0][0] || t > pts[pts.length - 1][0]) return null;
+  let lo = 0, hi = pts.length - 2;
+  while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (pts[mid][0] <= t) lo = mid; else hi = mid - 1; }
+  const [p0, s0] = pts[lo], [p1, s1] = pts[lo + 1];
+  return s0 + (s1 - s0) * (t - p0) / (p1 - p0);
+}
+
+// where in the file a moment of a looping or bouncing picture lies
+function inFile(v, s) {
+  if (!v.tail || !v.synced) return s;
+  const length = v.out_ms - v.in_ms;
+  if (length <= 0) return s;
+  const x = (s - v.in_ms) % (v.tail === "pingpong" ? 2 * length : length);
+  const y = x < 0 ? x + (v.tail === "pingpong" ? 2 * length : length) : x;
+  return v.in_ms + (v.tail === "pingpong" && y > length ? 2 * length - y : y);
+}
+
+function drawVideo(ctx, row, w, c) {
+  const v = row.track;
+  const colour = c.track_palette[v.color % c.track_palette.length];
+  const strip = strips[v.file];
+  const th = v.thumbs, top = row.y + 3, height = row.h - 6;
+  const tileW = Math.max(24, Math.round(height * th.w / th.h));
+  // thumbnails: each tile shows the picture's moment that the map puts at the tile's middle
+  const tiles = (from, to, source, alpha) => {
+    const xa = Math.max(LABEL, Math.floor(toX(from))), xb = Math.min(w, Math.ceil(toX(to)));
+    ctx.globalAlpha = alpha;
+    for (let x = xa; x < xb; x += tileW) {
+      const width = Math.min(tileW, xb - x);
+      const s = source(fromX(x + width / 2));
+      if (s === null) continue;
+      if (!strip || !strip.ready) { ctx.fillStyle = colour; ctx.globalAlpha = alpha * 0.25; ctx.fillRect(x, top, width, height); ctx.globalAlpha = alpha; continue; }
+      const k = Math.max(0, Math.min(th.count - 1, Math.round(inFile(v, s) / th.step_ms)));
+      ctx.drawImage(strip.img, k * th.w, 0, th.w * width / tileW, th.h, x, top, width, height);
+    }
+    ctx.globalAlpha = 1;
+  };
+  if (!v.synced) {  // as it lies: the file dim, and what the soft trim keeps bright
+    tiles(v.offset_ms, v.offset_ms + v.length_ms, t => t - v.offset_ms, 0.3 * v.opacity);
+    tiles(v.start_ms, v.end_ms, t => t - v.offset_ms, 0.35 + 0.65 * v.opacity);
+  } else {
+    tiles(v.start_ms, v.end_ms, t => sourceAt(v, t), 0.35 + 0.65 * v.opacity);
+  }
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(LABEL, row.y, w - LABEL, row.h);
+  ctx.clip();
+  // the fades: darkening over the clip's first and last stretch
+  const fade = (x, len, flip) => {
+    const fw = Math.max(0, len / view.msPerPx);
+    if (fw < 2) return;
+    const g = ctx.createLinearGradient(flip ? x - fw : x, 0, flip ? x : x + fw, 0);
+    g.addColorStop(0, flip ? "rgba(0,0,0,0)" : "rgba(0,0,0,0.7)");
+    g.addColorStop(1, flip ? "rgba(0,0,0,0.7)" : "rgba(0,0,0,0)");
+    ctx.fillStyle = g;
+    ctx.fillRect(flip ? x - fw : x, top, fw, height);
+  };
+  fade(toX(v.start_ms), v.fade_in_ms, false);
+  fade(toX(v.end_ms), v.fade_out_ms, true);
+  // the map: how slow each stretch is (brighter is slower; greener is faster than the file), and its points
+  for (let i = 0; i + 1 < v.points.length && v.synced; i++) {
+    const [p0, s0] = v.points[i], [p1, s1] = v.points[i + 1];
+    const x0 = Math.max(LABEL, toX(p0)), x1 = Math.min(w, toX(p1));
+    if (x1 <= x0 || s1 <= s0) continue;
+    const slow = (p1 - p0) / (s1 - s0);
+    ctx.fillStyle = slow >= 1 ? colour : "#87d787";
+    ctx.globalAlpha = slow >= 1 ? Math.min(1, 0.15 + (slow - 1) / 3.5) : 0.9;
+    ctx.fillRect(x0, row.y + row.h - 4, x1 - x0, 3);
+    ctx.globalAlpha = 1;
+  }
+  if (v.synced) {
+    ctx.font = "10px ui-monospace, monospace";
+    ctx.textBaseline = "top";
+    v.points.forEach(([p], i) => {
+      const x = Math.round(toX(p)) + 0.5;
+      if (x < LABEL || x > w) return;
+      ctx.fillStyle = "rgba(255,255,255,0.55)";
+      ctx.fillRect(x, row.y, 1, 8);
+      if (v.points.length < 60 || view.msPerPx < 40) { ctx.fillStyle = c.ruler_labels; ctx.fillText(String(i + 1), x + 2, row.y + 1); }
+    });
+  }
+  if (v.short_ms >= 40) {  // where the picture runs out before the music does
+    const x0 = Math.max(LABEL, toX(v.end_ms)), x1 = Math.min(w, toX(v.end_ms + v.short_ms));
+    if (x1 > x0) {
+      ctx.fillStyle = "rgba(255,80,80,0.14)";
+      ctx.fillRect(x0, top, x1 - x0, height);
+      ctx.save();  // diagonal hatching, clipped to the missing stretch
+      ctx.beginPath();
+      ctx.rect(x0, top, x1 - x0, height);
+      ctx.clip();
+      ctx.strokeStyle = "rgba(255,96,96,0.6)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let x = x0 - height; x < x1; x += 10) { ctx.moveTo(x, top + height); ctx.lineTo(x + height, top); }
+      ctx.stroke();
+      ctx.restore();
+      ctx.fillStyle = "#ff8080";
+      ctx.font = "11px ui-monospace, monospace";
+      if (x1 - x0 > 90) ctx.fillText(`short by ${(v.short_ms / 1000).toFixed(1)} s`, x0 + 6, row.y + row.h / 2 - 6);
+    }
+  }
+  ctx.strokeStyle = colour;
+  ctx.lineWidth = 1;
+  const bx0 = toX(v.start_ms), bx1 = toX(v.end_ms);
+  ctx.strokeRect(Math.round(bx0) + 0.5, top - 0.5, Math.max(1, Math.round(bx1 - bx0)), height + 1);
+  ctx.restore();
+  if (!strip) {
+    ctx.fillStyle = c.ruler_labels;
+    ctx.font = "11px ui-monospace, monospace";
+    ctx.fillText("reading the picture…", LABEL + 10, row.y + row.h / 2 - 6);
+  }
+}
+
 function drawTake(ctx, row, w, c) {
   const mid = row.y + row.h / 2, amp = row.h / 2 - 3;
   for (let x = LABEL; x < w; x++) {
@@ -396,7 +546,7 @@ function frame(now) {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, over.width / dpr, over.height / dpr);
     if (drag && drag.grip && drag.moved) {  // where the part would go: an outline on its lane
-      const lane = lanes.find(l => l.kind === "track" && l.track.n === drag.grip.track.n);
+      const lane = lanes.find(l => (l.kind === "track" || l.kind === "video") && l.track.n === drag.grip.track.n);
       const x0 = toX(drag.grip.start + drag.delta), x1 = toX(drag.grip.end + drag.delta);
       if (lane) {
         ctx.fillStyle = "rgba(255,255,255,0.10)";
@@ -411,7 +561,7 @@ function frame(now) {
       if (x1 > x0) {
         ctx.fillStyle = "rgba(255,255,255,0.07)";
         ctx.fillRect(x0, RULER, x1 - x0, over.height / dpr - RULER);
-        const lane = lanes.find(l => l.kind === selection.lane.kind && (l.kind !== "track" || l.track.n === selection.lane.track.n));
+        const lane = lanes.find(l => l.kind === selection.lane.kind && (!l.track || l.track.n === selection.lane.track.n));
         if (lane) {
           ctx.fillStyle = "rgba(255,255,255,0.16)";
           ctx.fillRect(x0, lane.y, x1 - x0, lane.h);
@@ -469,6 +619,10 @@ function listen() {
 
 // what lies under the grip strip at x on a track's lane: a part, or the whole track when it is one piece
 function gripAt(lane, x, y) {
+  if (lane && lane.kind === "video" && y - lane.y < GRIP) {  // a picture moves whole, with its map
+    const v = lane.track, at = fromX(x);
+    return at >= v.start_ms && at < v.end_ms ? { track: v, label: null, start: v.start_ms, end: v.end_ms } : null;
+  }
   if (!lane || lane.kind !== "track" || y - lane.y >= GRIP) return null;
   const t = lane.track, at = fromX(x);
   if (!t.parts.length) {
