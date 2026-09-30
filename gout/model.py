@@ -2,6 +2,13 @@
 from __future__ import annotations
 
 
+VIDEO_KIND = "video"  # the `kind` of a track that carries a picture and no sound
+
+
+def is_video(t: dict) -> bool:
+    return t["kind"] == VIDEO_KIND
+
+
 def audible(t: dict) -> tuple[int, int]:
     """(in, out) of the track in file time, out defaulting to the file end."""
     out = t["out_ms"] if t["out_ms"] is not None else t["length_ms"]

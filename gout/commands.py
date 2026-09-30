@@ -30,8 +30,8 @@ from .core import (
     STEMS_DIR,
     TRACK_DIR,
 )
-from .media import cut, mp3_frame_cut, probe
-from .model import (audible, is_heard, meets, MIN_PART_MS, part_has_settings, part_label, part_owner, part_settings, part_start,
+from .media import cut, mp3_frame_cut, probe, probe_video, VIDEO_EXTS
+from .model import (audible, is_heard, is_video, meets, VIDEO_KIND, MIN_PART_MS, part_has_settings, part_label, part_owner, part_settings, part_start,
                     PART_WORD, timeline)
 from .fx import Effect, effect, effects, FxContext, resolve
 from .settings import BITS_CODEC, MASTER_DEFAULTS, master_track, parse_setting, setting, TAG_KEYS
@@ -106,6 +106,9 @@ def ingest(project: Project, src: Path, name: str | None, at_ms: int, verbose: b
     if not src.is_file():
         die(f"no such file: {src}" + ("  (a name with spaces needs quotes, or a \\ before each space;"
                                       " in the ui, tab completes it)" if " " not in str(src) else ""))
+    movie = probe_video(src) if src.suffix.lower() not in (".wav", ".mp3") else None
+    if movie is not None:
+        return ingest_video(project, src, movie, name, at_ms, verb)
     info = probe(src)
     suffix = src.suffix.lower()
     if info["codec"] == "mp3" and suffix == ".mp3":
@@ -116,8 +119,8 @@ def ingest(project: Project, src: Path, name: str | None, at_ms: int, verbose: b
         kind, ext = "wav", ".wav"  # anything else is decoded to wav on the way in
 
     in_place = src.resolve().parent == project.tracks_dir.resolve() and ext == suffix
-    if in_place and not any(t["file"] == src.name for t in project.tracks()):
-        taken = {t["name"] for t in project.tracks()}
+    if in_place and not any(t["file"] == src.name for t in project.all_tracks()):
+        taken = {t["name"] for t in project.all_tracks()}
         base = re.sub(r"[^A-Za-z0-9._-]+", "-", name or src.stem).strip("-.") or "track"
         track_name, i = base, 2
         while track_name in taken:
@@ -142,6 +145,34 @@ def ingest(project: Project, src: Path, name: str | None, at_ms: int, verbose: b
     how = "kept in" if dst == src else ("copied to" if ext == suffix else "converted to")
     print(f"{verb:<5} {track['n']:>2}  {track['name']:<16} {kind}  {info['channels']}ch  {info['sample_rate']} Hz"
           f"  {fmt_ms(track['length_ms'])}  at {fmt_ms(at_ms)}  ({how} {TRACK_DIR}/{dst.name})")
+    return track, dst != src
+
+
+def ingest_video(project: Project, src: Path, movie: dict, name: str | None, at_ms: int,
+                 verb: str = "add") -> tuple[dict, bool]:
+    """Register a video file as a track. It is copied into master/ as it is (a picture is never
+    re-encoded) unless it already lives there; its sound is ignored."""
+    suffix = src.suffix.lower()
+    if src.resolve().parent == project.tracks_dir.resolve() and not any(t["file"] == src.name for t in project.all_tracks()):
+        taken = {t["name"] for t in project.all_tracks()}
+        base = re.sub(r"[^A-Za-z0-9._-]+", "-", name or src.stem).strip("-.") or "video"
+        track_name, i = base, 2
+        while track_name in taken:
+            track_name, i = f"{base}-{i}", i + 1
+        dst = src
+    else:
+        track_name = project.unique_name(name or src.stem)
+        dst = project.tracks_dir / f"{track_name}{suffix}"
+        shutil.copy2(src, dst)
+    track = project.insert(name=track_name, file=dst.name, kind=VIDEO_KIND, length_ms=round(movie["duration"] * 1000),
+                           channels=0, sample_rate=0, offset_ms=at_ms)
+    project.video_set(dst.name, fps=movie["fps"], width=movie["width"], height=movie["height"], frames=movie["frames"])
+    how = "kept in" if dst == src else "copied to"
+    print(f"{verb:<5} {track['n']:>2}  {track['name']:<16} video  {movie['width']}x{movie['height']}  "
+          f"{movie['fps']:.3f} fps  {movie['frames']} frames  {fmt_ms(track['length_ms'])}  at {fmt_ms(at_ms)}"
+          f"  ({how} {TRACK_DIR}/{dst.name}; its sound is not used)")
+    if movie["variable"]:
+        print("      the frame rate varies in this file: times are read from its own clock, the rate shown is the average")
     return track, dst != src
 
 
@@ -175,22 +206,26 @@ def cmd_add(project: Project, args: Args) -> None:
     at_ms = parse_ms(at) if at else 0
     project.record("add " + " ".join(files))
     made: list[str] = []
+    sound = False
     for f in files:
         track, created = ingest(project, Path(f), name, at_ms, args.verbose)
+        sound = sound or not is_video(track)
         if created:
             made.append(track["file"])
     project.created(made)
-    autorender(project, args)
+    if sound:  # a picture changes nothing you hear
+        autorender(project, args)
 
 
 def cmd_scan(project: Project, args: Args) -> None:
     """Register files that appeared in master/ by hand; report tracks whose file is gone."""
     args.positionals("gout scan [-N]")
-    tracks = project.tracks()
+    tracks = project.all_tracks()
     known = {t["file"] for t in tracks}
     files = sorted(f for f in project.tracks_dir.iterdir()
-                   if f.is_file() and f.suffix.lower() in (".wav", ".mp3")
-                   and not f.name.startswith(".") and ".part" not in f.name)
+                   if f.is_file() and f.suffix.lower() in (".wav", ".mp3", *VIDEO_EXTS)
+                   and not f.name.startswith(".") and ".part" not in f.name
+                   and (f.suffix.lower() in (".wav", ".mp3") or probe_video(f) is not None))
     new = [f for f in files if f.name not in known]
     missing = [t for t in tracks if not (project.tracks_dir / t["file"]).exists()]
     if not new and not missing:
@@ -204,37 +239,43 @@ def cmd_scan(project: Project, args: Args) -> None:
     for t in missing:
         print(f"scan  missing  {t['n']:>2}  {t['name']:<16} {TRACK_DIR}/{t['file']} is gone"
               f"  (gout rm {t['n']} drops the track, or put the file back)")
-    if new:
+    if any(f.suffix.lower() in (".wav", ".mp3") for f in new):
         autorender(project, args)
 
 
 def cmd_ls(project: Project, args: Args) -> None:
     args.positionals("gout ls")
-    tracks = project.tracks()
+    tracks = project.all_tracks()
     print(f"proj  {project.get('name')}  {project.rate} Hz  {len(tracks)} track"
           f"{'' if len(tracks) == 1 else 's'}  {TRACK_DIR}/  autorender {project.render_mode}")
     if not tracks:
         print("      no tracks yet — gout add FILE")
         return
-    any_solo = any(t["solo"] for t in tracks)
-    print(f"{'n':>4}  {'name':<16} {'kind':<4} {'ch':>2}  {'at':<12} {'length':<12} {'file':<12} "
+    any_solo = any(t["solo"] for t in tracks if not is_video(t))
+    print(f"{'n':>4}  {'name':<16} {'kind':<5} {'ch':>2}  {'at':<12} {'length':<12} {'file':<12} "
           f"{'trim':<27} {'gain':<7} {'pan':<4} flags")
     for t in tracks:
         a, b = audible(t)
         start, end = timeline(t)
         trimmed = a > 0 or b < t["length_ms"]
         trim = f"{fmt_ms(a)} > {fmt_ms(b)}" if trimmed else "-"
+        if is_video(t):
+            v = t["video"]
+            print(f"{t['n']:>4}  {t['name']:<16} {'video':<5} {'-':>2}  {fmt_ms(start):<12} "
+                  f"{fmt_ms(end - start):<12} {fmt_ms(t['length_ms']):<12} {trim:<27} {'-':<7} {'-':<4} "
+                  f"{v['width']}x{v['height']} {v['fps']:.3g} fps")
+            continue
         flags = ("M" if t["mute"] else "-") + ("S" if t["solo"] else "-")
         if not is_heard(t, any_solo):
             flags += " (silent)"
         if t["fx"]:
             flags += "  fx " + " | ".join(fx_text(item) for item in t["fx"])
-        print(f"{t['n']:>4}  {t['name']:<16} {t['kind']:<4} {t['channels']:>2}  {fmt_ms(start):<12} "
+        print(f"{t['n']:>4}  {t['name']:<16} {t['kind']:<5} {t['channels']:>2}  {fmt_ms(start):<12} "
               f"{fmt_ms(end - start):<12} {fmt_ms(t['length_ms']):<12} {trim:<27} "
               f"{fmt_db(t['gain_db']):<7} {fmt_pan(t['pan']):<4} {flags}")
         for part in t["parts"]:
             begin = part_start(t, part)
-            print(f"{'':>4}    {part_text(t['parts'], part):<14} {'':<4} {'':>2}  {fmt_ms(begin):<12} "
+            print(f"{'':>4}    {part_text(t['parts'], part):<14} {'':<5} {'':>2}  {fmt_ms(begin):<12} "
                   f"{fmt_ms(part['out_ms'] - part['in_ms']):<12} {'':<12} "
                   f"{fmt_ms(part['in_ms']) + ' > ' + fmt_ms(part['out_ms']):<27} "
                   f"{fmt_db(part['gain_db']):<7} {fmt_pan(part['pan']):<4} {'M' if part['mute'] else '-'}"
@@ -259,7 +300,7 @@ def cmd_move(project: Project, args: Args) -> None:
     specs, delta = words[:-1], words[-1]
     parts_of: dict[int, list[dict]] = {}  # track number -> the parts named after it, when not all of it moves
     if "all" in specs:
-        chosen = project.tracks()
+        chosen = project.all_tracks()
         if not chosen:
             die("the project has no tracks yet — gout add FILE")
     else:
@@ -346,6 +387,9 @@ def cmd_trim(project: Project, args: Args) -> None:
     if b <= a:
         die(f"out point {fmt_ms(b)} is not after the in point {fmt_ms(a)}")
 
+    if hard and is_video(t):
+        die(f"track {t['n']} {t['name']} is a video: a hard trim rewrites a file, and gout never rewrites a picture. "
+            f"a soft trim (-st, -et) picks what is shown and leaves the file alone")
     parts = t["parts"]
     if parts and hard:
         die(f"track {t['n']} {t['name']} is in parts; a hard trim needs one piece: gout part {t['n']} join first")
@@ -482,7 +526,7 @@ def _toggle(project: Project, args: Args, column: str) -> None:
             die("solo works on whole tracks; mute the parts you do not want to hear")
         if spec == "all" or len(rest) > 2:
             die(f"usage: {usage}")
-        t = project.track(spec)
+        t = project.audio_track(spec, column)
         part = pick_part(t, rest[0])
         label = part_label(t["parts"], part)
         new = on_off(rest[1] if len(rest) > 1 else None, part["mute"])
@@ -499,7 +543,7 @@ def _toggle(project: Project, args: Args, column: str) -> None:
             die(f"gout {column} all needs on or off")
         targets = project.tracks()
     else:
-        targets = [project.track(spec)]
+        targets = [project.audio_track(spec, column)]
     project.record(f"{column} {spec} {state or ''}".strip())
     for t in targets:
         new = on_off(state, t[column])
@@ -518,7 +562,7 @@ def cmd_solo(project: Project, args: Args) -> None:
 
 def cmd_gain(project: Project, args: Args) -> None:
     words = args.positionals("gout gain TRACK [PART] DB   (e.g. gain 2 -6, gain 2 p3 -6)", 2, 3)
-    t = project.track(words[0])
+    t = project.audio_track(words[0], "gain")
     part, value = (pick_part(t, words[1]) if len(words) == 3 else None), words[-1]
     try:
         gain = float(value.lower().removesuffix("db"))
@@ -540,7 +584,7 @@ def cmd_gain(project: Project, args: Args) -> None:
 
 def cmd_pan(project: Project, args: Args) -> None:
     words = args.positionals("gout pan TRACK [PART] C | L30 | R30 | -100..100", 2, 3)
-    t = project.track(words[0])
+    t = project.audio_track(words[0], "pan")
     part, value = (pick_part(t, words[1]) if len(words) == 3 else None), words[-1]
     v = value.strip().upper()
     match = re.fullmatch(r"([LR])\s*(\d{1,3})", v)
@@ -649,7 +693,7 @@ def cmd_part(project: Project, args: Args) -> None:
     """Cut a track into parts, name them, join them again."""
     force = args.flag("--force", "-f")
     words = args.positionals(PART_USAGE, 1)
-    t = project.track(words[0])
+    t = project.audio_track(words[0], "part")
     rest = words[1:]
     if not rest:
         print_parts(t)
@@ -757,7 +801,7 @@ def fx_text(item: dict) -> str:
 
 def chain_owner(project: Project, spec: str) -> dict:
     """A track, or the master bus in the shape of one."""
-    return master_track(project) if is_master(spec) else project.track(spec)
+    return master_track(project) if is_master(spec) else project.audio_track(spec, "an effect")
 
 
 def owner_and_words(project: Project, spec: str, words: list[str]) -> tuple[dict, list[str]]:
@@ -1123,7 +1167,7 @@ def cmd_duplicate(project: Project, args: Args) -> None:
     at = args.value("--at", "-a")
     name = args.value("--name", "-n")
     words = args.positionals(DUP_USAGE, 3, 3)
-    t = project.track(words[0])
+    t = project.audio_track(words[0], "duplicate")
     low, high = parse_ms(words[1]), parse_ms(words[2])
     if high - low < MIN_PART_MS:
         die(f"duplicate from {fmt_ms(low)} to {fmt_ms(high)}: {MIN_PART_MS} ms at least, and TO after FROM")
@@ -1793,7 +1837,7 @@ def apply_document(project: Project, data: dict, settings: bool = True, tracks: 
             if not isinstance(item, dict):
                 continue
             file, name = item.get("file"), item.get("name")
-            current = project.tracks()
+            current = project.all_tracks()
             t = next((x for x in current if x["file"] == file), None) or \
                 next((x for x in current if x["name"] == name), None)
             if t is None:
@@ -1804,6 +1848,7 @@ def apply_document(project: Project, data: dict, settings: bool = True, tracks: 
                     warnings.append(f"{name or file}: no such file in {TRACK_DIR}/, skipped")
                     continue
             fields: dict = {}
+            picture = is_video(t)
             try:
                 if item.get("offset_ms") is not None:
                     fields["offset_ms"] = int(item["offset_ms"])
@@ -1812,12 +1857,14 @@ def apply_document(project: Project, data: dict, settings: bool = True, tracks: 
                 if "out_ms" in item:
                     out = item["out_ms"]
                     fields["out_ms"] = None if out is None or int(out) >= t["length_ms"] else int(out)
-                if item.get("gain_db") is not None:
+                if picture:
+                    pass  # no gain, pan, mute or solo on a picture
+                elif item.get("gain_db") is not None:
                     fields["gain_db"] = max(-60.0, min(24.0, float(item["gain_db"])))
-                if item.get("pan") is not None:
+                if item.get("pan") is not None and not picture:
                     fields["pan"] = max(-1.0, min(1.0, float(item["pan"])))
                 for flag in ("mute", "solo"):
-                    if item.get(flag) is not None:
+                    if item.get(flag) is not None and not picture:
                         fields[flag] = 1 if item[flag] else 0
             except (TypeError, ValueError) as exc:
                 warnings.append(f"{t['name']}: bad value ({exc}), skipped")
@@ -1828,6 +1875,12 @@ def apply_document(project: Project, data: dict, settings: bool = True, tracks: 
                 fields["out_ms"] = None
             if fields:
                 project.update(t["n"], **fields)
+            if picture:
+                if isinstance(item.get("video"), dict):
+                    apply_video(project, t, item["video"], warnings)
+                order.append(t["file"])
+                n_tracks += 1
+                continue
             if isinstance(item.get("parts"), list):
                 apply_parts(project, t, item["parts"], warnings)
             if isinstance(item.get("fx"), list):
@@ -1839,6 +1892,42 @@ def apply_document(project: Project, data: dict, settings: bool = True, tracks: 
         if order:
             project.reorder(order)
     return n_settings, n_tracks, warnings
+
+
+VIDEO_MODES = ("nearest", "blend", "flow")
+
+
+def apply_video(project: Project, t: dict, item: dict, warnings: list[str]) -> None:
+    """A video track's settings from a document: the picture's own numbers (fps, size, frames) come
+    from the file, everything else is checked and taken."""
+    fields: dict = {}
+    try:
+        if item.get("mode") is not None:
+            if item["mode"] not in VIDEO_MODES:
+                raise ValueError(f"mode {item['mode']!r}")
+            fields["mode"] = item["mode"]
+        for key, lo, hi in (("slow", 1.0, 100.0), ("fast", 1.0, 100.0), ("depth", 0.0, 1.0), ("opacity", 0.0, 1.0)):
+            if item.get(key) is not None:
+                fields[key] = max(lo, min(hi, float(item[key])))
+        for key in ("fade_in_ms", "fade_out_ms"):
+            if item.get(key) is not None:
+                fields[key] = max(0, int(item[key]))
+        if item.get("tail") is not None:
+            if item["tail"] not in ("", "loop", "pingpong"):
+                raise ValueError(f"tail {item['tail']!r}")
+            fields["tail"] = item["tail"]
+        if item.get("warp") is not None:
+            warp = [[int(a), int(b)] for a, b in item["warp"]]
+            if any(b[0] <= a[0] or b[1] < a[1] for a, b in zip(warp, warp[1:])):
+                raise ValueError("the warp points do not run forward")
+            fields["warp"] = warp
+        if item.get("want_ms") is not None:
+            fields["want_ms"] = [int(v) for v in item["want_ms"]][:2]
+    except (TypeError, ValueError) as exc:
+        warnings.append(f"{t['name']}: bad video settings ({exc}), skipped")
+        return
+    if fields:
+        project.video_set(t["file"], **fields)
 
 
 def apply_parts(project: Project, t: dict, items: list, warnings: list[str]) -> None:
@@ -1953,7 +2042,9 @@ def cmd_rebuild(root_hint: Path | None, args: Args) -> None:
             die(f"{db} exists — pass -f to replace it")
         db.unlink()
     project = Project.create(root, DEFAULT_RATE)
-    files = sorted(p for p in tracks_dir.iterdir() if p.suffix.lower() in (".wav", ".mp3"))
+    files = sorted(p for p in tracks_dir.iterdir() if p.suffix.lower() in (".wav", ".mp3")
+                   or (p.suffix.lower() in VIDEO_EXTS and not p.name.startswith(".") and ".part" not in p.name
+                       and probe_video(p) is not None))
     print(f"rebuild  {root}  ({len(files)} files in {TRACK_DIR}/)")
     for path in files:
         ingest(project, path, None, 0, args.verbose)
@@ -1975,7 +2066,7 @@ def cmd_view(project: Project, args: Args) -> None:
     width_txt = args.value("-w", "--width")
     args.positionals("gout view [-w COLUMNS]")
     width = int(width_txt) if width_txt and width_txt.isdigit() else shutil.get_terminal_size((100, 24)).columns
-    tracks = project.tracks()
+    tracks = project.all_tracks()
     master = project.get("master_ms")
     state = (f"{MASTER_WAV} {fmt_ms(int(master))}" if master and project.master.exists()
              else f"{MASTER_WAV} not rendered")

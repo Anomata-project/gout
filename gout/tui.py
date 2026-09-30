@@ -154,7 +154,7 @@ class Tui:
         head = aliases().get(before[0], before[0])
         eff = resolve(head)
         if len(before) == 1 and (head in TRACK_FIRST or eff is not None):
-            names = [t["name"] for t in self.project.tracks()] + ["master"] * (eff is not None or head == "fx")
+            names = [t["name"] for t in self.project.all_tracks()] + ["master"] * (eff is not None or head == "fx")
             names += ["all"] * (head in ("mute", "solo", "move"))
             names += ["presets"] * (eff is not None) + ["kinds"] * (head == "fx")
             matches = [n for n in names if n.startswith(value)]
@@ -169,7 +169,7 @@ class Tui:
             return [w for w in parts if w.startswith(value.lower())]
         if len(before) >= 2 and head == "move" and value[:1].isalpha() and "all" not in before:  # parts, more tracks, then the time
             return ([w for w in parts if w.startswith(value.lower())]
-                    + [t["name"] for t in self.project.tracks() if t["name"].startswith(value)])
+                    + [t["name"] for t in self.project.all_tracks() if t["name"].startswith(value)])
         if len(before) >= 2 and head == "fx" and before[-1].lower() == "add":
             return [name for name in effects() if name.startswith(value)]
         if head in TRACK_FIRST or eff is not None:
@@ -219,7 +219,8 @@ class Tui:
         h, w, left_w, right_x, right_w = self.layout()
         p = self.project
         tracks = p.tracks()
-        title = (f" gout {p.get('name')}  {p.rate} Hz  {len(tracks)} track{'' if len(tracks) == 1 else 's'}"
+        count = len(p.all_tracks())
+        title = (f" gout {p.get('name')}  {p.rate} Hz  {count} track{'' if count == 1 else 's'}"
                  f"  autorender {p.render_mode}")
         hidden = [f"{key} {what}" for key, what, shown in (("ctrl-t", "timeline", self.show_timeline),
                                                            ("ctrl-k", "cheat sheet", self.show_cheat)) if not shown]

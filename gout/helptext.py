@@ -115,9 +115,16 @@ MASTER   (gout set KEY VALUE)
   Every mix line reports the result:  mix   master.wav  03:12.500  -14.0 LUFS  LRA 6.2  peak -1.0 dBTP
 
 TRACKS   (TRACK is the number shown by ls, or the track name)
-  gout add   a  FILE... [-n NAME] [-a TIME]  copy wav/mp3 into {TRACK_DIR}/ (other formats become wav)
-  gout scan  sc                              register wav/mp3 you copied into {TRACK_DIR}/ yourself,
-                                             at 0; reports tracks whose file has gone missing
+  gout add   a  FILE... [-n NAME] [-a TIME]  copy wav/mp3 into {TRACK_DIR}/ (other formats become wav);
+                                             a video file (mp4, mov, mkv, webm ...) becomes a video track:
+                                             copied as it is, its size, frame rate and length reported,
+                                             its sound not used. A picture has a position and soft trims
+                                             like a sound, and is silent in the mix: move, trim, rm,
+                                             undo, dump, import and rebuild treat it the same; gain, pan,
+                                             mute, solo, part and effects say it is not for pictures.
+                                             trim -H refuses it (gout never rewrites a picture)
+  gout scan  sc                              register wav/mp3 and video files you copied into {TRACK_DIR}/
+                                             yourself, at 0; reports tracks whose file has gone missing
   gout move  m  TRACK +TIME | -TIME | TIME   nudge later, nudge earlier, or place at a time
   gout move  m  TRACK PART +TIME | TIME      a part along its track: move 3 p2 +1s, move 3 chorus 1:30
   gout move  m  TRACK... | all +TIME | TIME  several tracks, or all: by the same amount, or the

@@ -213,6 +213,7 @@ class Fixtures:
             ffmpeg("-f", "lavfi", "-i", "sine=frequency=880:duration=3", "-c:a", "flac", str(d / "vox.flac"))
             ffmpeg("-f", "lavfi", "-i", "anoisesrc=d=4:c=pink:a=0.3:seed=1", "-ac", "2", "-ar", "48000",  # the same noise every run
                    "-c:a", "pcm_s16le", str(d / "noise.wav"))
+            ffmpeg("-f", "lavfi", "-i", "testsrc=s=64x36:r=12:d=4", "-pix_fmt", "yuv420p", str(d / "clip.mp4"))  # 48 frames
             cls._dir = d
         return cls._dir
 

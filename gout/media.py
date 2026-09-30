@@ -7,6 +7,7 @@ import re
 import subprocess
 import sys
 from array import array
+from pathlib import Path
 
 from .core import (
     CELL_AUDIBLE,
@@ -62,6 +63,60 @@ def probe(path: Path) -> dict:
         "sample_rate": int(streams[0].get("sample_rate") or 0),
         "format": fmt.get("format_name") or "",
     }
+
+
+VIDEO_EXTS = (".mp4", ".m4v", ".mov", ".mkv", ".webm", ".avi", ".mpg", ".mpeg", ".ogv", ".wmv", ".flv", ".ts", ".mts")
+
+
+def parse_rate(text: str | None) -> float:
+    """A frame rate as ffprobe writes it, 24000/1001 or 25, as a number; 0 when it says nothing."""
+    try:
+        if text and "/" in text:
+            num, den = text.split("/")
+            return float(num) / float(den) if float(den) else 0.0
+        return float(text or 0)
+    except ValueError:
+        return 0.0
+
+
+def probe_video(path: Path) -> dict | None:
+    """What a file's first picture stream is: size, frame rate, frame count, length. None when it has
+    none, or only a still (cover art in an mp3, an image): a video track needs a moving picture."""
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+         "stream=codec_name,width,height,r_frame_rate,avg_frame_rate,nb_frames,duration:"
+         "stream_disposition=attached_pic:format=duration,format_name", "-of", "json", str(path)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if out.returncode != 0:
+        return None
+    try:
+        data = json.loads(out.stdout or "{}")
+    except ValueError:
+        return None
+    streams = data.get("streams") or []
+    fmt = data.get("format") or {}
+    if not streams or (streams[0].get("disposition") or {}).get("attached_pic"):
+        return None
+    if "image2" in (fmt.get("format_name") or "") or (fmt.get("format_name") or "").endswith("_pipe"):
+        return None
+    s = streams[0]
+    avg, real = parse_rate(s.get("avg_frame_rate")), parse_rate(s.get("r_frame_rate"))
+    fps = avg or real
+    try:
+        seconds = float(fmt.get("duration") or s.get("duration") or 0)
+    except ValueError:
+        seconds = 0.0
+    try:
+        frames = int(s.get("nb_frames"))
+    except (TypeError, ValueError):
+        frames = round(seconds * fps)
+    if seconds <= 0 and fps > 0:
+        seconds = frames / fps
+    if frames <= 1 or fps <= 0 or seconds <= 0 or not s.get("width") or not s.get("height"):
+        return None
+    return {"width": int(s["width"]), "height": int(s["height"]), "fps": fps, "frames": frames,
+            "duration": seconds, "codec": s.get("codec_name") or "?",
+            "variable": bool(avg and real and abs(avg - real) / real > 0.01)}
 
 
 ENV_RATE = 50    # peaks per second of audio

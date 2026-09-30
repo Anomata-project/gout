@@ -11,7 +11,7 @@ from pathlib import Path
 
 from .core import __version__, DB_NAME, DEFAULT_RATE, die, GoutError, MASTER_OWNER, MASTER_WAV, SIDECAR, TRACK_DIR
 from .media import compute_envelope, compute_spectrum, ENV_RATE, measure_loudness, probe
-from .model import part_owner
+from .model import part_owner, VIDEO_KIND
 
 
 SCHEMA = """
@@ -54,6 +54,23 @@ CREATE TABLE IF NOT EXISTS parts (
     pan      REAL NOT NULL DEFAULT 0,
     mute     INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS video (
+    file        TEXT PRIMARY KEY,            -- the track's file name
+    fps         REAL NOT NULL,               -- of the file, as probed
+    width       INTEGER NOT NULL,
+    height      INTEGER NOT NULL,
+    frames      INTEGER NOT NULL,
+    mode        TEXT NOT NULL DEFAULT 'blend',   -- how frames between two source frames are made
+    slow        REAL NOT NULL DEFAULT 4,     -- the most it may be slowed down
+    fast        REAL NOT NULL DEFAULT 1.25,  -- the most it may be sped up
+    depth       REAL NOT NULL DEFAULT 0.6,   -- how much the music shapes the time map, 0 .. 1
+    tail        TEXT NOT NULL DEFAULT '',    -- past the end of the file: loop, pingpong, or nothing
+    opacity     REAL NOT NULL DEFAULT 1,
+    fade_in_ms  INTEGER NOT NULL DEFAULT 500,
+    fade_out_ms INTEGER NOT NULL DEFAULT 500,
+    warp        TEXT NOT NULL DEFAULT '[]',  -- [[ms after the track's position, ms in the source]], or none
+    want_ms     TEXT NOT NULL DEFAULT '[]'   -- the stretch of the project the map was made for: [from, to]
+);
 CREATE TABLE IF NOT EXISTS envelopes (
     file  TEXT PRIMARY KEY,
     size  INTEGER NOT NULL,
@@ -80,6 +97,9 @@ CREATE TABLE IF NOT EXISTS history (
 TRACK_COLUMNS = ("n", "name", "file", "kind", "length_ms", "channels", "sample_rate",
                  "offset_ms", "in_ms", "out_ms", "gain_db", "pan", "mute", "solo")
 PART_COLUMNS = ("id", "name", "in_ms", "out_ms", "shift_ms", "gain_db", "pan", "mute")
+VIDEO_COLUMNS = ("fps", "width", "height", "frames", "mode", "slow", "fast", "depth", "tail", "opacity",
+                 "fade_in_ms", "fade_out_ms", "warp", "want_ms")
+VIDEO_JSON = ("warp", "want_ms")  # kept as JSON text in the table, lists in the dicts
 
 
 # before the effect chain, a track had one column per effect and the master one setting each
@@ -94,6 +114,12 @@ def legacy_chain(item: dict) -> list[dict]:
         if text:
             chain.append({"kind": kind, "params": str(text), "on": bool(int(item.get(f"{kind}_on", 1) or 0))})
     return chain
+
+
+def video_defaults() -> dict:
+    """The settings of a video track nothing has been done to yet."""
+    return {"fps": 25.0, "width": 0, "height": 0, "frames": 0, "mode": "blend", "slow": 4.0, "fast": 1.25,
+            "depth": 0.6, "tail": "", "opacity": 1.0, "fade_in_ms": 500, "fade_out_ms": 500, "warp": [], "want_ms": []}
 
 
 class Project:
@@ -211,10 +237,20 @@ class Project:
     # ---- tracks
 
     def tracks(self) -> list[dict]:
-        """Every track as a dict, with its effect chain under "fx", its chain owner, and its parts
-        (left to right; none when it is one piece)."""
+        """The audio tracks, each with its effect chain under "fx", its chain owner, and its parts
+        (left to right; none when it is one piece). Everything that mixes, analyses or exports
+        works from this list: a video track has no sound."""
+        return [t for t in self.all_tracks() if t["kind"] != VIDEO_KIND]
+
+    def videos(self) -> list[dict]:
+        """The video tracks, each with its settings under "video"."""
+        return [t for t in self.all_tracks() if t["kind"] == VIDEO_KIND]
+
+    def all_tracks(self) -> list[dict]:
+        """Every track in order, audio and video."""
         chains = self.chains()
         parts = self.all_parts()
+        videos = self.all_video()
         out = []
         for r in self.conn.execute("SELECT * FROM tracks ORDER BY n").fetchall():
             t = dict(r)
@@ -223,8 +259,36 @@ class Project:
             t["parts"] = parts.get(t["file"], [])
             for part in t["parts"]:
                 part["fx"] = chains.get(part_owner(t["file"], part["id"]), [])
+            if t["kind"] == VIDEO_KIND:
+                t["video"] = videos.get(t["file"]) or video_defaults()
             out.append(t)
         return out
+
+    # ---- video
+
+    def all_video(self) -> dict[str, dict]:
+        out = {}
+        for r in self.conn.execute("SELECT * FROM video"):
+            item = {c: r[c] for c in VIDEO_COLUMNS}
+            for c in VIDEO_JSON:
+                item[c] = json.loads(item[c] or "[]")
+            out[r["file"]] = item
+        return out
+
+    def video_set(self, file: str, **fields) -> None:
+        """Insert or change a video track's settings; the lists (warp, want_ms) go in as they are."""
+        fields = {k: (json.dumps(v) if k in VIDEO_JSON else v) for k, v in fields.items()}
+        with self.conn:
+            if self.conn.execute("SELECT 1 FROM video WHERE file = ?", (file,)).fetchone() is None:
+                base = {c: v for c, v in video_defaults().items() if c not in fields}
+                base = {k: (json.dumps(v) if k in VIDEO_JSON else v) for k, v in base.items()}
+                fields = {**base, **fields}
+                cols = ["file", *fields]
+                self.conn.execute(f"INSERT INTO video ({', '.join(cols)}) VALUES ({', '.join('?' for _ in cols)})",
+                                  (file, *fields.values()))
+            elif fields:
+                self.conn.execute(f"UPDATE video SET {', '.join(f'{k} = ?' for k in fields)} WHERE file = ?",
+                                  (*fields.values(), file))
 
     # ---- parts
 
@@ -261,8 +325,15 @@ class Project:
                 self.conn.execute("DELETE FROM fx WHERE owner = ?", (part_owner(track_file, row["id"]),))
             self.conn.execute("DELETE FROM parts WHERE track = ?", (track_file,))
 
+    def audio_track(self, spec: str, what: str) -> dict:
+        """track(), for commands that only make sense for sound: a video track says so."""
+        t = self.track(spec)
+        if t["kind"] == VIDEO_KIND:
+            die(f"track {t['n']} {t['name']} is a video track, and {what} works on audio tracks")
+        return t
+
     def track(self, spec: str) -> dict:
-        tracks = self.tracks()
+        tracks = self.all_tracks()
         if not tracks:
             die("the project has no tracks yet — gout add FILE")
         if spec.isdigit():
@@ -298,6 +369,7 @@ class Project:
             row = self.conn.execute("SELECT file FROM tracks WHERE n = ?", (n,)).fetchone()
             if row:
                 self.conn.execute("DELETE FROM fx WHERE owner = ?", (row["file"],))
+                self.conn.execute("DELETE FROM video WHERE file = ?", (row["file"],))
                 for part in self.conn.execute("SELECT id FROM parts WHERE track = ?", (row["file"],)).fetchall():
                     self.conn.execute("DELETE FROM fx WHERE owner = ?", (part_owner(row["file"], part["id"]),))
                 self.conn.execute("DELETE FROM parts WHERE track = ?", (row["file"],))
@@ -309,7 +381,7 @@ class Project:
 
     def unique_name(self, wanted: str) -> str:
         base = re.sub(r"[^A-Za-z0-9._-]+", "-", wanted).strip("-.") or "track"
-        taken = {t["name"] for t in self.tracks()}
+        taken = {t["name"] for t in self.all_tracks()}
         taken |= {p.stem for p in self.tracks_dir.iterdir()} if self.tracks_dir.is_dir() else set()
         name, i = base, 2
         while name in taken:
@@ -445,13 +517,14 @@ class Project:
     def snapshot(self) -> dict:
         settings = {r["key"]: r["value"] for r in self.conn.execute("SELECT key, value FROM project")
                     if not r["key"].startswith("ui_")}  # ui_ keys are preferences, not state
-        return {"project": settings, "master": {"fx": self.chain(MASTER_OWNER)}, "tracks": self.tracks()}
+        return {"project": settings, "master": {"fx": self.chain(MASTER_OWNER)}, "tracks": self.all_tracks()}
 
     def state_fingerprint(self) -> str:
         """A hash of everything that decides how master.wav sounds: settings, tracks, effect
         chains and the track files themselves. mix stores it, play compares it."""
         snap = self.snapshot()
         snap["project"] = {k: v for k, v in snap["project"].items() if not k.startswith("master_")}
+        snap["tracks"] = [t for t in snap["tracks"] if t["kind"] != VIDEO_KIND]  # pictures change nothing you hear
         for t in snap["tracks"]:
             try:
                 st = (self.tracks_dir / t["file"]).stat()
@@ -492,6 +565,10 @@ class Project:
         snap["master"]["fx"] = clean(snap["master"]["fx"])
         for t in snap["tracks"]:
             t.pop("owner", None)
+            if t["kind"] == VIDEO_KIND:  # a picture has no effects, parts, gain or pan to keep
+                for key in ("fx", "parts", "gain_db", "pan", "mute", "solo", "channels", "sample_rate"):
+                    t.pop(key, None)
+                continue
             t["fx"] = clean(t["fx"])
             for part in t.get("parts", []):
                 part.pop("id", None)
@@ -513,7 +590,7 @@ class Project:
 
     def reorder(self, files: list[str]) -> None:
         """Number the tracks so those in `files` come first, in that order."""
-        tracks = self.tracks()
+        tracks = self.all_tracks()
         ranked = sorted(tracks, key=lambda t: (files.index(t["file"]) if t["file"] in files
                                                else len(files) + t["n"]))
         with self.conn:
@@ -530,12 +607,19 @@ class Project:
             self.conn.execute("DELETE FROM tracks")
             self.conn.execute("DELETE FROM fx")
             self.conn.execute("DELETE FROM parts")
+            self.conn.execute("DELETE FROM video")
             for t in snap["tracks"]:
                 cols = [c for c in TRACK_COLUMNS if c in t]
                 self.conn.execute(
                     f"INSERT INTO tracks ({', '.join(cols)}) VALUES ({', '.join('?' for _ in cols)})",
                     tuple(t[c] for c in cols),
                 )
+            for t in snap["tracks"]:
+                if t.get("kind") == VIDEO_KIND:
+                    item = {**video_defaults(), **(t.get("video") or {})}
+                    cols = [c for c in VIDEO_COLUMNS if c in item]
+                    self.conn.execute(f"INSERT INTO video (file, {', '.join(cols)}) VALUES (?, {', '.join('?' for _ in cols)})",
+                                      (t["file"], *(json.dumps(item[c]) if c in VIDEO_JSON else item[c] for c in cols)))
             part_chains = []
             for t in snap["tracks"]:
                 for part in t.get("parts", []):

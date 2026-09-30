@@ -6,7 +6,7 @@ import textwrap
 
 from .core import CELL_ZERO, fmt_db, fmt_pan, fmt_short, MASTER_WAV
 from .media import ENV_RATE
-from .model import audible, is_heard, part_label, part_start, timeline
+from .model import audible, is_heard, is_video, part_label, part_start, timeline
 from .fx import Effect, effect, effects, FxContext, GUTTER
 from .settings import setting
 from .theme import load_theme
@@ -172,9 +172,11 @@ def render_timeline(project: "Project", width: int, styled: bool = False, playhe
     recording as it runs, (where it started, its peak every 0.1 s, rec or check), drawn under the tracks.
     """
     theme = theme or load_theme(project.root)[0]
-    tracks = project.tracks()
+    everything = project.all_tracks()
+    tracks = [t for t in everything if not is_video(t)]
+    videos = [(i, t) for i, t in enumerate(everything) if is_video(t)]
     tw = max(10, width - LABEL_W - 1)
-    if not tracks and take is None:
+    if not everything and take is None:
         return [("", "no tracks yet — add FILE", "note", "", "")]
     style = theme["wave_style"]
     per_cell = 2 if style == "braille" else 1
@@ -184,8 +186,8 @@ def render_timeline(project: "Project", width: int, styled: bool = False, playhe
     head_ms = int(setting(project, "head"))
 
     take_end = take[0] + len(take[1]) * TAKE_POLL_MS if take else 0
-    t0 = min(0, min((min(t["offset_ms"], timeline(t)[0]) for t in tracks), default=0))
-    t1 = max(max((max(t["offset_ms"] + t["length_ms"], timeline(t)[1]) for t in tracks), default=0),
+    t0 = min(0, min((min(t["offset_ms"], timeline(t)[0]) for t in everything), default=0))
+    t1 = max(max((max(t["offset_ms"] + t["length_ms"], timeline(t)[1]) for t in everything), default=0),
              master_ms - head_ms, t0 + 1000, take_end + (5000 if take else 0))  # room ahead of a take
     scale = tw / (t1 - t0)  # columns per millisecond
     dot_ms = 1 / (scale * per_cell)
@@ -259,7 +261,9 @@ def render_timeline(project: "Project", width: int, styled: bool = False, playhe
                     cells[c + x], classes[c + x] = ch, "l"
         return label, "".join(cells), kind, "".join(classes), role
 
-    mh, th, gap, shown = fit_layout(theme if master_ms else {**theme, "master_height": 1}, len(tracks) + bool(take), max_rows)
+    room = max_rows - len(videos) * (theme["gap_rows"] + 1) if max_rows else None  # a picture is one row and a gap
+    mh, th, gap, shown = fit_layout(theme if master_ms else {**theme, "master_height": 1}, len(tracks) + bool(take),
+                                    None if room is None else max(1, room))
     if take:
         shown = min(len(tracks), max(0, shown - 1))  # the take's row goes before any track when room is short
 
@@ -351,6 +355,19 @@ def render_timeline(project: "Project", width: int, styled: bool = False, playhe
                 dots.append((v, v, "p" if loud >= 0.999 else "m"))  # a clip shows in the playhead's colour
             columns.append(dots)
         add_group([(f" ● {what}", "track_label"), ("", "ruler_labels")], wave_rows(columns, th, style))
+    for i, t in videos:  # a picture is a bar: no waveform to draw
+        if rows[-1][2] != "gap":
+            add_gap()
+        a, b = audible(t)
+        start, end = t["offset_ms"], t["offset_ms"] + t["length_ms"]
+        cells, classes = [" "] * tw, [" "] * tw
+        for c in range(tw):
+            lo, hi = t0 + c / scale, t0 + (c + 1) / scale
+            if hi <= start or lo >= end:
+                continue
+            heard = t["offset_ms"] + a < hi and lo < t["offset_ms"] + b
+            cells[c], classes[c] = ("█", track_class(i, palette)) if heard else ("░", "t") if styled else (" ", " ")
+        rows.append((f"{t['n']:>2} {t['name'][:9]:<9} ▶".ljust(LABEL_W), "".join(cells), "wave", "".join(classes), "track_label"))
     if shown < len(tracks):
         rows.append(("", f"+{len(tracks) - shown} more tracks, not enough room — ls lists them", "note", "", ""))
 
@@ -382,6 +399,7 @@ CHEAT_GAP = 3
 COMMAND_SECTIONS = [
     ("TRACKS", "", [
         ("add", "a", "FILE... [-a TIME] [-n NAME]", "copy files into master/ (other formats become wav)"),
+        ("add", "a", "CLIP.mp4 [-a TIME]", "a video track: a picture, silent in the mix"),
         ("scan", "sc", "", "register files you put in master/ yourself"),
         ("ls", "l", "", "list the tracks"),
         ("move", "m", "TRACK +1s | -500ms | 1:30", "later, earlier, or place at a time"),

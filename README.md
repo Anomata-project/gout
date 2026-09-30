@@ -50,7 +50,7 @@ A project is a directory:
 song/
   gout.db        sqlite: track order, positions, trims, gain, pan, mute/solo, undo history, caches
   gout.json      the same state as a readable document, rewritten after every change
-  master/        the track files, wav or mp3, never modified by moves or soft trims
+  master/        the track files, wav, mp3 or video, never modified by moves or soft trims
   master.wav     the mix, 32-bit float stereo at the project rate (48 kHz by default)
 ```
 
@@ -77,8 +77,8 @@ name (a unique prefix will do). `-N` / `--no-mix` on any change skips an automat
 | long | short | arguments | meaning |
 | --- | --- | --- | --- |
 | `new` | `n` | `NAME [-R HZ]` | create a project (48 kHz by default) |
-| `add` | `a` | `FILE... [-a TIME] [-n NAME]` | add tracks at `TIME` (default 0) |
-| `scan` | `sc` | | register wav/mp3 files you copied into `master/` yourself; reports missing ones |
+| `add` | `a` | `FILE... [-a TIME] [-n NAME]` | add tracks at `TIME` (default 0); a video file becomes a video track, see Video tracks |
+| `scan` | `sc` | | register wav/mp3 and video files you copied into `master/` yourself; reports missing ones |
 | `ls` | `l` | | list tracks, positions, trims, flags |
 | `view` | `v` | `[-w COLS]` | print the timeline once: master first, tracks as waveforms |
 | `colors` | | `[--init [--project] [-f]]` | the colour and layout settings of `color.json` |
@@ -119,6 +119,29 @@ name (a unique prefix will do). `-N` / `--no-mix` on any change skips an automat
 
 Long flags exist for every short one: `--at --name --hard --clear --reencode --delete --mp3
 --rate --width --verbose --no-mix`.
+
+## Video tracks
+
+`gout add clip.mp4` makes a video track: a picture with a position and soft trims, like a sound,
+and silent in the mix. gout probes the file and tells you what it found (size, frame rate,
+frame count, length, and a note when the frame rate varies); the file is copied into `master/`
+as it is and never re-encoded or rewritten, and any sound in it is left out. A still image is not
+a video and `add` refuses it.
+
+```sh
+gout add music.wav clip.mp4 -a 4s    # the picture starts at 0:04
+gout move 2 +500ms                   # the same commands as for sound
+gout trim 2 -st 1s -et 3s            # soft trim: what is shown, the file untouched
+gout rm 2                            # the file stays in master/; undo brings the track back
+```
+
+`ls` lists a video track with its size and frame rate, and the timeline draws it as a bar
+(`▶`) under the waveforms, from where it starts to where it ends; the part the soft trim leaves
+out is drawn faint. `move`, `trim`, `rm`, `undo`, `dump`, `import`, `rebuild` and `saveas` treat
+it like any track, and `move all` moves the pictures with the sound. A picture changes nothing you
+hear, so adding, moving or trimming one never makes `master.wav` out of date. Commands that only
+make sense for sound (`gain`, `pan`, `mute`, `solo`, `part`, `duplicate`, the effects) say
+so when given a video track, and `trim -H` refuses: gout does not rewrite a picture.
 
 ## Parts
 
