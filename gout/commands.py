@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import re
 import shutil
 import sys
@@ -1897,10 +1898,12 @@ def apply_document(project: Project, data: dict, settings: bool = True, tracks: 
 
 VIDEO_MODES = ("nearest", "blend", "flow")
 
-SYNC_USAGE = ("gout sync TRACK [-st TIME] [-et TIME] [--slow K] [--fast K] [--depth D] [--loop | --pingpong | --once] [-N]\n"
+SYNC_USAGE = ("gout sync TRACK [-st TIME] [-et TIME] [--slow K] [--fast K] [--depth D] [-N]\n"
+              "                 [--loop | --pingpong | --once | --duplicate | --add FILE]\n"
               "       fit a video track to the music: a time map from the project to the picture, stored as warp points\n"
               "       (default: from where the music starts to where it ends; --slow the most it is slowed down, 4 times;\n"
-              "       --fast the most it is sped up, 1.25; --depth how much the music shapes the map, 0 is an even stretch)")
+              "       --fast the most it is sped up, 1.25; --depth how much the music shapes the map, 0 is an even stretch)\n"
+              "       a picture too short for that: --loop, --pingpong, --duplicate (a new track after it) or --add FILE")
 WARP_USAGE = ("gout warp TRACK                    the warp points of a video track and how slow each stretch is\n"
               "       gout warp TRACK add TIME SOURCE    a point: at this project time show this moment of the picture\n"
               "       gout warp TRACK mv N TIME          point N at another project time (+200ms and -1s move it from where it is)\n"
@@ -1939,7 +1942,7 @@ def video_state(t: dict) -> str:
     return text
 
 
-def report_sync(t: dict, done: dict, verb: str = "sync") -> None:
+def report_sync(t: dict, done: dict, verb: str = "sync", choices: bool = True) -> None:
     from .sync import stretch_text
     f, points = done["fit"], done["points"]
     print(f"{verb:<5} {t['n']:>2}  {t['name']:<16} {fmt_ms(done['start'])} -> {fmt_ms(done['end'])}"
@@ -1951,7 +1954,9 @@ def report_sync(t: dict, done: dict, verb: str = "sync") -> None:
     if f.gap > 0:
         print(f"      SHORT BY {f.gap * FRAME_MS / 1000:.1f} s: slowed down as far as allowed ({t['video']['slow']:g}x), the picture"
               f" ends at {fmt_ms(done['start'] + f.covered * FRAME_MS)} and nothing is shown after that")
-        print("      --loop or --pingpong repeats it (gout sync TRACK --pingpong)")
+        if choices:
+            print(f"      you choose: gout sync {t['n']} --loop (from the start again)  |  --pingpong (forward, then backwards)"
+                  f"  |  --duplicate (the same picture on a new track after this one)  |  --add FILE (another picture after this one)")
     else:
         print(f"      music match {f.match_before:+.2f} even stretch -> {f.match_after:+.2f}"
               + (f"; hits met within 0.1 s: {f.hits_before}/{f.hits} -> {f.hits_after}/{f.hits}"
@@ -1964,9 +1969,18 @@ def cmd_sync(project: Project, args: Args) -> None:
     start, end = args.value("-st", "--start"), args.value("-et", "--end")
     slow, fast, depth = args.value("--slow"), args.value("--fast"), args.value("--depth")
     loop, bounce, once = args.flag("--loop"), args.flag("--pingpong"), args.flag("--once")
+    duplicate, extra = args.flag("--duplicate"), args.value("--add")
     (spec,) = args.positionals(SYNC_USAGE, 1, 1)
-    if loop + bounce + once > 1:
-        die("--loop, --pingpong and --once are exclusive")
+    if loop + bounce + once + duplicate + (extra is not None) > 1:
+        die("--loop, --pingpong, --once, --duplicate and --add are exclusive: one way to fill what is short")
+    added = source = None
+    if extra is not None:
+        source = Path(rejoin_paths([extra])[0]).expanduser()
+        if not source.is_file():
+            die(f"--add {extra}: no such file")
+        added = probe_video(source)
+        if added is None:
+            die(f"--add {extra}: not a video (a moving picture is needed)")
     t = project.track(spec)
     if not is_video(t):
         die(f"track {t['n']} {t['name']} is not a video track: sync fits a picture to the music")
@@ -1982,10 +1996,79 @@ def cmd_sync(project: Project, args: Args) -> None:
     b = parse_ms(end) if end else last
     if b <= a:
         die(f"the stretch {fmt_ms(a)} -> {fmt_ms(b)} ends before it starts")
-    project.record(f"sync {t['name']}")
-    print(f"sync  reading the picture and the music (once per file; cached)", flush=True)
+    project.record(f"sync {t['name']}" + (" --duplicate" if duplicate else f" --add {source.name}" if source else ""))
+    print("sync  reading the picture and the music (once per file; cached)", flush=True)
     done = fit_track(project, t, a, b, **settings)
-    report_sync(project.track(str(t["n"])), done)
+    t = project.track(str(t["n"]))
+    report_sync(t, done, choices=not (duplicate or source is not None))
+    if not (duplicate or source is not None):
+        return
+    if done["fit"].gap <= 0:
+        print(f"      nothing is missing: the picture covers the stretch, so {'--duplicate' if duplicate else '--add'} has nothing to fill")
+        return
+    made: list[str] = []
+    try:
+        fill_after(project, t, done, settings, source, args, made)
+    finally:
+        project.created(made)
+
+
+def fill_after(project: Project, t: dict, done: dict, settings: dict, source: Path | None, args: Args,
+               made: list[str]) -> None:
+    """What is short is given to a new video track that starts where this one's picture ends (a fade
+    earlier, so the join dissolves): a copy of this picture for each stretch that is still missing, or
+    the file named with --add. Each is fitted to its own stretch of the music."""
+    from .sync import fit_track
+    want_end, previous = done["end"], t
+    for _ in range(25):
+        points = previous["video"]["warp"]
+        ends = previous["offset_ms"] + points[-1][0]
+        wanted = previous["offset_ms"] + previous["video"]["want_ms"][1]
+        if wanted - ends < FRAME_MS:
+            break
+        start = max(0, min(ends - previous["video"]["fade_out_ms"], want_end - 1000))
+        if source is not None:
+            new, created = ingest(project, source, None, start, False, verb="add")
+            if created:
+                made.append(new["file"])
+        else:
+            new = copy_video_track(project, previous, start)
+            made.append(new["file"])
+        project.video_set(previous["file"], want_ms=[0, points[-1][0]])  # what is left is the new track's to cover
+        project.video_set(new["file"], **{k: v for k, v in previous["video"].items()
+                                          if k in ("mode", "slow", "fast", "depth", "opacity", "fade_in_ms", "fade_out_ms")})
+        if source is None:
+            project.update(new["n"], in_ms=previous["in_ms"], out_ms=previous["out_ms"])
+        step = fit_track(project, project.track(str(new["n"])), start, want_end, **{**settings, "tail": ""})
+        previous = project.track(str(new["n"]))
+        report_sync(previous, step, choices=source is not None)
+        if source is not None:
+            break  # one file was asked for; if it is short too, the choices are printed for it
+    else:
+        print("      stopped after 25 copies")
+
+
+def copy_video_track(project: Project, t: dict, start_ms: int) -> dict:
+    """A new video track of the same picture: a hard link to its file where the filesystem has them, a
+    copy where not, so a long video does not take its size twice. Its own file is what keeps undo,
+    rm -D and rebuild working."""
+    src = project.tracks_dir / t["file"]
+    name = project.unique_name(t["name"])
+    dst = project.tracks_dir / f"{name}{src.suffix}"
+    try:
+        os.link(src, dst)
+        how = "linked"
+    except OSError:
+        shutil.copy2(src, dst)
+        how = "copied"
+    track = project.insert(name=name, file=dst.name, kind=VIDEO_KIND, length_ms=t["length_ms"], channels=0,
+                           sample_rate=0, offset_ms=start_ms)
+    v = t["video"]
+    project.video_set(dst.name, fps=v["fps"], width=v["width"], height=v["height"], frames=v["frames"])
+    print(f"dup   {track['n']:>2}  {name:<16} video  the same picture as {t['name']}, {how} as {TRACK_DIR}/{dst.name}"
+          f"  at {fmt_ms(start_ms)}")
+    return project.track(str(track["n"]))
+
 
 
 def fmt_point(t: dict, n: int, point: list[int], ratio: float | None) -> str:

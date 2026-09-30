@@ -302,3 +302,120 @@ class SyncTest(GoutTest):
         self.project("song")
         self.gout("add", str(self.picture))
         self.assertIn("add a sound first", self.gout("sync", "1", ok=False).stderr)
+
+
+class FillTest(GoutTest):
+    """A picture that is too short: the four ways to fill what is missing, none of them chosen for you."""
+
+    def setUp(self):
+        super().setUp()
+        self.picture, self.song, self.other = self.tmp / "acc.mp4", self.tmp / "music.wav", self.tmp / "other.mp4"
+        moving_video(self.picture)
+        moving_video(self.other, seconds=6)
+        music(self.song)
+
+    def short_project(self, seconds: str = "4s"):
+        root = self.project("song")
+        self.gout("add", str(self.song))
+        self.gout("add", str(self.picture))
+        self.gout("trim", "2", "-et", seconds)
+        return root
+
+    def videos(self):
+        return [t for t in self.dump()["tracks"] if t["kind"] == "video"]
+
+    def end(self, t):
+        return t["offset_ms"] + t["video"]["warp"][-1][0]
+
+    def test_with_no_choice_nothing_is_added_and_all_four_are_named(self):
+        self.short_project()
+        out = self.gout("sync", "2").stdout
+        for choice in ("--loop", "--pingpong", "--duplicate", "--add FILE"):
+            self.assertIn(choice, out)
+        self.assertEqual(len(self.videos()), 1)
+        self.assertIn("SHORT BY", self.gout("ls").stdout)
+
+    def test_duplicate_makes_a_new_track_after_it_and_undo_takes_it_back(self):
+        root = self.short_project()
+        source = (root / "master" / "acc.mp4").read_bytes()
+        out = self.gout("sync", "2", "--duplicate").stdout
+        self.assertIn("dup    3  acc-2", out)
+        first, second = self.videos()
+        self.assertEqual(self.end(first), 16000)  # 4 s of picture at the slowest, 4x
+        self.assertEqual(second["offset_ms"], 15500)  # a fade (0.5 s) earlier: the join dissolves
+        self.assertEqual(self.end(second), 30000)  # and the music is covered
+        self.assertEqual((second["in_ms"], second["out_ms"]), (0, 4000))  # the same trim
+        self.assertEqual((root / "master" / "acc-2.mp4").read_bytes(), source)  # its own file, the same picture
+        self.assertEqual((root / "master" / "acc.mp4").read_bytes(), source)  # the original untouched
+        self.assertNotIn("SHORT", self.gout("ls").stdout)
+        self.gout("undo")  # one step
+        self.assertFalse((root / "master" / "acc-2.mp4").exists())
+        self.assertEqual(len(self.videos()), 1)
+        self.assertEqual(self.videos()[0]["video"]["warp"], [])  # back to before the sync
+        self.assertEqual((root / "master" / "acc.mp4").read_bytes(), source)
+
+    def test_duplicate_goes_on_until_the_music_is_covered(self):
+        self.short_project("2s")  # 8 s a copy, the copies start 0.5 s early: 8, then 7.5 each
+        self.gout("sync", "2", "--duplicate")
+        videos = self.videos()
+        self.assertEqual(len(videos), 4)
+        for before, after in zip(videos, videos[1:]):
+            self.assertEqual(after["offset_ms"], self.end(before) - 500)
+        self.assertEqual(self.end(videos[-1]), 30000)
+        self.assertNotIn("SHORT", self.gout("ls").stdout)
+        self.gout("undo")
+        self.assertEqual(len(self.videos()), 1)
+
+    def test_add_fits_another_file_after_it(self):
+        root = self.short_project()
+        out = self.gout("sync", "2", "--add", str(self.other)).stdout
+        self.assertIn("other", out)
+        first, second = self.videos()
+        self.assertEqual(second["offset_ms"], 15500)
+        self.assertEqual(self.end(second), 30000)  # 6 s of picture over 14.5 s
+        self.assertEqual(second["video"]["frames"], 72)
+        self.assertNotIn("SHORT", self.gout("ls").stdout)
+        self.gout("undo")
+        self.assertFalse((root / "master" / "other.mp4").exists())
+        self.assertEqual(len(self.videos()), 1)
+
+    def test_an_added_file_that_is_short_too_is_said_so_and_asks_again(self):
+        self.short_project()
+        short = self.tmp / "short.mp4"
+        moving_video(short, seconds=2)
+        out = self.gout("sync", "2", "--add", str(short)).stdout
+        self.assertIn("SHORT BY", out)
+        self.assertIn("gout sync 3 --loop", out)  # the choices, for the new track
+        self.assertEqual(len(self.videos()), 2)
+        self.gout("sync", "3", "--pingpong")
+        self.assertEqual(self.end(self.videos()[1]), 30000)
+
+    def test_bad_choices_change_nothing(self):
+        self.short_project()
+        still = self.tmp / "still.png"
+        ffmpeg("-f", "lavfi", "-i", "color=c=red:s=32x32:d=1", "-frames:v", "1", str(still))
+        self.assertIn("no such file", self.gout("sync", "2", "--add", "nothing.mp4", ok=False).stderr)
+        self.assertIn("not a video", self.gout("sync", "2", "--add", str(still), ok=False).stderr)
+        self.assertIn("exclusive", self.gout("sync", "2", "--duplicate", "--loop", ok=False).stderr)
+        self.assertIn("exclusive", self.gout("sync", "2", "--add", str(self.other), "--pingpong", ok=False).stderr)
+        self.assertEqual(self.videos()[0]["video"]["warp"], [])
+        self.assertEqual(len(self.videos()), 1)
+
+    def test_nothing_short_means_nothing_to_fill(self):
+        root = self.project("song")
+        self.gout("add", str(self.song))
+        self.gout("add", str(self.picture))
+        out = self.gout("sync", "2", "--duplicate").stdout
+        self.assertIn("nothing is missing", out)
+        self.assertEqual(len(self.videos()), 1)
+        self.assertFalse((root / "master" / "acc-2.mp4").exists())
+
+    def test_the_copies_survive_rebuild_and_the_timeline_shows_them(self):
+        self.short_project()
+        self.gout("sync", "2", "--duplicate")
+        before = self.dump()
+        self.gout("rebuild", "-f")
+        self.assertEqual(self.dump()["tracks"], before["tracks"])
+        view = self.gout("view", "-w", "100").stdout
+        self.assertIn("acc-2", view)
+        self.assertNotIn("╌", view)  # nothing is short now

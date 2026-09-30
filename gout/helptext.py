@@ -123,7 +123,8 @@ TRACKS   (TRACK is the number shown by ls, or the track name)
                                              undo, dump, import and rebuild treat it the same; gain, pan,
                                              mute, solo, part and effects say it is not for pictures.
                                              trim -H refuses it (gout never rewrites a picture)
-  gout sync  sy TRACK [-st T] [-et T] [--slow K] [--fast K] [--depth D] [--loop|--pingpong|--once]
+  gout sync  sy TRACK [-st T] [-et T] [--slow K] [--fast K] [--depth D]
+                     [--loop | --pingpong | --once | --duplicate | --add FILE]
                                              fit a video track to the music: a time map from the project to
                                              the picture, stored as warp points (default: from where the music
                                              starts to where it ends). The picture's own change per second
@@ -135,8 +136,13 @@ TRACKS   (TRACK is the number shown by ls, or the track name)
                                              1 all of it the music's, default 0.6. It prints the stretch, and how
                                              much better it matches than an even stretch. Too short even at the
                                              slowest: it says how many seconds are missing and shows nothing
-                                             there, and chooses nothing; --loop or --pingpong (forward, then
-                                             backwards, no jump) carry on past the end; --once undoes that
+                                             there, and chooses nothing. You choose: --loop (from the start
+                                             again), --pingpong (forward, then backwards, no jump at the seam),
+                                             --duplicate (the same picture on a new track that starts where this
+                                             one ends, a fade early so the join dissolves, as many as it takes;
+                                             a hard link to the file, so no second copy on disk) or --add FILE
+                                             (another picture on a new track after it); each is fitted to its
+                                             own stretch of the music; --once takes --loop or --pingpong back
   gout warp  wp TRACK [add TIME SOURCE | mv N TIME | src N SOURCE | rm N | reset | clear]
                                              the warp points (project time, picture time, how slow until the next)
                                              and editing them: add a point, move one in time (+200ms, -1s from

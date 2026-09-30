@@ -189,9 +189,21 @@ up no more than `--fast`) uses the start of the trimmed part, and `sync` says so
 **When the picture is too short.** If it cannot cover the stretch even slowed down as far as allowed,
 `sync` reports the gap in seconds, shows nothing there, and chooses nothing: the track says
 `SHORT BY 14.0 s` in `ls` and `warp`, and the timeline draws `╌` where the picture runs out.
-`--loop` carries on from the start, `--pingpong` plays forward and then backwards (no jump
-at the seam, but what morphs one way then morphs the other), and `--once` takes either
-back.
+You choose how to fill it, by running `sync` again with one of four flags:
+
+- `--loop` carries on from the start.
+- `--pingpong` plays forward and then backwards: no jump at the seam, but what morphs one
+  way then morphs the other.
+- `--duplicate` puts the same picture on a new video track that starts where this one's picture
+  ends, a fade earlier (the default fade is half a second), so the join dissolves. It adds as many
+  copies as the music needs, each fitted to its own stretch. Each copy has its own file in
+  `master/`, made as a hard link where the filesystem has them, so a long video does not take its
+  size twice; `rm -D` of a copy removes only its link.
+- `--add FILE` does the same with another picture. If that one is short too, `sync` says so and
+  names the choices for the new track.
+
+They are exclusive, and they do nothing when nothing is missing. `--once` takes `--loop` or
+`--pingpong` back. One `undo` takes back a sync together with the tracks it made.
 
 ## Parts
 

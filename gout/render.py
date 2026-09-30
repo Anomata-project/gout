@@ -409,6 +409,7 @@ COMMAND_SECTIONS = [
         ("add", "a", "FILE... [-a TIME] [-n NAME]", "copy files into master/ (other formats become wav)"),
         ("add", "a", "CLIP.mp4 [-a TIME]", "a video track: a picture, silent in the mix"),
         ("sync", "sy", "VIDEO [--slow 4] [--depth .6]", "fit a video to the music: a time map, busy to busy"),
+        ("", "", "VIDEO --loop | --pingpong | --duplicate | --add F", "a video too short: you choose how to fill it"),
         ("warp", "wp", "VIDEO [add T SRC | mv N T | rm N | reset]", "see and edit the map's points"),
         ("scan", "sc", "", "register files you put in master/ yourself"),
         ("ls", "l", "", "list the tracks"),
