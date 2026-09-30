@@ -360,13 +360,21 @@ def render_timeline(project: "Project", width: int, styled: bool = False, playhe
             add_gap()
         a, b = audible(t)
         start, end = t["offset_ms"], t["offset_ms"] + t["length_ms"]
+        heard_from, heard_to = t["offset_ms"] + a, t["offset_ms"] + b
+        missing = 0
+        if t["video"]["warp"]:  # a synced picture: what its map covers, and where it stops short of the music
+            heard_from, heard_to = start, end = timeline(t)
+            missing = t["offset_ms"] + (t["video"]["want_ms"][1] if len(t["video"]["want_ms"]) == 2 else 0) - end
         cells, classes = [" "] * tw, [" "] * tw
         for c in range(tw):
             lo, hi = t0 + c / scale, t0 + (c + 1) / scale
-            if hi <= start or lo >= end:
+            if missing >= 40 and end <= lo < end + missing:
+                cells[c], classes[c] = ("╌", "e")  # where the picture is short of the music
+            elif hi <= start or lo >= end:
                 continue
-            heard = t["offset_ms"] + a < hi and lo < t["offset_ms"] + b
-            cells[c], classes[c] = ("█", track_class(i, palette)) if heard else ("░", "t") if styled else (" ", " ")
+            else:
+                heard = heard_from < hi and lo < heard_to
+                cells[c], classes[c] = ("█", track_class(i, palette)) if heard else ("░", "t") if styled else (" ", " ")
         rows.append((f"{t['n']:>2} {t['name'][:9]:<9} ▶".ljust(LABEL_W), "".join(cells), "wave", "".join(classes), "track_label"))
     if shown < len(tracks):
         rows.append(("", f"+{len(tracks) - shown} more tracks, not enough room — ls lists them", "note", "", ""))
@@ -400,6 +408,8 @@ COMMAND_SECTIONS = [
     ("TRACKS", "", [
         ("add", "a", "FILE... [-a TIME] [-n NAME]", "copy files into master/ (other formats become wav)"),
         ("add", "a", "CLIP.mp4 [-a TIME]", "a video track: a picture, silent in the mix"),
+        ("sync", "sy", "VIDEO [--slow 4] [--depth .6]", "fit a video to the music: a time map, busy to busy"),
+        ("warp", "wp", "VIDEO [add T SRC | mv N T | rm N | reset]", "see and edit the map's points"),
         ("scan", "sc", "", "register files you put in master/ yourself"),
         ("ls", "l", "", "list the tracks"),
         ("move", "m", "TRACK +1s | -500ms | 1:30", "later, earlier, or place at a time"),

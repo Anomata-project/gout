@@ -78,6 +78,8 @@ name (a unique prefix will do). `-N` / `--no-mix` on any change skips an automat
 | --- | --- | --- | --- |
 | `new` | `n` | `NAME [-R HZ]` | create a project (48 kHz by default) |
 | `add` | `a` | `FILE... [-a TIME] [-n NAME]` | add tracks at `TIME` (default 0); a video file becomes a video track, see Video tracks |
+| `sync` | `sy` | `VIDEO [-st T] [-et T] [--slow K] [--fast K] [--depth D] [--loop \| --pingpong \| --once]` | fit a video track to the music, see Video tracks |
+| `warp` | `wp` | `VIDEO [add T SRC \| mv N T \| src N SRC \| rm N \| reset \| clear]` | the map's warp points, and editing them |
 | `scan` | `sc` | | register wav/mp3 and video files you copied into `master/` yourself; reports missing ones |
 | `ls` | `l` | | list tracks, positions, trims, flags |
 | `view` | `v` | `[-w COLS]` | print the timeline once: master first, tracks as waveforms |
@@ -142,6 +144,54 @@ it like any track, and `move all` moves the pictures with the sound. A picture c
 hear, so adding, moving or trimming one never makes `master.wav` out of date. Commands that only
 make sense for sound (`gain`, `pan`, `mute`, `solo`, `part`, `duplicate`, the effects) say
 so when given a video track, and `trim -H` refuses: gout does not rewrite a picture.
+
+### Fitting a picture to the music
+
+```sh
+gout sync 2                          # the whole song: 2 is the video track
+gout sync 2 -st 0:30 -et 2:00 --slow 3 --depth 0.8
+gout warp 2                          # the points it made, and how slow each stretch is
+gout warp 2 mv 5 +300ms              # hand-edit; warp 2 reset goes back to the automatic map
+```
+
+A picture made for a different length than the song has to be stretched, and a plain stretch
+ignores what the music does. `sync` makes a **time map**: which moment of the picture is shown at each
+moment of the project. It reads how much the picture changes (once per file, cached under
+`.gout/video/`; 25 ms resolution like the music's analysis) and sets that against the music's
+level, so busy stretches of picture land on busy music and quiet on quiet. What the eye gets at a
+moment is the picture's own change times how fast the map runs through it, and `sync` makes that
+follow the music's level: it matches the running total of the one to the running total of the
+other. `--depth` mixes that with an even stretch (0 is the even stretch, 1 is all music; the
+default is 0.6). When the picture's pace is flat, this is simply a map that runs the picture
+faster under loud music; when the music is flat it evens out the picture's pace.
+
+The limits are `--slow`, the most the picture may be slowed down (default 4 times, so it never
+becomes a slideshow) and `--fast`, the most it may be sped up (1.25). Every stretch of the
+map stays inside them, the map never goes backwards, and it covers the whole range. A music hit (a
+strong onset) is given the picture's own fastest moment within about three quarters of a second
+of it, and with `set bpm` the bar lines are offered the same way; the ones that can all be kept
+within the limits are kept, and only when that puts more hits on a fast moment without making the
+level match worse. A picture with nothing sharp in it, or music with no clear hits, gets only the
+level match, and `sync` says so: it prints how well an even stretch matched, how well the map
+does, and how many hits are met within 0.1 s before and after.
+
+The map is stored on the track as **warp points**: `[ms after the track's position, ms in the
+file]` with straight lines between them, a few dozen for a song (one on every bar line when there
+is a tempo), so `move` moves the map with the track. `warp` lists them with how many times slower
+each stretch is; `warp 2 add 1:10 0:20` makes the picture show its 20-second moment at 1:10;
+`mv N TIME` and `src N TIME` change a point (a `+` or `-` moves it from where it is); `rm N` drops
+one; `reset` makes the automatic map again with the track's settings; `clear` removes the map, and
+the picture plays as it is. Points have to run forward, and a point cannot show more picture than
+there is unless the track loops or bounces. An edit outside the speed limits is kept: it is yours.
+Soft trim picks the part of the file that is fitted. A picture longer than the music needs (sped
+up no more than `--fast`) uses the start of the trimmed part, and `sync` says so.
+
+**When the picture is too short.** If it cannot cover the stretch even slowed down as far as allowed,
+`sync` reports the gap in seconds, shows nothing there, and chooses nothing: the track says
+`SHORT BY 14.0 s` in `ls` and `warp`, and the timeline draws `╌` where the picture runs out.
+`--loop` carries on from the start, `--pingpong` plays forward and then backwards (no jump
+at the seam, but what morphs one way then morphs the other), and `--once` takes either
+back.
 
 ## Parts
 

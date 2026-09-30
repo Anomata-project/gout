@@ -30,8 +30,9 @@ from .core import (
     STEMS_DIR,
     TRACK_DIR,
 )
+from .analysis import FRAME_MS
 from .media import cut, mp3_frame_cut, probe, probe_video, VIDEO_EXTS
-from .model import (audible, is_heard, is_video, meets, VIDEO_KIND, MIN_PART_MS, part_has_settings, part_label, part_owner, part_settings, part_start,
+from .model import (audible, is_heard, is_video, meets, video_points, VIDEO_KIND, MIN_PART_MS, part_has_settings, part_label, part_owner, part_settings, part_start,
                     PART_WORD, timeline)
 from .fx import Effect, effect, effects, FxContext, resolve
 from .settings import BITS_CODEC, MASTER_DEFAULTS, master_track, parse_setting, setting, TAG_KEYS
@@ -263,7 +264,7 @@ def cmd_ls(project: Project, args: Args) -> None:
             v = t["video"]
             print(f"{t['n']:>4}  {t['name']:<16} {'video':<5} {'-':>2}  {fmt_ms(start):<12} "
                   f"{fmt_ms(end - start):<12} {fmt_ms(t['length_ms']):<12} {trim:<27} {'-':<7} {'-':<4} "
-                  f"{v['width']}x{v['height']} {v['fps']:.3g} fps")
+                  f"{v['width']}x{v['height']} {v['fps']:.3g} fps{video_state(t)}")
             continue
         flags = ("M" if t["mute"] else "-") + ("S" if t["solo"] else "-")
         if not is_heard(t, any_solo):
@@ -1634,7 +1635,7 @@ def cmd_video(project: Project, args: Args) -> None:
     """An mp4 of the song for YouTube and the like: master.wav with a picture, or with a screen
     such as the fractal drawn frame by frame."""
     import math
-    from .analysis import FRAME_MS, project_features
+    from .analysis import project_features
     from .screens import ScreenContext, screen_named
     from .video import (CELL_H, CELL_W, compose, COVER_SECONDS, cut_points, class_colours, Atlas, Encoder, EVERY_MS, FPS,
                         grid, picture, Progress, schedule, ScreenFrames, Title, TITLE_UNTIL, workers)
@@ -1895,6 +1896,202 @@ def apply_document(project: Project, data: dict, settings: bool = True, tracks: 
 
 
 VIDEO_MODES = ("nearest", "blend", "flow")
+
+SYNC_USAGE = ("gout sync TRACK [-st TIME] [-et TIME] [--slow K] [--fast K] [--depth D] [--loop | --pingpong | --once] [-N]\n"
+              "       fit a video track to the music: a time map from the project to the picture, stored as warp points\n"
+              "       (default: from where the music starts to where it ends; --slow the most it is slowed down, 4 times;\n"
+              "       --fast the most it is sped up, 1.25; --depth how much the music shapes the map, 0 is an even stretch)")
+WARP_USAGE = ("gout warp TRACK                    the warp points of a video track and how slow each stretch is\n"
+              "       gout warp TRACK add TIME SOURCE    a point: at this project time show this moment of the picture\n"
+              "       gout warp TRACK mv N TIME          point N at another project time (+200ms and -1s move it from where it is)\n"
+              "       gout warp TRACK src N SOURCE       point N showing another moment of the picture\n"
+              "       gout warp TRACK rm N               drop point N\n"
+              "       gout warp TRACK reset              the automatic map again, with the track's settings\n"
+              "       gout warp TRACK clear              no map: the picture plays as it is, from where it lies")
+
+
+def number(text: str, name: str, lo: float, hi: float) -> float:
+    try:
+        value = float(text.lower().removesuffix("x"))
+    except ValueError:
+        die(f"{name} {text!r}: expected a number")
+    if not lo <= value <= hi:
+        die(f"{name} must be between {lo:g} and {hi:g}")
+    return value
+
+
+def video_state(t: dict) -> str:
+    """What ls says after a video track's size: its map, and how far short of the music it is."""
+    from .timemap import slowdowns
+    v = t["video"]
+    if not v["warp"]:
+        return ""
+    points = v["warp"]
+    ratios = [r for r in slowdowns(points) if r != float("inf")]
+    text = f"  synced {len(points)} points"
+    if ratios:
+        text += f", {min(ratios):.1f}x to {max(ratios):.1f}x slower"
+    if v["tail"]:
+        text += f", {v['tail']}"
+    gap = (v["want_ms"][1] if len(v["want_ms"]) == 2 else 0) - points[-1][0]
+    if gap >= 40:
+        text += f"  SHORT BY {gap / 1000:.1f} s"
+    return text
+
+
+def report_sync(t: dict, done: dict, verb: str = "sync") -> None:
+    from .sync import stretch_text
+    f, points = done["fit"], done["points"]
+    print(f"{verb:<5} {t['n']:>2}  {t['name']:<16} {fmt_ms(done['start'])} -> {fmt_ms(done['end'])}"
+          f"  ({(done['end'] - done['start']) / 1000:.1f} s of music)")
+    print(f"      {stretch_text(points)}; {len(points)} warp points" + (f", {done['bars']} bar lines" if done["bars"] else ""))
+    if "long" in f.notes:
+        print(f"      the file is longer than the stretch needs: the first {f.used * FRAME_MS / 1000:.1f} s of it is used"
+              f" (soft trim picks which)")
+    if f.gap > 0:
+        print(f"      SHORT BY {f.gap * FRAME_MS / 1000:.1f} s: slowed down as far as allowed ({t['video']['slow']:g}x), the picture"
+              f" ends at {fmt_ms(done['start'] + f.covered * FRAME_MS)} and nothing is shown after that")
+        print("      --loop or --pingpong repeats it (gout sync TRACK --pingpong)")
+    else:
+        print(f"      music match {f.match_before:+.2f} even stretch -> {f.match_after:+.2f}"
+              + (f"; hits met within 0.1 s: {f.hits_before}/{f.hits} -> {f.hits_after}/{f.hits}"
+                 if f.hits else "; no clear hits in the music")
+              + (f" ({f.anchored} hits and bar lines bent to meet)" if f.anchored else ""))
+
+
+def cmd_sync(project: Project, args: Args) -> None:
+    from .sync import fit_track, music_range
+    start, end = args.value("-st", "--start"), args.value("-et", "--end")
+    slow, fast, depth = args.value("--slow"), args.value("--fast"), args.value("--depth")
+    loop, bounce, once = args.flag("--loop"), args.flag("--pingpong"), args.flag("--once")
+    (spec,) = args.positionals(SYNC_USAGE, 1, 1)
+    if loop + bounce + once > 1:
+        die("--loop, --pingpong and --once are exclusive")
+    t = project.track(spec)
+    if not is_video(t):
+        die(f"track {t['n']} {t['name']} is not a video track: sync fits a picture to the music")
+    v = t["video"]
+    settings = {"slow": number(slow, "--slow", 1, 100) if slow else v["slow"],
+                "fast": number(fast, "--fast", 0.1, 100) if fast else v["fast"],
+                "depth": number(depth, "--depth", 0, 1) if depth else v["depth"],
+                "tail": "loop" if loop else "pingpong" if bounce else "" if once else v["tail"]}
+    if 1 / settings["slow"] >= settings["fast"]:
+        die("--fast must be more than 1 divided by --slow: there would be no speed that is allowed")
+    first, last = music_range(project)
+    a = parse_ms(start) if start else first
+    b = parse_ms(end) if end else last
+    if b <= a:
+        die(f"the stretch {fmt_ms(a)} -> {fmt_ms(b)} ends before it starts")
+    project.record(f"sync {t['name']}")
+    print(f"sync  reading the picture and the music (once per file; cached)", flush=True)
+    done = fit_track(project, t, a, b, **settings)
+    report_sync(project.track(str(t["n"])), done)
+
+
+def fmt_point(t: dict, n: int, point: list[int], ratio: float | None) -> str:
+    text = f"{n:>4}  {fmt_ms(t['offset_ms'] + point[0]):<13} {fmt_ms(point[1]):<13}"
+    if ratio is not None:
+        text += f" {'still' if ratio == float('inf') else f'{ratio:.2f}x slower'}" if ratio >= 1 else f" {1 / ratio:.2f}x faster"
+    return text
+
+
+def print_warp(t: dict) -> None:
+    from .timemap import slowdowns
+    v = t["video"]
+    points = v["warp"] or [[a, a] for a in audible(t)]
+    print(f"warp  {t['n']:>2}  {t['name']}  " + (f"{len(points)} points" if v["warp"] else "no map: the picture plays as it is"))
+    print(f"{'n':>4}  {'project':<13} {'picture':<13} until the next point")
+    ratios = slowdowns(points)
+    for i, point in enumerate(points):
+        print(fmt_point(t, i + 1, point, ratios[i] if i < len(ratios) else None))
+    gap = (v["want_ms"][1] if len(v["want_ms"]) == 2 else 0) - points[-1][0]
+    if v["warp"] and gap >= 40:
+        print(f"      SHORT BY {gap / 1000:.1f} s: the picture ends before the music does")
+
+
+def cmd_warp(project: Project, args: Args) -> None:
+    from .sync import fit_track
+    from .timemap import slowdowns
+    words = args.positionals(WARP_USAGE, 1, 4)
+    t = project.track(words[0])
+    if not is_video(t):
+        die(f"track {t['n']} {t['name']} is not a video track")
+    v, rest = t["video"], words[1:]
+    if not rest:
+        print_warp(t)
+        return
+    what = rest[0].lower()
+    if what == "clear":
+        project.record(f"warp {t['name']} clear")
+        project.video_set(t["file"], warp=[], want_ms=[])
+        print(f"warp  {t['n']:>2}  {t['name']:<16} no map: the picture plays as it is")
+        return
+    if what == "reset":
+        from .sync import music_range
+        if v["want_ms"] and v["warp"]:
+            a, b = t["offset_ms"] + v["want_ms"][0], t["offset_ms"] + v["want_ms"][1]
+        else:
+            a, b = music_range(project)
+        project.record(f"warp {t['name']} reset")
+        report_sync(project.track(str(t["n"])), fit_track(project, t, a, b, slow=v["slow"], fast=v["fast"],
+                                                          depth=v["depth"], tail=v["tail"]), "warp")
+        return
+    points = [list(p) for p in (v["warp"] or [[a, a] for a in audible(t)])]  # [ms after the position, ms in the picture]
+    offset = t["offset_ms"]
+
+    def moment(text: str, now: int) -> int:
+        """A time, or with a sign a move from where it is."""
+        return now + (1 if text[0] == "+" else -1) * parse_ms(text[1:]) if text[0] in "+-" else parse_ms(text)
+
+    def index(text: str) -> int:
+        if not text.isdigit() or not 1 <= int(text) <= len(points):
+            die(f"no point {text}: there are {len(points)} (gout warp {t['n']} lists them)")
+        return int(text) - 1
+
+    if what == "add" and len(rest) == 3:
+        at, source = parse_ms(rest[1]) - offset, parse_ms(rest[2])
+        if any(p[0] == at for p in points):
+            die(f"there is a point at {fmt_ms(offset + at)} already: warp {t['n']} mv or src changes it")
+        points.append([at, source])
+        points.sort()
+        message = "add"
+    elif what == "mv" and len(rest) == 3:
+        i = index(rest[1])
+        points[i][0] = moment(rest[2], offset + points[i][0]) - offset
+        message = "mv"
+    elif what == "src" and len(rest) == 3:
+        i = index(rest[1])
+        points[i][1] = moment(rest[2], points[i][1])
+        message = "src"
+    elif what == "rm" and len(rest) == 2:
+        i = index(rest[1])
+        if len(points) <= 2:
+            die("a map needs two points; warp clear drops it")
+        del points[i]
+        message = "rm"
+    else:
+        die(f"usage:\n{WARP_USAGE}")
+    for a, b in zip(points, points[1:]):
+        if b[0] <= a[0]:
+            die(f"the points must run forward in project time: {fmt_ms(offset + a[0])} then {fmt_ms(offset + b[0])}")
+        if b[1] <= a[1]:
+            die(f"the points must run forward in the picture: {fmt_ms(a[1])} then {fmt_ms(b[1])}"
+                " (a point after this one shows an earlier moment)")
+    if points[0][1] < 0:
+        die("the picture does not start before 0:00")
+    if not v["tail"] and points[-1][1] > t["length_ms"]:
+        die(f"the picture is {fmt_ms(t['length_ms'])} long: a point cannot show {fmt_ms(points[-1][1])}"
+            f" unless it loops or bounces (gout sync {t['n']} --pingpong)")
+    project.record(f"warp {t['name']} {message} {' '.join(rest[1:])}")
+    if not v["warp"]:
+        project.video_set(t["file"], want_ms=[0, points[-1][0]])
+    project.video_set(t["file"], warp=points)
+    project.update(t["n"], offset_ms=offset)
+    print_warp(project.track(str(t["n"])))
+    over = [r for r in slowdowns(points) if r > v["slow"] * 1.01 or (r < 1 / v["fast"] * 0.99)]
+    if over:
+        print(f"      a stretch is outside the limits (slower than {v['slow']:g}x or faster than {v['fast']:g}x):"
+              f" kept, it is your edit")
 
 
 def apply_video(project: Project, t: dict, item: dict, warnings: list[str]) -> None:

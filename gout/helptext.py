@@ -123,6 +123,26 @@ TRACKS   (TRACK is the number shown by ls, or the track name)
                                              undo, dump, import and rebuild treat it the same; gain, pan,
                                              mute, solo, part and effects say it is not for pictures.
                                              trim -H refuses it (gout never rewrites a picture)
+  gout sync  sy TRACK [-st T] [-et T] [--slow K] [--fast K] [--depth D] [--loop|--pingpong|--once]
+                                             fit a video track to the music: a time map from the project to
+                                             the picture, stored as warp points (default: from where the music
+                                             starts to where it ends). The picture's own change per second
+                                             (read once, cached) is set against the music's level: busy stretches
+                                             of picture land on busy music, quiet on quiet, and a music hit gets
+                                             the picture's fastest moment near it (bar lines too, with set bpm).
+                                             --slow the most it may be slowed, default 4 times, never a slideshow;
+                                             --fast the most it may be sped up, 1.25; --depth 0 an even stretch,
+                                             1 all of it the music's, default 0.6. It prints the stretch, and how
+                                             much better it matches than an even stretch. Too short even at the
+                                             slowest: it says how many seconds are missing and shows nothing
+                                             there, and chooses nothing; --loop or --pingpong (forward, then
+                                             backwards, no jump) carry on past the end; --once undoes that
+  gout warp  wp TRACK [add TIME SOURCE | mv N TIME | src N SOURCE | rm N | reset | clear]
+                                             the warp points (project time, picture time, how slow until the next)
+                                             and editing them: add a point, move one in time (+200ms, -1s from
+                                             where it is) or in the picture, drop one; reset makes the automatic
+                                             map again; clear plays the picture as it is. A hand edit outside the
+                                             speed limits is kept and said so
   gout scan  sc                              register wav/mp3 and video files you copied into {TRACK_DIR}/
                                              yourself, at 0; reports tracks whose file has gone missing
   gout move  m  TRACK +TIME | -TIME | TIME   nudge later, nudge earlier, or place at a time
