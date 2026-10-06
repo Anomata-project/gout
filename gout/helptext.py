@@ -87,7 +87,8 @@ PROJECT
                                   wide, it works at --flow-size, default 960, and scales back up). --preview:
                                   nearest, at most 640 wide, quick to make, master-preview.mp4. Size: the
                                   pictures' own when they share one, else 1920x1080, never more; 25 fps or
-                                  -r. A picture that is short of the music is not rendered until you choose
+                                  -r. The title and artist come up over the pictures at the start as on a
+                                  cover (set title, set artist; -T leaves them out). A picture that is short of the music is not rendered until you choose
                                   how to fill it (sync). A loop or bounce is read from a file made once
                                   under .gout/video/; the pictures themselves are never rewritten
   gout interp ip TRACK|all [nearest | blend | flow]

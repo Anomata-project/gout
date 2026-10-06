@@ -12,6 +12,10 @@ One ffmpeg does all of it. For every track a chain of filters:
   fade, lut   the clip's fades and opacity, in the alpha channel,
   overlay     onto what is below, bottom track first, over black.
 
+and on top of all of them the title, when set title / set artist are there (and no -T): the same big
+letters in gout's characters that the screens and covers get (video.Title), drawn once as a picture
+of the title's box, wiped in from the left by a geq expression and shown from 0.5 s to 6.5 s.
+
 A track that loops or bounces (sync --loop, --pingpong) is read from a cached cycle file under
 .gout/video/ (the trimmed picture, and for a bounce the picture and then the picture backwards) that
 ffmpeg repeats; nothing else is ever re-encoded, and the picture file itself is never touched.
@@ -22,14 +26,17 @@ import hashlib
 import math
 import os
 import shutil
+import struct
 import subprocess
 import tempfile
 import threading
+import zlib
 from pathlib import Path
 
 from .core import die
 from .model import audible, video_points
 from .motion import CACHE_DIR
+from .settings import setting
 from .video import Progress
 
 MAX_W, MAX_H = 1920, 1080
@@ -137,6 +144,66 @@ def cycle_file(project, t: dict, tail: str) -> tuple[Path, float]:
     return path, length * (2 if tail == "pingpong" else 1)
 
 
+# ---- the title
+
+def png(width: int, height: int, rgb: bytes) -> bytes:
+    """A PNG of raw rgb24 rows: stdlib only, so ffmpeg can read the title as a picture."""
+    rows = b"".join(b"\x00" + rgb[y * width * 3:(y + 1) * width * 3] for y in range(height))
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff)
+
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(rows, 6)) + chunk(b"IEND", b""))
+
+
+class TitleLayer:
+    """The title as an input of the graph: a picture of its box, looped for as long as it shows, and
+    the filters that scale it to the video, wipe it in and place it."""
+
+    def __init__(self, project, size: tuple[int, int], fps: float, seconds: float, folder: Path):
+        from .video import Atlas, class_colours, compose, grid, Title, TITLE_FROM, TITLE_UNTIL, TITLE_WIPE, CELL_H, CELL_W
+        text, artist = setting(project, "title"), setting(project, "artist")
+        self.usable = bool(text or artist)
+        if not self.usable:
+            return
+        cols, rows = grid()
+        self.until = min(TITLE_UNTIL, seconds / 2)
+        title = Title(text, artist, cols, rows, until=1e9)  # the whole of it; `until` is the overlay's
+        if title.box is None:
+            self.usable = False
+            return
+        left, top, right, bottom = title.box
+        frame = compose(title.over([], TITLE_FROM + TITLE_WIPE + 1), Atlas(extra=text + artist), class_colours(project.root),
+                        cols, rows)
+        row_bytes = cols * CELL_W * 3
+        pieces = [frame[y * row_bytes + left * CELL_W * 3:y * row_bytes + (right + 1) * CELL_W * 3]
+                  for y in range(top * CELL_H, (bottom + 1) * CELL_H)]
+        box_w, box_h = (right - left + 1) * CELL_W, (bottom - top + 1) * CELL_H
+        self.path = folder / "title.png"
+        self.path.write_bytes(png(box_w, box_h, b"".join(pieces)))
+        w, h = size
+        scale = min(w / (cols * CELL_W), h / (rows * CELL_H))  # the grid's canvas fitted in the video, centred
+        self.cells = right - left + 1
+        self.width, self.height = max(2, round(box_w * scale)), max(2, round(box_h * scale))
+        self.x = (w - cols * CELL_W * scale) / 2 + left * CELL_W * scale
+        self.y = (h - rows * CELL_H * scale) / 2 + top * CELL_H * scale
+        self.start, self.wipe = TITLE_FROM, TITLE_WIPE
+        self.fps = fps
+
+    def args(self) -> list[str]:
+        return ["-loop", "1", "-framerate", f"{self.fps:.6f}", "-t", f"{self.until:.6f}", "-i", str(self.path)]
+
+    def text(self, index: int) -> str:
+        cell = self.width / self.cells  # wiped in a cell at a time, as the screens do
+        return (f"[{index}:v]format=rgba,scale={self.width}:{self.height}:flags=area,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':"
+                f"a='if(lt(floor(X/{cell:.5f}),round({self.cells}*clip((T-{self.start})/{self.wipe},0,1))),255,0)'[title]")
+
+    def over(self, below: str) -> str:
+        return (f"[{below}][title]overlay=x={self.x:.3f}:y={self.y:.3f}:enable='between(t,{self.start},{self.until:.6f})'"
+                f":eof_action=pass:format=auto")
+
+
 # ---- the graph
 
 class Layer:
@@ -197,17 +264,21 @@ class Layer:
         return f"[{index}:v]{','.join(self.chain)}[{self.label}]"
 
 
-def graph(layers: list[Layer], size: tuple[int, int], fps: float, seconds: float) -> str:
-    """The whole filtergraph: black, then each layer over what is below it. Input i is layer i's."""
+def graph(layers: list[Layer], size: tuple[int, int], fps: float, seconds: float, title: "TitleLayer | None" = None) -> str:
+    """The whole filtergraph: black, then each layer over what is below it, then the title. Input i is
+    layer i's; the title's is the one after the layers."""
     w, h = size
     lines = [f"color=c=black:s={w}x{h}:r={fps:.6f}:d={seconds:.6f},format=yuv420p[base]"]
     lines += [layer.text(i) for i, layer in enumerate(layers)]
     below = "base"
     for i, layer in enumerate(layers):
-        out = "out" if i == len(layers) - 1 else f"o{i}"
-        lines.append(f"[{below}][{layer.label}]overlay=x=(W-w)/2:y=(H-h)/2:eof_action=pass:format=auto"
-                     + (",format=yuv420p" if out == "out" else "") + f"[{out}]")
-        below = out
+        lines.append(f"[{below}][{layer.label}]overlay=x=(W-w)/2:y=(H-h)/2:eof_action=pass:format=auto[o{i}]")
+        below = f"o{i}"
+    if title is not None:
+        lines.append(title.text(len(layers)))
+        lines.append(title.over(below) + "[ot]")
+        below = "ot"
+    lines.append(f"[{below}]format=yuv420p[out]")
     return ";\n".join(lines) + "\n"
 
 
@@ -229,17 +300,26 @@ def layers_for(project, videos: list[dict], *, fps: float, size: tuple[int, int]
 # ---- running it
 
 def render(project, videos: list[dict], audio: Path, target: Path, *, seconds: float, head_ms: int, fps: float,
-           size: tuple[int, int], mode: str | None, preview: bool, flow_width: int = FLOW_W) -> None:
-    """Write the mp4: the layers over black, audio from `audio`, to `target` by way of a part file."""
+           size: tuple[int, int], mode: str | None, preview: bool, flow_width: int = FLOW_W,
+           title: bool = False) -> None:
+    """Write the mp4: the layers over black, the title on top when asked, audio from `audio`, to
+    `target` by way of a part file."""
     layers = layers_for(project, videos, fps=fps, size=size, mode=mode, head_s=head_ms / 1000, flow_width=flow_width)
     frames = math.ceil(seconds * fps)
-    script = Path(tempfile.mkstemp(prefix="gout-graph-", suffix=".txt")[1])
-    script.write_text(graph(layers, size, fps, seconds), encoding="utf-8")
+    folder = Path(tempfile.mkdtemp(prefix="gout-title-"))
+    title_layer = TitleLayer(project, size, fps, seconds, folder) if title else None
+    if title_layer is not None and not title_layer.usable:
+        title_layer = None
+    script = folder / "graph.txt"
+    script.write_text(graph(layers, size, fps, seconds, title_layer), encoding="utf-8")
     part = target.with_name(target.stem + ".part" + target.suffix)
     command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-progress", "pipe:1", "-nostats"]
     for layer in layers:
         command += layer.args
-    command += ["-i", str(audio), "-filter_complex_script", str(script), "-map", "[out]", "-map", f"{len(layers)}:a",
+    if title_layer is not None:
+        command += title_layer.args()
+    audio_at = len(layers) + (title_layer is not None)
+    command += ["-i", str(audio), "-filter_complex_script", str(script), "-map", "[out]", "-map", f"{audio_at}:a",
                 "-c:v", OUT, "-preset", "veryfast" if preview else "medium", "-crf", "28" if preview else "20",
                 "-pix_fmt", "yuv420p", "-r", f"{fps:.6f}", "-c:a", "aac", "-b:a", "320k", "-ar", "48000",
                 "-t", f"{seconds:.6f}", "-movflags", "+faststart", str(part)]
@@ -270,12 +350,12 @@ def render(project, videos: list[dict], audio: Path, target: Path, *, seconds: f
         proc.kill()
         proc.wait()
         part.unlink(missing_ok=True)
-        script.unlink(missing_ok=True)
+        shutil.rmtree(folder, ignore_errors=True)
         progress.close()
         raise
     progress.update(frames)
     progress.close()
-    script.unlink(missing_ok=True)
+    shutil.rmtree(folder, ignore_errors=True)
     if proc.returncode != 0:
         errors.seek(0)
         said = errors.read().decode(errors="replace").strip().splitlines()

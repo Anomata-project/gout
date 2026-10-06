@@ -170,7 +170,13 @@ fade, so the join dissolves.
 
 The size is the pictures' own when they all share one, otherwise 1920x1080, and never more (`-s
 WxH` says); 25 frames a second, or `-r`. `--preview` is nearest-frame, at most 640 wide and quick
-to make, and goes to `master-preview.mp4`. Title and artist are not drawn on video tracks.
+to make, and goes to `master-preview.mp4`.
+
+The title and artist (`set title`, `set artist`) are drawn over the pictures as they are over a cover or a
+screen: big letters in gout's characters in a black box in the middle (what follows a dash in the
+title goes under it, the artist under that), wiped in from the left at 0.5 s and gone at 6.5 s, or at
+half of a short song. They are scaled to the video's size, laid over every track, and `-T` leaves
+them out. Without a title set, `video` says how to set one.
 
 What happens between the picture's own frames, when a stretch is slowed down, is each track's
 `interp`: `nearest` shows the frame nearest in time (quick, and steppy when slowed), `blend` mixes the

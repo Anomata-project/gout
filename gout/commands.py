@@ -1653,9 +1653,10 @@ def cmd_video(project: Project, args: Args) -> None:
     pictures = project.videos()
     chosen = [find_video(pictures, w) for w in words]
     if (not words and pictures) or (words and all(chosen)):
-        if cover or every or no_title:
-            die("-c, -e and -T are for screens and images, not for video tracks")
-        video_of_tracks(project, args, chosen if words else pictures, out, tracks_mode, fps_text, size_text, flow_size, preview)
+        if cover or every:
+            die("-c and -e are for screens and images, not for video tracks")
+        video_of_tracks(project, args, chosen if words else pictures, out, tracks_mode, fps_text, size_text, flow_size, preview,
+                        no_title)
         return
     if not words:
         die(f"usage: {VIDEO_USAGE}")
@@ -1768,9 +1769,10 @@ def find_video(pictures: list[dict], word: str) -> dict | None:
 
 
 def video_of_tracks(project: Project, args: Args, videos: list[dict], out: str | None, mode: str | None,
-                    fps_text: str | None, size_text: str | None, flow_size: str | None, preview: bool) -> None:
+                    fps_text: str | None, size_text: str | None, flow_size: str | None, preview: bool,
+                    no_title: bool = False) -> None:
     """An mp4 of video tracks with the song: each through its time map, laid over each other, the
-    last on top, with its fades and opacity."""
+    last on top, with its fades and opacity, and the title over them unless -T."""
     from .video import FPS
     from .vrender import FLOW_W, output_size, render
     videos = sorted({t["n"]: t for t in videos}.values(), key=lambda t: t["n"])
@@ -1808,9 +1810,12 @@ def video_of_tracks(project: Project, args: Args, videos: list[dict], out: str |
     if "flow" in modes:
         print(f"      flow is slow: about 0.2 s a frame at 960 px wide where it was measured (working at {flow_width} px here,"
               f" --flow-size changes that); the bar shows the time left once it is going", flush=True)
+    wanted = not no_title and bool(setting(project, "title") or setting(project, "artist"))
+    if not no_title and not wanted:
+        print("video no title: gout set title TEXT (and set artist TEXT) puts one at the start")
     try:
         render(project, videos, project.master, target, seconds=seconds, head_ms=int(setting(project, "head")), fps=fps,
-               size=size, mode=mode, preview=preview, flow_width=flow_width)
+               size=size, mode=mode, preview=preview, flow_width=flow_width, title=wanted)
     except KeyboardInterrupt:
         die("video stopped; nothing written")
     print(f"      {target}  {fmt_size(target.stat().st_size)}")

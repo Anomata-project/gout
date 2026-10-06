@@ -24,9 +24,17 @@ def ramp(path, seconds: int = 10, fps: int = 12):
            "-pix_fmt", "yuv420p", str(path))
 
 
-def flat(path, luma: int, seconds: int = 10, fps: int = 12):
-    ffmpeg("-f", "lavfi", "-i", f"nullsrc=s=64x36:r={fps}:d={seconds},geq=lum={luma}:cb=128:cr=128",
+def flat(path, luma: int, seconds: int = 10, fps: int = 12, size: str = "64x36"):
+    ffmpeg("-f", "lavfi", "-i", f"nullsrc=s={size}:r={fps}:d={seconds},geq=lum={luma}:cb=128:cr=128",
            "-pix_fmt", "yuv420p", str(path))
+
+
+def region(path, seconds: float, x: int, y: int, w: int, h: int) -> int:
+    """The mean grey level of a rectangle of the frame at a moment of a video."""
+    out = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-ss", str(seconds), "-i", str(path),
+                          "-frames:v", "1", "-vf", f"crop={w}:{h}:{x}:{y},scale=1:1:flags=area,format=gray", "-f", "rawvideo", "-"],
+                         capture_output=True, check=True).stdout
+    return out[0]
 
 
 def music(path, seconds: int = 30):
@@ -217,7 +225,7 @@ class RenderTest(GoutTest):
         self.assertNotIn("flow is slow", said)
         self.assertTrue((self.tmp / "song" / "master-preview.mp4").exists())
         self.assertIn("for video tracks", self.gout("video", str(self.ramp), "-m", "flow", ok=False).stderr)
-        self.assertIn("not for video tracks", self.gout("video", "-T", ok=False).stderr)
+        self.assertIn("are for screens and images", self.gout("video", "-c", str(self.ramp), ok=False).stderr)
         self.assertIn("one of", self.gout("video", "-m", "smooth", ok=False).stderr)
         self.assertIn("WIDTHxHEIGHT", self.gout("video", "-s", "big", ok=False).stderr)
         big = self.tmp / "big.mp4"
@@ -239,3 +247,79 @@ class RenderTest(GoutTest):
             deepest = max(deepest, depth)
         self.assertLess(deepest, 30)  # nested about log2(n) deep, not n
         self.assertEqual(inverse([(0.0, 0.0), (10.0, 5.0)]), "0.000000+(T-0.000000)*2.000000000")
+
+
+class TitleTest(GoutTest):
+    """The title and artist over video tracks, as the screens and covers get them."""
+
+    def setUp(self):
+        super().setUp()
+        self.more_env["GOUT_VIDEO_GRID"] = "40x12"  # a 480 by 288 canvas
+        self.picture, self.song = self.tmp / "bright.mp4", self.tmp / "music.wav"
+        flat(self.picture, 200, size="480x288")
+        music(self.song)
+        self.project("song")
+        self.gout("add", str(self.song))
+        self.gout("add", str(self.picture))
+        self.gout("fade", "all", "0")  # the picture itself is a cut in and out
+        self.gout("set", "title", "Morphing - a long sub title")
+        self.gout("set", "artist", "Anomata")
+        Title = gout_attr("video", "Title")
+        left, top, right, bottom = Title("Morphing - a long sub title", "Anomata", 40, 12).box
+        self.box = (left * 12, top * 24, (right - left + 1) * 12, (bottom - top + 1) * 24)  # in pixels
+
+    def render(self, *flags):
+        out = self.tmp / "out.mp4"
+        said = self.gout("video", "-m", "nearest", "-s", "480x288", "-o", str(out), *flags).stdout
+        return out, said
+
+    def test_the_title_wipes_in_stays_and_goes(self):
+        out, said = self.render()
+        x, y, w, h = self.box
+        self.assertGreater(w, 100)
+        self.assertNotIn("no title", said)
+        bright = region(out, 0.3, x, y, w, h)
+        self.assertGreater(bright, 150)  # before 0.5 s: only the picture
+        self.assertLess(region(out, 1.6, x, y, w, h), 70)  # the black box and the letters over it
+        self.assertLess(region(out, 6.0, x, y, w, h), 70)  # still there at 6 s
+        self.assertGreater(region(out, 7.0, x, y, w, h), 150)  # gone after 6.5 s
+        left, right = region(out, 0.8, x, y, w // 5, h), region(out, 0.8, x + w - w // 5, y, w // 5, h)
+        self.assertLess(left, 70)  # half way through the wipe the left is in
+        self.assertGreater(right, 150)  # and the right is not yet
+        self.assertGreater(region(out, 1.6, 0, 0, 480, 20), 150)  # nothing outside the box: the picture shows
+        letters = [region(out, 1.6, x + i * 12, y + 24, 12, 24) for i in range(w // 12)]
+        self.assertTrue(any(level > 60 for level in letters))  # gold letters, not just a black box
+
+    def test_no_title_flag_and_nothing_set(self):
+        out, said = self.render("-T")
+        x, y, w, h = self.box
+        self.assertGreater(region(out, 1.6, x, y, w, h), 150)
+        self.gout("set", "title", "")
+        self.gout("set", "artist", "")
+        out, said = self.render()
+        self.assertIn("no title: gout set title", said)
+        self.assertGreater(region(out, 1.6, x, y, w, h), 150)
+
+    def test_a_short_song_has_its_title_for_half_of_it(self):
+        short = self.tmp / "short.wav"
+        music(short, seconds=4)
+        self.gout("rm", "1")
+        self.gout("add", str(short))
+        self.gout("fade", "all", "0")
+        out, said = self.render()
+        x, y, w, h = self.box
+        self.assertLess(region(out, 1.8, x, y, w, h), 70)
+        self.assertGreater(region(out, 2.6, x, y, w, h), 150)  # gone at 2 s, half of four
+
+    def test_the_title_is_scaled_to_the_video_and_follows_the_head(self):
+        self.gout("set", "head", "1s")
+        big = self.tmp / "big.mp4"
+        flat(big, 200, size="960x576")
+        self.gout("rm", "2")
+        self.gout("add", str(big))
+        self.gout("fade", "all", "0")
+        out = self.tmp / "big-out.mp4"
+        self.gout("video", "-m", "nearest", "-s", "960x576", "-o", str(out))
+        x, y, w, h = (v * 2 for v in self.box)  # the canvas is twice as big
+        self.assertLess(region(out, 1.6, x, y, w, h), 70)
+        self.assertGreater(region(out, 1.6, 0, 0, 960, 40), 150)  # and nothing above it: the picture shows
