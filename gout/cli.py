@@ -55,6 +55,8 @@ from .commands import (
     run_tui,
 )
 from .cut import cmd_cut
+from .instcmd import cmd_instrument, print_kinds as print_instrument_kinds
+from .sequencer import settle
 
 
 BASE_PROJECT_COMMANDS = {
@@ -63,6 +65,7 @@ BASE_PROJECT_COMMANDS = {
     "set": cmd_set, "stats": cmd_stats, "mix": cmd_mix, "undo": cmd_undo, "dump": cmd_dump,
     "saveas": cmd_saveas, "stems": cmd_stems, "import": cmd_import,
     "view": cmd_view, "sync": cmd_sync, "warp": cmd_warp, "interp": cmd_interp, "opacity": cmd_opacity, "fade": cmd_fade, "ui": cmd_ui, "play": cmd_play, "record": cmd_record, "video": cmd_video,
+    "instrument": cmd_instrument,
 }
 
 
@@ -152,6 +155,9 @@ def run(argv: list[str], project: Project | None = None) -> int:
     if head == "fx" and [w.lower() for w in rest] in (["kinds"], ["effects"]):
         print_kinds()  # listing the effects needs no project
         return 0
+    if head == "instrument" and [w.lower() for w in rest] == ["kinds"]:  # nor does listing the instruments
+        print_instrument_kinds()
+        return 0
     if head == "record" and rest[:1] == ["calibrate"]:  # per computer, so no project needed
         cmd_calibrate(root_hint, Args(rest[1:]))
         return 0
@@ -163,7 +169,9 @@ def run(argv: list[str], project: Project | None = None) -> int:
         found = project or Project.find(root_hint)
         if found is None:
             die(f"not inside a gout project (no {DB_NAME} here or above) — gout new NAME")
+        settle(found)  # an instrument track's wav that is missing or behind its pattern is written first
         table[head](found, Args(rest))
+        settle(found)
         found.sync_json()
         return 0
     if head == "cut":

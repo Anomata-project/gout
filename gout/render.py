@@ -447,6 +447,15 @@ COMMAND_SECTIONS = [
         ("record", "rec", "calibrate [-i INPUT]", "clicks out and back in: takes land on time"),
         ("record", "rec", "check [FROM]", "a rehearsal: hear yourself, level and clips, nothing kept"),
     ]),
+    ("INSTRUMENTS", "tracks that play a pattern of steps; gout writes their wav", [
+        ("instrument", "ins", "add KIND [NAME] [-a TIME]", "a new track with 16 empty steps"),
+        ("instrument", "ins", "TRACK", "its pattern: a row per feature, a column per step"),
+        ("", "", "TRACK note 1 C2 - C2 D#2", "cells from a step on; - empty, = hold, rest"),
+        ("", "", "TRACK note 5-8 D2", "the same in several steps: 5-8 or 1,5,9"),
+        ("", "", "TRACK decay 200", "a row's value for every step"),
+        ("", "", "TRACK steps 32 | loop 4 | step 1/8", "the first row: length, repeats, note value"),
+        ("instrument", "ins", "kinds", "every instrument, with its rows and cells"),
+    ]),
     ("EFFECTS", "in order per track; TRACK can be master", [
         ("fx", "f", "TRACK", "the chain, numbered"),
         ("fx", "f", "TRACK add KIND [SETTINGS]", "add an effect at the end"),

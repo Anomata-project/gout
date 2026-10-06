@@ -13,6 +13,7 @@ from .media import fmt_lufs, measure_loudness, probe
 from .model import audible, CROSS_MS, is_heard, meets, part_label, part_owner, part_start, timeline
 from .fx import Effect, FxContext, effect
 from .settings import BITS_CODEC, master_track, setting, tag_args
+from .sequencer import settle
 
 
 def active_effects(project: "Project", t: dict, warnings: set[str] | None = None,
@@ -393,7 +394,9 @@ def live_source(project: "Project", from_ms: int, warnings: set[str] | None = No
 
 
 def autorender(project: Project, args: "Args") -> None:
-    """Re-render master.wav after a change when autorender is on, unless -N was given."""
+    """Re-render master.wav after a change when autorender is on, unless -N was given. Instrument
+    tracks get their wavs written first when the change touched what they play (an undo, a tempo)."""
+    settle(project)
     if args.no_mix:
         return
     if project.autorender:

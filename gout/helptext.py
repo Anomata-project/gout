@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from .core import __version__, DB_NAME, DEFAULT_RATE, MASTER_MP3, MASTER_WAV, SIDECAR, STEMS_DIR, TRACK_DIR
 from .fx import effects
+from .inst import instruments
 
 
 HELP_TEMPLATE = f"""\
@@ -204,7 +205,7 @@ TRACKS   (TRACK is the number shown by ls, or the track name)
                                              hear it (trim 3 p2 -st 1:31 -et +2s) and goes (rm 3 p2). An edge
                                              that no longer meets another part fades over 5 ms. part TRACK
                                              alone lists them
-{{EFFECTS}}  -N (--no-mix) on any of these skips the automatic re-mix; -p DIR before a command picks
+{{EFFECTS}}{{INSTRUMENTS}}  -N (--no-mix) on any of these skips the automatic re-mix; -p DIR before a command picks
   the project. Long flags: --at --name --hard --clear --reencode --delete --mp3 --rate --width
 
 ADDONS
@@ -301,9 +302,43 @@ def effects_help() -> str:
     return "\n".join(lines) + "\n"
 
 
+def instruments_help() -> str:
+    lines = [
+        "INSTRUMENTS   (tracks gout plays itself, from a pattern of steps instead of a recording. gout writes the",
+        "              track's wav in master/ from the pattern whenever it changes, so effects, gain, pan, move,",
+        "              parts and stems work on it as on any track; undo takes a change back)",
+        "  gout instrument ins                          the instrument tracks here;  gout instrument kinds  lists",
+        "                                             every instrument with its rows and cells",
+        "  gout instrument ins add KIND [NAME] [-a TIME]  a new track with 16 empty steps: sixteenth notes at the",
+        "                                             project's bpm (a project without a tempo gets 120)",
+        "  gout instrument ins TRACK                    its pattern as a grid: a row per feature, a column per step,",
+        "                                             and before the steps the row's value for every step",
+        "  gout instrument ins TRACK ROW STEP VALUE...  cells: note 1 C2, note 5-8 D2, note 1,5,9 C3; several values",
+        "                                             run on from the step: note 1 C2 - C2 D#2. A cell that is - or .",
+        "                                             is empty and takes the row's value; a note can also be = (the",
+        "                                             note before goes on through the step) or rest (silence)",
+        "  gout instrument ins TRACK ROW VALUE          the row's value for every step: decay 200",
+        "  gout instrument ins TRACK CELL VALUE         the first row: steps 32 (steps +4 adds four), loop 4 (the",
+        "                                             pattern four times), step 1/8 (1/4 1/8 1/8t 1/16 1/16t 1/32),",
+        "                                             title, description and the instrument's own; - gives a cell",
+        "                                             back the value it started with",
+        "",
+    ]
+    for item in instruments().values():
+        short = item.aliases[0] if item.aliases else ""
+        origin = "" if item.source == "built-in" else f"   [addon: {item.source}]"
+        lines.append(f"  {item.name + ' ' + short:<18} {item.summary}{origin}")
+        for feature in (*item.features, *item.settings):
+            unit = f" ({feature.unit})" if feature.unit else ""
+            choices = f": {' '.join(feature.choices)}" if feature.choices else ""
+            where = "cell" if feature in item.settings else "row "
+            lines.append(f"  {'':<18}   {where} {feature.name + unit:<14} {feature.summary}{choices}")
+    return "\n".join(lines) + "\n\n"
+
+
 def help_text() -> str:
-    """The instruction page, with the effects there are (addons included)."""
-    return HELP_TEMPLATE.replace("{EFFECTS}", effects_help(), 1)
+    """The instruction page, with the effects and instruments there are (addons included)."""
+    return HELP_TEMPLATE.replace("{EFFECTS}", effects_help(), 1).replace("{INSTRUMENTS}", instruments_help(), 1)
 
 
 def help_for(word: str) -> list[str]:

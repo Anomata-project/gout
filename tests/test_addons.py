@@ -216,7 +216,8 @@ class ExampleAddonTest(GoutTest):
                                             "        return ''\n\ndef register(gout):\n    gout.requires(1)\n"
                                             "    gout.add_effect(Now())\n", encoding="utf-8")
         report = self.gout("addons").stdout
-        self.assertIn("future.py                not loaded: it needs gout's addon API 2, and this gout has 1: "
+        api = gout_attr("addons", "API_VERSION")  # 2 since instruments
+        self.assertIn(f"future.py                not loaded: it needs gout's addon API {api + 1}, and this gout has {api}: "
                       "update gout", report)
         self.assertIn("now.py                   now", report)
 

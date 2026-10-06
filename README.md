@@ -106,6 +106,7 @@ name (a unique prefix will do). `-N` / `--no-mix` on any change skips an automat
 | `fx` | `f` | `TRACK [add KIND ... \| N SETTINGS \| N on\|off\|rm \| N move M \| clear]` | the track's (or master's) effect chain, in order; `fx kinds` lists every effect |
 | `loop` | `lo` | `FROM TO \| on \| off` | play round a stretch of the song, over and over |
 | `duplicate` | `dup` | `TRACK FROM TO [-a AT] [-n NAME]` | what the track plays from FROM to TO, as a new track (a new wav), at the same time unless `-a` |
+| `instrument` | `ins` | `[add KIND [NAME] [-a TIME] \| TRACK [ROW STEP VALUE... \| CELL VALUE] \| kinds]` | a track that plays a pattern of steps instead of a recording; see Instruments |
 | `play` | `pl` | `[FROM] [-r]` | play `master.wav`, or the project live when it is out of date; in the ui, space plays and stops |
 | `mix` | `x` | `[-3] [-v]` | render `master.wav`; `-3` / `--mp3` also writes `master.mp3` |
 | `record` | `rec` | `[FROM] [-t LENGTH] [-n NAME] [-i INPUT] [-c N] [-s] [-d]` | record a new track while the project plays from `FROM`; see Recording |
@@ -394,6 +395,58 @@ On Linux, `gout inputs` also lists what each output plays, so you can record the
 sound like any other input. Capture goes through `pw-record`, `parecord` or `arecord` on Linux and
 ffmpeg on macOS and Windows. `GOUT_RECORDER` picks one, and `GOUT_RECORDER=null` records silence.
 
+## Instruments
+
+An instrument track has no recording. It has a pattern: steps across, and a row for each thing a
+step can be told. gout writes the track's wav in `master/` from the pattern every time the pattern
+changes, so the rest of gout works on it as on any track: effects, gain, pan, move, parts, mute,
+solo, stems.
+
+```sh
+gout instrument add synth bass                # a new track called bass, 16 empty steps
+gout ins bass note 1 C2 - C2 D#2 - C3 - A#1   # notes from step 1 on; - leaves a step empty
+gout ins bass note 9-12 G2                    # one note on several steps (1,5,9 works too)
+gout ins bass note 14 =                       # = holds the note before through this step
+gout ins bass decay 200                       # the row's value for every step
+gout ins bass decay 4 800                     # and one step with its own
+gout ins bass wave square                     # a cell of the first row
+gout ins bass loop 4                          # the pattern four times
+gout ins bass                                 # the grid
+```
+
+```
+ins    1  bass             synth  16 steps of 1/16 at 120 bpm = 2.000 s, 4 times  at 00:00:00.000
+      title bass   wave square
+              all │   1   2   3   4 │   5   6   7   8 │   9  10  11  12 │  13  14  15  16
+      note        │  C2   ·  C2 D#2 │   ·  C3   · A#1 │  G2  G2  G2  G2 │   ·   =   ·   ·
+      decay   200 │   ·   ·   · 800 │   ·   ·   ·   · │   ·   ·   ·   · │   ·   ·   ·   ·
+      release  50 │   ·   ·   ·   · │   ·   ·   ·   · │   ·   ·   ·   · │   ·   ·   ·   ·
+      level   100 │   ·   ·   ·   · │   ·   ·   ·   · │   ·   ·   ·   · │   ·   ·   ·   ·
+```
+
+The first row is the instrument as a whole: `title`, `description`, `steps` (`steps 32` sets the
+length, `steps +4` adds four), `loop` (how many times the pattern plays), `step` (the note value of
+one step: `1/4 1/8 1/8t 1/16 1/16t 1/32`) and the instrument's own cells. A step lasts its note
+value at the project's `bpm`. A project without a tempo gets 120 when its first instrument is
+added, and `gout set bpm 96` changes every pattern along with it.
+
+Every other row has one value for every step, in the `all` column, and the steps that differ from
+it. A cell that is `-` or `.` is empty and takes the row's value. In the note row an empty step is
+silent, `=` lets the note before go on through the step, and `rest` is silence even when the row
+has a note for every step.
+
+The `synth` plays one note at a time. Its rows are `note`, `decay` (how many ms the note takes to
+die away by 60 dB; 0 keeps it at full level), `release` (how many ms it rings on after its step
+ends) and `level` (in percent; 100 peaks at -6 dBFS). Its cell is `wave`: `sine`, `saw`, `square`
+or `triangle`. What rings on after the last step sounds over the start of the next pass, and
+makes the file that much longer.
+
+The pattern lives in the project's database and in `gout.json`. `gout undo` takes a change back
+and the wav is written again; `gout rebuild` and `gout import` bring an instrument track back from
+`gout.json` alone, without its wav. A hard trim is refused, since the file is not the source;
+`gout duplicate` makes a recording of a stretch. `gout instrument kinds` lists every instrument
+with its rows and cells, and an addon can add more (see Addons).
+
 ## The terminal ui
 
 ### The timeline
@@ -613,7 +666,7 @@ chain, is marked `(not installed)`, and is left out of the mix with a warning on
 
 ## Addons
 
-An addon is a Python file that adds effects or full-screen views. Put it in `~/.config/gout/addons/`
+An addon is a Python file that adds effects, full-screen views or instruments. Put it in `~/.config/gout/addons/`
 (`%APPDATA%\gout\addons\` on Windows; `$XDG_CONFIG_HOME/gout/addons/` or the folder `$GOUT_ADDONS`
 names when set) and its effects behave like the built-in ones: a command with presets and a
 picture, a place in `gout fx` chains, rows in the parameter sheet, entries in `gout.json`, help and
@@ -624,7 +677,7 @@ gout addons examples             # copy the examples below into the addon folder
 gout addons                      # the folder, what loaded, and effects this project lacks
 ```
 
-[docs/addons.md](docs/addons.md) shows how to write your own, from a first effect to screens.
+[docs/addons.md](docs/addons.md) shows how to write your own, from a first effect to screens and instruments.
 
 Five examples ship in `examples/addons/`:
 
@@ -676,6 +729,10 @@ rows of text and colour classes, registered with `gout.add_screen(...)`. `ctx.ba
 how loud a band is now (`low`, `mid`, `high`, `level`, `onset`, 0 to 1) and `ctx.travel("low")`
 how much of it has gone by, for motion that pushes with the music. A screen takes one of the keys
 nothing else uses: `ctrl-space`, `ctrl-b`, `ctrl-q`, `ctrl-v`, `ctrl-y`.
+
+An instrument is a subclass of `gout.inst.Instrument` that names its rows and cells and has a
+`render(ctx, pattern, settings)` returning the samples of one pass of the pattern, registered with
+`gout.add_instrument(...)`. It then works with `gout instrument` like the built-in `synth`.
 
 An addon that fails to load, or wants a name that is taken, is reported on every command and
 skipped; gout keeps working. Addons are ordinary Python running with your permissions, so gout

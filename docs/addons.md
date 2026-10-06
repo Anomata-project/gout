@@ -1,6 +1,6 @@
 # Writing an addon for gout
 
-An addon is one Python file that gives gout a new effect or a new full-screen view. Its effect
+An addon is one Python file that gives gout a new effect, a new full-screen view or a new instrument. Its effect
 becomes a command like the built-in `eq` and `reverb`: with presets, a place in `gout fx` chains,
 a row in the parameter sheet, an entry in `gout.json`, and lines in help and the cheat sheet.
 
@@ -101,8 +101,9 @@ for it, and tab completes `phaser` and its presets.
 ## What the parts do
 
 **`register(gout)`** is the one function gout calls. `gout.add_effect(...)` adds an effect,
-`gout.add_screen(...)` a full-screen view. `gout.requires(1)` says which version of the addon
-API the file is written for (see [The addon API version](#the-addon-api-version)).
+`gout.add_screen(...)` a full-screen view, `gout.add_instrument(...)` an instrument.
+`gout.requires(1)` says which version of the addon API the file is written for (see
+[The addon API version](#the-addon-api-version)).
 
 **The attributes** describe the effect to everything that shows it:
 
@@ -238,11 +239,80 @@ at once (each with its own copy of the screen). Two things make that work well:
 The characters come out in a monospace font, coloured as the theme colours the terminal: ASCII
 and `█▓▒░━│·▶■●`; anything else shows as `?`.
 
+## Instruments
+
+An instrument plays a pattern: steps across, and a row for each thing a step can be told. gout
+asks it for the samples and writes them as the track's wav, so an instrument needs no ffmpeg at
+all. The smallest one:
+
+```python
+import math
+from array import array
+
+from gout.inst import Instrument
+from gout.pattern import NOTE, Feature, note_hz
+
+
+class Beep(Instrument):
+    name = "beep"
+    summary = "a bare sine for every note"
+    features = (NOTE, Feature("loud", "toggle", False, summary="twice as loud"))
+    settings = (Feature("octave", "count", 0, 0, 3, summary="octaves up"),)
+
+    def render(self, ctx, pattern, settings):
+        edges = ctx.edges(pattern)                  # the sample each step starts at, and the end
+        out = array("f", bytes(4 * edges[-1]))
+        for step, midi, steps in pattern.notes():   # a note, where it starts, how many steps it lasts
+            hz = note_hz(midi) * 2 ** self.value(settings, "octave")
+            gain = 0.5 if pattern.value(self.features[1], step) else 0.25
+            start = edges[step - 1]
+            for i in range(start, edges[step - 1 + steps]):
+                out[i] = gain * math.sin(2 * math.pi * hz * (i - start) / ctx.rate)
+        return [out]
+
+
+def register(gout):
+    gout.requires(2)
+    gout.add_instrument(Beep())
+```
+
+```sh
+gout instrument kinds            # beep, with its rows and cells
+gout instrument add beep lead
+gout ins lead note 1 A3 - A3 C4
+gout ins lead loud 1 on
+gout ins lead octave 1
+```
+
+**`features`** are the rows of the grid, top to bottom, and **`settings`** the instrument's own
+cells in the first row, after `title`, `description`, `steps`, `loop` and `step`, which every
+instrument has. Each is a `gout.pattern.Feature(name, kind, default, lo, hi, unit, choices,
+summary)`; the kinds are `note`, `number`, `count` (a whole number), `toggle`, `choice` and `text`.
+`gout.pattern.NOTE`, `DECAY` and `RELEASE` are ready-made rows.
+
+**`render(ctx, pattern, settings)`** returns one `array("f")` per channel, one or two, for one
+pass of the pattern at `ctx.rate` samples a second. `ctx.bpm` and `ctx.step_s` (seconds a step) say
+how fast it goes and `ctx.edges(pattern)` where each step starts. `pattern.value(feature, step)`
+is what a step holds: its own cell, else the row's value, else the feature's default.
+`pattern.notes()` walks the note row for you, holds and rests included. `self.value(settings,
+name)` reads a first-row cell. The samples may run past the end of the pattern by what rings on;
+gout lays that tail over the next pass when the pattern loops.
+
+**`reads(ctx, pattern, settings)`** returns rows the grid shows and nobody types, as `(name,
+[a text per step])`: what a fingering sounds like, for one. **`check(ctx, pattern, settings)`**
+raises `ValueError` when the pattern cannot be played as it stands; the change is then refused.
+**`version`** goes up when the same pattern should sound different, and every track the
+instrument plays is written again.
+
+`gout.synthkit` has waves, a note envelope and the mixing of notes into a buffer, in plain Python;
+it does about two million samples a second, so a bar of sixteenth notes takes a tenth of a second.
+
 ## Rules gout keeps
 
 - Names, short names and shortcuts are lowercase letters, digits, `-` and `_`, up to 16
   characters, starting with a letter. They must not be taken by a gout command, another effect,
-  a screen, or the words `master all presets kinds add move clear on off rm`.
+  a screen, an instrument, or the words `master all presets kinds add move clear on off rm`. An
+  instrument's rows and cells are named the same way, and not `add kinds all clear none rest open`.
 - No preset may be called `on`, `off`, `clear` or `none`: those words mean something to every
   effect command.
 - An addon that fails to load, or wants a name that is taken, is reported on every command and
@@ -258,9 +328,10 @@ and `█▓▒░━│·▶■●`; anything else shows as `?`.
 ("update gout") instead of failing somewhere inside it. `gout.version` is the version the running
 gout offers.
 
-Version **1** is everything in this guide: `add_effect` and `add_screen`; the `Effect` attributes
-and methods above; `FxContext`; `Screen` and `ScreenContext`; `gout.fx.GUTTER`;
-`gout.screens.config_file`; `gout.formula`. The version goes up when an addon can rely on
+Version **1** is `add_effect` and `add_screen`; the `Effect` attributes and methods above;
+`FxContext`; `Screen` and `ScreenContext`; `gout.fx.GUTTER`; `gout.screens.config_file`;
+`gout.formula`. Version **2** adds instruments: `add_instrument`, `gout.inst.Instrument` and
+`InstContext`, `gout.pattern` and `gout.synthkit`. The version goes up when an addon can rely on
 something new, and a change that would break addons written for an older version is avoided.
 
 ## Trying it out

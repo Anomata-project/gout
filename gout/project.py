@@ -71,6 +71,16 @@ CREATE TABLE IF NOT EXISTS video (
     warp        TEXT NOT NULL DEFAULT '[]',  -- [[ms after the track's position, ms in the source]], or none
     want_ms     TEXT NOT NULL DEFAULT '[]'   -- the stretch of the project the map was made for: [from, to]
 );
+CREATE TABLE IF NOT EXISTS instruments (
+    file     TEXT PRIMARY KEY,            -- the track's file name: gout writes that wav from the pattern
+    kind     TEXT NOT NULL,               -- the instrument's name: synth, or an addon's
+    settings TEXT NOT NULL DEFAULT '{}',  -- the cells of the grid's first row, as JSON
+    pattern  TEXT NOT NULL DEFAULT '{}'   -- the steps and the rows, as JSON
+);
+CREATE TABLE IF NOT EXISTS rendered (
+    file  TEXT PRIMARY KEY,               -- an instrument track's wav
+    state TEXT NOT NULL                   -- what it was written from: a note about the file, so undo leaves it alone
+);
 CREATE TABLE IF NOT EXISTS envelopes (
     file  TEXT PRIMARY KEY,
     size  INTEGER NOT NULL,
@@ -251,6 +261,7 @@ class Project:
         chains = self.chains()
         parts = self.all_parts()
         videos = self.all_video()
+        played = self.all_instruments()
         out = []
         for r in self.conn.execute("SELECT * FROM tracks ORDER BY n").fetchall():
             t = dict(r)
@@ -261,8 +272,31 @@ class Project:
                 part["fx"] = chains.get(part_owner(t["file"], part["id"]), [])
             if t["kind"] == VIDEO_KIND:
                 t["video"] = videos.get(t["file"]) or video_defaults()
+            if t["file"] in played:
+                t["instrument"] = played[t["file"]]
             out.append(t)
         return out
+
+    # ---- instruments: tracks whose wav gout writes from a pattern (sequencer.py)
+
+    def all_instruments(self) -> dict[str, dict]:
+        return {r["file"]: {"kind": r["kind"], "settings": json.loads(r["settings"] or "{}"),
+                            "pattern": json.loads(r["pattern"] or "{}")}
+                for r in self.conn.execute("SELECT * FROM instruments")}
+
+    def instrument_set(self, file: str, kind: str, settings: dict, pattern: dict) -> None:
+        """Make a track an instrument's, or change what it plays."""
+        with self.conn:
+            self.conn.execute("INSERT OR REPLACE INTO instruments (file, kind, settings, pattern) VALUES (?, ?, ?, ?)",
+                              (file, kind, json.dumps(settings, sort_keys=True), json.dumps(pattern, sort_keys=True)))
+
+    def rendered(self) -> dict[str, str]:
+        """What each instrument track's wav was written from."""
+        return {r["file"]: r["state"] for r in self.conn.execute("SELECT * FROM rendered")}
+
+    def rendered_set(self, file: str, state: str) -> None:
+        with self.conn:
+            self.conn.execute("INSERT OR REPLACE INTO rendered (file, state) VALUES (?, ?)", (file, state))
 
     # ---- video
 
@@ -370,6 +404,8 @@ class Project:
             if row:
                 self.conn.execute("DELETE FROM fx WHERE owner = ?", (row["file"],))
                 self.conn.execute("DELETE FROM video WHERE file = ?", (row["file"],))
+                self.conn.execute("DELETE FROM instruments WHERE file = ?", (row["file"],))
+                self.conn.execute("DELETE FROM rendered WHERE file = ?", (row["file"],))
                 for part in self.conn.execute("SELECT id FROM parts WHERE track = ?", (row["file"],)).fetchall():
                     self.conn.execute("DELETE FROM fx WHERE owner = ?", (part_owner(row["file"], part["id"]),))
                 self.conn.execute("DELETE FROM parts WHERE track = ?", (row["file"],))
@@ -621,6 +657,7 @@ class Project:
             self.conn.execute("DELETE FROM fx")
             self.conn.execute("DELETE FROM parts")
             self.conn.execute("DELETE FROM video")
+            self.conn.execute("DELETE FROM instruments")  # not rendered: the wavs are as they were written
             for t in snap["tracks"]:
                 cols = [c for c in TRACK_COLUMNS if c in t]
                 self.conn.execute(
@@ -633,6 +670,12 @@ class Project:
                     cols = [c for c in VIDEO_COLUMNS if c in item]
                     self.conn.execute(f"INSERT INTO video (file, {', '.join(cols)}) VALUES (?, {', '.join('?' for _ in cols)})",
                                       (t["file"], *(json.dumps(item[c]) if c in VIDEO_JSON else item[c] for c in cols)))
+            for t in snap["tracks"]:
+                played = t.get("instrument")
+                if played:
+                    self.conn.execute("INSERT INTO instruments (file, kind, settings, pattern) VALUES (?, ?, ?, ?)",
+                                      (t["file"], played["kind"], json.dumps(played.get("settings") or {}, sort_keys=True),
+                                       json.dumps(played.get("pattern") or {}, sort_keys=True)))
             part_chains = []
             for t in snap["tracks"]:
                 for part in t.get("parts", []):

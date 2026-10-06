@@ -39,6 +39,9 @@ from .fx import Effect, effect, effects, FxContext, resolve
 from .settings import BITS_CODEC, MASTER_DEFAULTS, master_track, parse_setting, setting, TAG_KEYS
 from .project import legacy_chain, Project
 from .mixer import autorender, live_source, mix, part_as_owner, sounding_end, sounds, track_chain
+from .inst import instrument
+from .pattern import Pattern
+from .sequencer import new_track, settle
 from .render import effect_picture, LABEL_W, render_cheat, render_timeline
 from .player import Player
 from .recorder import (choose_backend, CLIP, current_input, default_output, find_input, input_is_muted, level_db,
@@ -271,6 +274,8 @@ def cmd_ls(project: Project, args: Args) -> None:
         flags = ("M" if t["mute"] else "-") + ("S" if t["solo"] else "-")
         if not is_heard(t, any_solo):
             flags += " (silent)"
+        if t.get("instrument"):
+            flags += f"  {t['instrument']['kind']} {t['instrument']['pattern'].get('steps', 16)} steps"
         if t["fx"]:
             flags += "  fx " + " | ".join(fx_text(item) for item in t["fx"])
         print(f"{t['n']:>4}  {t['name']:<16} {t['kind']:<5} {t['channels']:>2}  {fmt_ms(start):<12} "
@@ -421,6 +426,9 @@ def cmd_trim(project: Project, args: Args) -> None:
         autorender(project, args)
         return
 
+    if t.get("instrument"):
+        die(f"track {t['n']} {t['name']} is an instrument track: gout writes its file from the pattern, so there is"
+            f" nothing to cut for good. A soft trim works; gout duplicate {t['n']} FROM TO makes a recording of a stretch")
     if a == 0 and b >= length:
         die("nothing to cut: the whole file is already the audible part (soft-trim first, or give -st/-et)")
     src = project.tracks_dir / t["file"]
@@ -1122,6 +1130,9 @@ def cmd_set(project: Project, args: Args) -> None:
                         eff.check(ctx, eff.read(item["params"]))
                 except (GoutError, ValueError):
                     users.append(f"the {item['kind']} on {owner_label(t)}")
+        played = [f"the {t['instrument']['kind']} on track {t['n']} {t['name']}" for t in project.tracks() if t.get("instrument")]
+        if played:
+            die(f"cannot clear bpm: {', '.join(played)} plays its pattern at the tempo")
         if users:
             die(f"cannot clear bpm: {', '.join(users)} uses the tempo; give it a time in ms first")
     project.record(f"set {key} {value}")
@@ -1919,13 +1930,21 @@ def apply_document(project: Project, data: dict, settings: bool = True, tracks: 
             current = project.all_tracks()
             t = next((x for x in current if x["file"] == file), None) or \
                 next((x for x in current if x["name"] == name), None)
+            played = item.get("instrument") if isinstance(item.get("instrument"), dict) else None
+            player = instrument(str(played.get("kind"))) if played else None
             if t is None:
                 path = project.tracks_dir / file if file else None
                 if path is not None and path.is_file():
                     t, _ = ingest(project, path, name, 0, verbose)
+                elif player is not None:  # no file is needed: gout writes it from the pattern
+                    t = new_track(project, player, name or (Path(file).stem if file else None), 0)
                 else:
                     warnings.append(f"{name or file}: no such file in {TRACK_DIR}/, skipped")
                     continue
+            if played and not is_video(t):
+                apply_instrument(project, t, played, warnings)
+                settle(project)  # the wav as the pattern has it, so the trims below are held against its real length
+                t = project.track(str(t["n"]))
             fields: dict = {}
             picture = is_video(t)
             try:
@@ -2324,6 +2343,29 @@ def cmd_warp(project: Project, args: Args) -> None:
               f" kept, it is your edit")
 
 
+def apply_instrument(project: Project, t: dict, item: dict, warnings: list[str]) -> None:
+    """An instrument track's pattern and first-row cells from a document, checked against what the
+    instrument holds. One that is not installed is kept as it is written, for the day it is."""
+    kind, settings, pattern = item.get("kind"), item.get("settings") or {}, item.get("pattern") or {}
+    if not isinstance(kind, str) or not isinstance(settings, dict) or not isinstance(pattern, dict):
+        warnings.append(f"{t['name']}: bad instrument, skipped")
+        return
+    inst = instrument(kind)
+    if inst is not None:
+        try:
+            pattern = Pattern.from_json(pattern, inst.features).to_json()
+            checked = {}
+            for key, value in settings.items():
+                feature = inst.setting(key)
+                if feature is not None and key != "steps" and value is not None:
+                    checked[key] = feature.check(value)
+            settings = checked
+        except ValueError as exc:
+            warnings.append(f"{t['name']}: bad {kind} pattern ({exc}), skipped")
+            return
+    project.instrument_set(t["file"], kind, settings, pattern)
+
+
 def apply_video(project: Project, t: dict, item: dict, warnings: list[str]) -> None:
     """A video track's settings from a document: the picture's own numbers (fps, size, frames) come
     from the file, everything else is checked and taken."""
@@ -2484,6 +2526,7 @@ def cmd_rebuild(root_hint: Path | None, args: Args) -> None:
             print(f"      {w}")
     else:
         print(f"      no {SIDECAR} found: every track at 0, default settings")
+    settle(project)
     project.sync_json()
     if files and project.render_mode != "off":
         mix(project)
@@ -2571,6 +2614,7 @@ def cmd_addons(root_hint: Path | None, args: Args) -> None:
             from .screens import screens
             added = entry["effects"] + [f"{name} (screen{', ' + screens()[name].key if screens()[name].key else ''})"
                                         for name in entry.get("screens", [])]
+            added += [f"{name} (instrument)" for name in entry.get("instruments", [])]
             print(f"  {entry['file'].name:<24} {', '.join(added) or 'registered nothing'}")
     project = Project.find(root_hint)
     if project is not None:
@@ -2578,6 +2622,10 @@ def cmd_addons(root_hint: Path | None, args: Args) -> None:
         missing = sorted(kind for kind in used if effect(kind) is None)
         if missing:
             print(f"       this project uses effects that are not installed: {', '.join(missing)}")
+        lacking = sorted({t["instrument"]["kind"] for t in project.tracks()
+                          if t.get("instrument") and instrument(t["instrument"]["kind"]) is None})
+        if lacking:
+            print(f"       this project has tracks played by instruments that are not installed: {', '.join(lacking)}")
 
 
 def cmd_colors(root_hint: Path | None, args: Args) -> None:

@@ -20,4 +20,4 @@ classifiers = [
 gout = "gout.cli:main"
 
 [tool.setuptools]
-packages = ["gout", "gout.effects"]
+packages = ["gout", "gout.effects", "gout.instruments"]

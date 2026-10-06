@@ -1,4 +1,4 @@
-"""Addons: Python files in the user's addon folder that register effects and screens.
+"""Addons: Python files in the user's addon folder that register effects, screens and instruments.
 
 The folder is $GOUT_ADDONS when set, otherwise $XDG_CONFIG_HOME/gout/addons, otherwise
 ~/.config/gout/addons. Only that folder is read, never a project folder: an addon is ordinary
@@ -15,7 +15,8 @@ An addon file defines register(gout) and calls gout.add_effect(SomeEffect()) for
     def register(gout):
         gout.add_effect(Tremolo())
 
-gout.add_screen(SomeScreen()) adds a full-screen view to the ui (see gout/screens.py).
+gout.add_screen(SomeScreen()) adds a full-screen view to the ui (see gout/screens.py), and
+gout.add_instrument(SomeInstrument()) an instrument that plays patterns (see gout/inst.py).
 
 A file that fails to load is reported and skipped; gout keeps working without it.
 """
@@ -29,9 +30,9 @@ from pathlib import Path
 from .core import config_home
 from .fx import register
 
-API_VERSION = 1  # what AddonApi offers; raised when addons can rely on something new (docs/addons.md)
+API_VERSION = 2  # what AddonApi offers; raised when addons can rely on something new (docs/addons.md)
 
-REPORT: list[dict] = []  # one entry per file tried: file, effects, screens, error
+REPORT: list[dict] = []  # one entry per file tried: file, effects, screens, instruments, error
 
 
 def addon_dir() -> Path:
@@ -56,6 +57,7 @@ class AddonApi:
         self.source = source
         self.added: list[str] = []
         self.screens: list[str] = []
+        self.instruments: list[str] = []
 
     def add_effect(self, effect) -> None:
         register(effect, self.source)
@@ -66,6 +68,11 @@ class AddonApi:
         register_screen(screen, self.source)
         self.screens.append(screen.name)
 
+    def add_instrument(self, instrument) -> None:
+        from .inst import register_instrument
+        register_instrument(instrument, self.source)
+        self.instruments.append(instrument.name)
+
 
 def load_addons() -> None:
     REPORT.clear()
@@ -75,7 +82,7 @@ def load_addons() -> None:
     for path in sorted(folder.glob("*.py")):
         if path.name.startswith(("_", ".")):
             continue
-        entry = {"file": path, "effects": [], "screens": [], "error": None}
+        entry = {"file": path, "effects": [], "screens": [], "instruments": [], "error": None}
         api = AddonApi(path.name)
         try:
             spec = importlib.util.spec_from_file_location(f"gout_addon_{path.stem}", path)
@@ -90,4 +97,5 @@ def load_addons() -> None:
             print(f"gout: addon {path.name} not loaded: {entry['error']}", file=sys.stderr)
         entry["effects"] = api.added
         entry["screens"] = api.screens
+        entry["instruments"] = api.instruments
         REPORT.append(entry)

@@ -29,6 +29,7 @@ from .lineedit import LineEditor, path_candidates
 from . import core
 from .player import Player
 from .screens import screen_for_key, screen_named, ScreenContext, screens
+from .inst import BASE_SETTINGS, instrument, instruments
 from .window import TerminalWindow
 from .theme import load_theme, Palette
 from .commands import Args, head_seconds, loop_range, player_for, start_take, Take
@@ -152,6 +153,8 @@ class Tui:
             names = sorted(set(command_table()) | set(UI_WORDS) | set(screens()))
             return [n for n in names if n.startswith(value)]
         head = aliases().get(before[0], before[0])
+        if head == "instrument":
+            return [w for w in self.instrument_words(before[1:]) if w.startswith(value)]
         eff = resolve(head)
         if len(before) == 1 and (head in TRACK_FIRST or eff is not None):
             names = [t["name"] for t in self.project.all_tracks()] + ["master"] * (eff is not None or head == "fx")
@@ -175,6 +178,24 @@ class Tui:
         if head in TRACK_FIRST or eff is not None:
             return []
         return path_candidates(self.start_dir, value)
+
+    def instrument_words(self, before: list[str]) -> list[str]:
+        """What comes next after instrument: add, kinds or a track; then its rows and cells."""
+        played = [t for t in self.project.tracks() if t.get("instrument")]
+        if not before:
+            return ["add", "kinds"] + [t["name"] for t in played]
+        if before[0] == "add":
+            return list(instruments()) if len(before) == 1 else []
+        t = next((t for t in played if before[0] in (t["name"], str(t["n"]))), None)
+        item = instrument(t["instrument"]["kind"]) if t else None
+        if item is None:
+            return []
+        if len(before) == 1:
+            return [f.name for f in item.features] + [f.name for f in (*BASE_SETTINGS, *item.settings)]
+        cell = item.setting(before[1])
+        if len(before) == 2 and cell is not None:
+            return list(cell.choices)
+        return ["all"] if len(before) == 2 and item.feature(before[1]) else []
 
     def part_words(self, spec: str) -> list[str]:
         """What a track's parts answer to, for completion: p1 p2 ... and the names."""

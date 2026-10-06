@@ -161,7 +161,8 @@ def taken_names() -> set[str]:
     for eff in _REGISTRY.values():
         names |= {eff.name, *eff.aliases, *eff.shortcuts}
     from .screens import taken_words
-    return names | taken_words()
+    from .inst import taken_words as instrument_words
+    return names | taken_words() | instrument_words()
 
 
 def register(effect: Effect, source: str = "built-in") -> None:
@@ -188,6 +189,8 @@ def effects() -> dict[str, Effect]:
         from .effects import builtin
         for eff in builtin():
             register(eff)
+        from .inst import register_builtin
+        register_builtin()  # the instruments that come with gout, before an addon can take their names
         from .addons import load_addons
         load_addons()
     return _REGISTRY
