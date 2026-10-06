@@ -885,6 +885,20 @@ gout INPUT ...     the 1.x form, same thing
 between 97 % and 100 % of the limit, never over it. An mp3 stream copy starts up to about
 0.1 s late (that is ffmpeg's seek); `-r` is exact. wav cuts are exact.
 
+## bonepipe
+
+`bonepipe/` is a package of its own in this repository: it computes what a pipe sounds like from its
+geometry, for research on bone pipes from the Palaeolithic. The first object is the perforated
+cave bear femur from Divje babe I. It uses nothing of gout and needs only Python:
+
+```sh
+python3 -m bonepipe notes divje-babe-1       # one reconstruction: fingerings, notes, intervals
+python3 -m bonepipe spread divje-babe-1      # the same over everything that is not known
+```
+
+[bonepipe/README.md](bonepipe/README.md) says what it does, where every number comes from and how
+the acoustics was checked. gout's instruments will get one that plays what it computes.
+
 ## Tests
 
 ```sh

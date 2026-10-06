@@ -1,0 +1,443 @@
+{
+ "id": "divje-babe-1",
+ "name": "Divje babe I, perforated femur",
+ "status": "contested",
+ "status_note": "whether the holes were made by people (turk2005, turk2016) or by a carnivore's teeth (Diedrich 2015; d'Errico et al. 1998, 2003; Chase and Nowell 1998: none of those read here) is disputed, and with it whether this is an instrument at all; nothing in this file assumes that it is",
+ "material": "left femur of a one- to two-year-old cave bear (Ursus spelaeus): the shaft, without the joints",
+ "kept_at": "National Museum of Slovenia, Ljubljana",
+ "site": {
+  "name": "Divje babe I",
+  "country": "Slovenia",
+  "lat": 46.11278,
+  "lon": 13.91556,
+  "source": "wikipedia-divje-babe",
+  "confidence": "medium"
+ },
+ "date": {
+  "from_ka": 50,
+  "to_ka": 60,
+  "method": "ESR on cave bear teeth from Layer 8a, where it lay",
+  "source": "turk2016",
+  "page": "402",
+  "confidence": "medium",
+  "note": "after Blackwell et al. 2007, 2009; turk2005 (p. 30) still gives about 46,000 years"
+ },
+ "attributed_to": {
+  "who": "Neanderthals",
+  "confidence": "contested",
+  "note": "by its layer and date (turk2005, p. 30; turk2016, p. 402); the attribution falls with the object's status"
+ },
+ "numbering": {
+  "note": "the parts are named as in turk2005; other texts number them differently",
+  "parts": {
+   "hole1": "the complete hole nearer the proximal end, posterior side",
+   "hole2": "the complete hole nearer the distal end, posterior side",
+   "hole3": "the half hole at the broken proximal end, posterior side",
+   "notch4": "the semicircular notch on the distal metaphysis, posterior side",
+   "hole5": "the half hole on the anterior side, nearly under hole2"
+  },
+  "elsewhere": {
+   "dimkaroski2014": {
+    "hole3": "1",
+    "hole1": "2",
+    "hole2": "3",
+    "notch4": "4",
+    "hole5": "5, the palm hole",
+    "the distal opening": "6"
+   },
+   "turk1997": {
+    "hole1": "the proximal hole",
+    "hole2": "the distal hole",
+    "hole3": "the proximal half hole",
+    "notch4": "the distal semicircular notch"
+   }
+  }
+ },
+ "slices": "divje-babe-1.slices.json",
+ "measurements": [
+  {
+   "what": "length",
+   "value": 113.6,
+   "unit": "mm",
+   "method": "calipers",
+   "source": "turk1997",
+   "page": "161",
+   "confidence": "high",
+   "note": "the greatest length of what is preserved; both ends are broken"
+  },
+  {
+   "what": "shaft.length.whole",
+   "value": 210,
+   "unit": "mm",
+   "method": "estimate",
+   "source": "turk1997",
+   "page": "161",
+   "confidence": "low",
+   "note": "\"approximately\": what the whole shaft without joints would have measured, judged from its narrowest widths"
+  },
+  {
+   "what": "shaft.lm.narrowest",
+   "value": 23.5,
+   "unit": "mm",
+   "method": "calipers",
+   "source": "turk1997",
+   "page": "161",
+   "confidence": "high"
+  },
+  {
+   "what": "shaft.ap.narrowest",
+   "value": 17.0,
+   "unit": "mm",
+   "method": "calipers",
+   "source": "turk1997",
+   "page": "161",
+   "confidence": "high"
+  },
+  {
+   "what": "shaft.lm.proximal",
+   "value": 28.0,
+   "unit": "mm",
+   "method": "calipers",
+   "source": "turk1997",
+   "page": "161",
+   "confidence": "high",
+   "note": "the greatest width at the proximal end"
+  },
+  {
+   "what": "shaft.lm.distal",
+   "value": 34.0,
+   "unit": "mm",
+   "method": "calipers",
+   "source": "turk1997",
+   "page": "161",
+   "confidence": "high",
+   "note": "the greatest width at the distal end"
+  },
+  {
+   "what": "cavity.lm.narrowest",
+   "value": 13,
+   "unit": "mm",
+   "method": "estimate",
+   "source": "turk1997",
+   "page": "161",
+   "confidence": "low",
+   "note": "\"around\"; the larger diameter of the marrow cavity at its narrowest"
+  },
+  {
+   "what": "cavity.ap.narrowest",
+   "value": 10,
+   "unit": "mm",
+   "method": "estimate",
+   "source": "turk1997",
+   "page": "161",
+   "confidence": "low",
+   "note": "\"around\"; the smaller one"
+  },
+  {
+   "what": "hole1.lm",
+   "value": 8.2,
+   "unit": "mm",
+   "method": "calipers",
+   "source": "turk1997",
+   "page": "161",
+   "confidence": "high",
+   "note": "the English column prints 8.1, the Slovene 8,2; turk2005 confirms 8.2"
+  },
+  {
+   "what": "hole1.pd",
+   "value": 9.7,
+   "unit": "mm",
+   "method": "calipers",
+   "source": "turk1997",
+   "page": "161",
+   "confidence": "high"
+  },
+  {
+   "what": "hole1.lm",
+   "value": 8.4,
+   "unit": "mm",
+   "method": "ct",
+   "source": "turk2005",
+   "page": "31",
+   "confidence": "high"
+  },
+  {
+   "what": "hole1.pd",
+   "value": 10.5,
+   "unit": "mm",
+   "method": "ct",
+   "source": "turk2005",
+   "page": "31",
+   "confidence": "high"
+  },
+  {
+   "what": "hole2.lm",
+   "value": 8.7,
+   "unit": "mm",
+   "method": "calipers",
+   "source": "turk1997",
+   "page": "161",
+   "confidence": "high"
+  },
+  {
+   "what": "hole2.pd",
+   "value": 9.0,
+   "unit": "mm",
+   "method": "calipers",
+   "source": "turk1997",
+   "page": "161",
+   "confidence": "high"
+  },
+  {
+   "what": "hole2.lm",
+   "value": 9.2,
+   "unit": "mm",
+   "method": "ct",
+   "source": "turk2005",
+   "page": "33",
+   "confidence": "high"
+  },
+  {
+   "what": "hole2.pd",
+   "value": 11.1,
+   "unit": "mm",
+   "method": "ct",
+   "source": "turk2005",
+   "page": "33",
+   "confidence": "high"
+  },
+  {
+   "what": "hole3.preserved",
+   "value": 6.5,
+   "unit": "mm",
+   "method": "calipers",
+   "source": "turk1997",
+   "page": "161",
+   "confidence": "medium",
+   "note": "the diameter of what is left of it"
+  },
+  {
+   "what": "hole3.preserved",
+   "value": 7.6,
+   "unit": "mm",
+   "method": "ct",
+   "source": "turk2005",
+   "page": "31",
+   "confidence": "medium",
+   "note": "the largest preserved diameter"
+  },
+  {
+   "what": "hole5.preserved",
+   "value": 6.2,
+   "unit": "mm",
+   "method": "ct",
+   "source": "turk2005",
+   "page": "32",
+   "confidence": "medium",
+   "note": "the largest preserved diameter"
+  },
+  {
+   "what": "notch4.width",
+   "value": 13,
+   "unit": "mm",
+   "method": "calipers",
+   "source": "turk1997",
+   "page": "161",
+   "confidence": "medium",
+   "note": "the greatest preserved diameter"
+  },
+  {
+   "what": "notch4.width",
+   "value": 9.4,
+   "unit": "mm",
+   "method": "ct",
+   "source": "turk2005",
+   "page": "34",
+   "confidence": "medium",
+   "note": "at the widest part; measured at another place than with calipers"
+  },
+  {
+   "what": "hole1-hole2.centres",
+   "value": 35,
+   "unit": "mm",
+   "method": "calipers",
+   "source": "turk1997",
+   "page": "161",
+   "confidence": "high"
+  },
+  {
+   "what": "hole3-hole1.centres",
+   "value": 18,
+   "unit": "mm",
+   "method": "calipers",
+   "source": "turk1997",
+   "page": "161",
+   "confidence": "medium",
+   "note": "to the middle of a hole that is half gone"
+  },
+  {
+   "what": "hole2-hole5.proximal_edges",
+   "value": [
+    3,
+    4
+   ],
+   "unit": "mm",
+   "method": "ct",
+   "source": "turk2005",
+   "page": "35",
+   "confidence": "medium",
+   "note": "how far the two holes' proximal edges are apart along the bone"
+  },
+  {
+   "what": "wall.at_hole1",
+   "value": 4.2,
+   "unit": "mm",
+   "method": "ct",
+   "source": "turk2005",
+   "page": "31",
+   "confidence": "high",
+   "note": "beside the hole, lateral and medial alike"
+  },
+  {
+   "what": "wall.at_hole2",
+   "value": 4.9,
+   "unit": "mm",
+   "method": "ct",
+   "source": "turk2005",
+   "page": "33",
+   "confidence": "high",
+   "note": "beside the hole on the medial side"
+  },
+  {
+   "what": "wall.at_hole2",
+   "value": 4.0,
+   "unit": "mm",
+   "method": "calipers",
+   "source": "turk1997",
+   "page": "161",
+   "confidence": "medium",
+   "note": "the posterior wall at the hole"
+  },
+  {
+   "what": "wall.at_hole3",
+   "value": 4.2,
+   "unit": "mm",
+   "method": "ct",
+   "source": "turk2005",
+   "page": "31",
+   "confidence": "high"
+  },
+  {
+   "what": "wall.at_hole5",
+   "value": 4.6,
+   "unit": "mm",
+   "method": "ct",
+   "source": "turk2005",
+   "page": "32",
+   "confidence": "high",
+   "note": "by the lateral edge of the hole"
+  },
+  {
+   "what": "wall.at_notch4",
+   "value": [
+    3.2,
+    3.7
+   ],
+   "unit": "mm",
+   "method": "ct",
+   "source": "turk2005",
+   "page": "34",
+   "confidence": "high",
+   "note": "lateral and medial, at the widest part of the notch"
+  },
+  {
+   "what": "wall.between_hole1_hole2.anterior",
+   "value": [
+    3.5,
+    3.7
+   ],
+   "unit": "mm",
+   "method": "ct",
+   "source": "turk2005",
+   "page": "32",
+   "confidence": "high",
+   "note": "near hole1 and near hole2"
+  },
+  {
+   "what": "wall.between_hole1_hole2.posterior",
+   "value": [
+    4.0,
+    4.2
+   ],
+   "unit": "mm",
+   "method": "ct",
+   "source": "turk2005",
+   "page": "32",
+   "confidence": "high",
+   "note": "near hole2 and near hole1"
+  },
+  {
+   "what": "wall.proximal",
+   "value": [
+    4.0,
+    5.4
+   ],
+   "unit": "mm",
+   "method": "ct",
+   "source": "turk2005",
+   "page": "31",
+   "confidence": "medium",
+   "note": "medial and lateral; the lateral value includes medulla"
+  },
+  {
+   "what": "wall.between_hole2_notch4.posterior",
+   "value": 3.9,
+   "unit": "mm",
+   "method": "ct",
+   "source": "turk2005",
+   "page": "34",
+   "confidence": "high"
+  }
+ ],
+ "facts": [
+  {
+   "what": "the marrow cavity of the shaft has no spongy bone in it; traces remain in the metaphyses",
+   "source": "turk2005",
+   "page": "34",
+   "confidence": "high"
+  },
+  {
+   "what": "hole3 and hole5 were holes before the ends broke; notch4 never was one",
+   "source": "turk2005",
+   "page": "31-34",
+   "confidence": "medium"
+  },
+  {
+   "what": "9.8 mm of a sharpened cutting edge remain on the proximal end, medial-anterior side",
+   "source": "dimkaroski2014",
+   "page": "216",
+   "confidence": "low",
+   "note": "one author's observation on the original, read as the remains of a mouthpiece"
+  }
+ ],
+ "blown": [
+  {
+   "how": "across the edge of the distal end, the notch as the cut edge, the lips closing the rest; also across a hole with the nearer end closed",
+   "who": "D. Kunej, on copies in fossil cave bear bone and fresh brown bear bone",
+   "source": "kunej1997",
+   "page": "190-195"
+  },
+  {
+   "how": "through a stopper with a cutting edge fitted at the distal notch (a duct flute)",
+   "who": "J. Atema 2004, as told by Dimkaroski",
+   "source": "dimkaroski2014",
+   "page": "220"
+  },
+  {
+   "how": "across a cutting edge at the proximal end; hole3, hole1 and hole2 for the fingers, hole5 under the palm, the distal opening closed or opened by the right hand",
+   "who": "L. Dimkaroski, on more than 30 copies",
+   "source": "dimkaroski2014",
+   "page": "215-217"
+  }
+ ]
+}

@@ -1,0 +1,81 @@
+{
+ "turk1997": {
+  "authors": "Turk, I., Dirjec, J., Kavur, B.",
+  "year": 1997,
+  "title": "Description and explanation of the origin of the suspected bone flute",
+  "in": "I. Turk (ed.), Mousterian \"bone flute\" and other finds from Divje babe I cave site in Slovenia. Opera Instituti Archaeologici Sloveniae 2, chapter 11",
+  "url": "https://omp.zrc-sazu.si/zalozba/catalog/book/889",
+  "access": "open (CC BY-NC-SA 4.0)",
+  "read": "2026-10-06",
+  "note": "calipers on the original; the measurements are on p. 161"
+ },
+ "kunej1997": {
+  "authors": "Kunej, D.",
+  "year": 1997,
+  "title": "Acoustic findings on the basis of reconstructions of a presumed bone flute",
+  "in": "I. Turk (ed.), Mousterian \"bone flute\" and other finds from Divje babe I cave site in Slovenia. Opera Instituti Archaeologici Sloveniae 2, chapter 13",
+  "url": "https://omp.zrc-sazu.si/zalozba/catalog/book/889",
+  "access": "open (CC BY-NC-SA 4.0)",
+  "read": "2026-10-06",
+  "note": "sound from copies in fossil and fresh bear bone, blown on the distal notch and across the holes; no tones were measured"
+ },
+ "turk2005": {
+  "authors": "Turk, I., Pflaum, M., Pekarovič, D.",
+  "year": 2005,
+  "title": "Rezultati računalniške tomografije najstarejše domnevne piščali iz Divjih bab I (Slovenija): prispevek k teoriji luknjanja kosti / Results of computer tomography of the oldest suspected flute from Divje babe I (Slovenia): contribution to the theory of making holes in bones",
+  "in": "Arheološki vestnik 56, 9-36",
+  "url": "https://ojs.zrc-sazu.si/av/article/view/8291",
+  "access": "open",
+  "read": "2026-10-06",
+  "note": "16-slice CT at the University Clinical Centre, Ljubljana; the English text is on p. 30-36; its hole numbers are the ones used here"
+ },
+ "dimkaroski2014": {
+  "authors": "Dimkaroski, L.",
+  "year": 2014,
+  "title": "Glasbena raziskovanja piščali: od domneve do sodobnega glasbila / Musical research into the flute: from suspected to contemporary musical instrument",
+  "in": "I. Turk (ed.), Divje babe I, Upper Pleistocene Palaeolithic site in Slovenia, Part 2: Archaeology. Opera Instituti Archaeologici Sloveniae 29, chapter 11, 205-222",
+  "url": "https://omp.zrc-sazu.si/zalozba/catalog/book/815",
+  "access": "open (CC BY-NC-SA 4.0)",
+  "read": "2026-10-06",
+  "note": "blows the proximal end on a cutting edge; his hole numbers 1, 2, 3 are 3, 1, 2 here"
+ },
+ "horusitzky2014": {
+  "authors": "Horusitzky, F. Z.",
+  "year": 2014,
+  "title": "Analyse acoustique de la flûte avec souffle proximal",
+  "in": "I. Turk (ed.), Divje babe I, Upper Pleistocene Palaeolithic site in Slovenia, Part 2: Archaeology. Opera Instituti Archaeologici Sloveniae 29, chapter 12, 223-233",
+  "url": "https://omp.zrc-sazu.si/zalozba/catalog/book/815",
+  "access": "open (CC BY-NC-SA 4.0)",
+  "read": "2026-10-06",
+  "note": "a calculation of Dimkaroski's copy from four tube sections and the holes; gives the sections it was made from"
+ },
+ "turk2016": {
+  "authors": "Turk, I., Turk, M., Toškan, B.",
+  "year": 2016,
+  "title": "Could a cave hyena have made a musical instrument? A reply to Cajus G. Diedrich",
+  "in": "Arheološki vestnik 67, 401-407",
+  "url": "https://ojs.zrc-sazu.si/av/article/view/7813",
+  "access": "open",
+  "read": "2026-10-06",
+  "note": "the ESR age of Layer 8a (after Blackwell et al. 2007, 2009, not read here) and the counts of femora at the site"
+ },
+ "wikipedia-divje-babe": {
+  "authors": "Wikipedia",
+  "year": 2026,
+  "title": "Divje Babe",
+  "url": "https://en.wikipedia.org/wiki/Divje_Babe",
+  "access": "open",
+  "read": "2026-10-06",
+  "note": "used for the site's coordinates only"
+ },
+ "tuniz2012": {
+  "authors": "Tuniz, C., Bernardini, F., Turk, I., Dimkaroski, L., Mancini, L., Dreossi, D.",
+  "year": 2012,
+  "title": "Did Neanderthals play music? X-ray computed micro-tomography of the Divje babe 'flute'",
+  "in": "Archaeometry 54(3), 581-590",
+  "url": "https://ro.uow.edu.au/scipapers/4280",
+  "access": "paywalled",
+  "read": null,
+  "note": "a micro-CT made at Elettra, Trieste; only the abstract was read, and no number here comes from it"
+ }
+}

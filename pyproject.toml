@@ -20,4 +20,7 @@ classifiers = [
 gout = "gout.cli:main"
 
 [tool.setuptools]
-packages = ["gout", "gout.effects", "gout.instruments"]
+packages = ["gout", "gout.effects", "gout.instruments", "bonepipe", "bonepipe.tools"]
+
+[tool.setuptools.package-data]
+bonepipe = ["data/*.json"]
