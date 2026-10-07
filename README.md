@@ -435,11 +435,30 @@ it. A cell that is `-` or `.` is empty and takes the row's value. In the note ro
 silent, `=` lets the note before go on through the step, and `rest` is silence even when the row
 has a note for every step.
 
+In the ui the pattern is a grid: `instrument bass` at the prompt, or `ctrl-y`. See The grid, below.
+
 The `synth` plays one note at a time. Its rows are `note`, `decay` (how many ms the note takes to
 die away by 60 dB; 0 keeps it at full level), `release` (how many ms it rings on after its step
 ends) and `level` (in percent; 100 peaks at -6 dBFS). Its cell is `wave`: `sine`, `saw`, `square`
 or `triangle`. What rings on after the last step sounds over the start of the next pass, and
 makes the file that much longer.
+
+The `bonepipe` instrument has no note row at all. It plays an object of the `bonepipe` package
+(see bonepipe, below): a step says how it is blown (`blow`: `soft` for the fingering's lowest
+note, `hard` for the one above it, `=` to let the breath go on) and which holes are open
+(`hole2 3-4 o`), and the grid shows under the fingerings what that sounds like: in Hz, and as the
+interval from the note before in cents. The cells of its first row are the reconstruction of the
+object: `blown proximal`, `far closed`, `mouth_open 0.02`, `dist_extra_mm 30` and the others that
+`gout instrument kinds` lists. Change one and the same fingerings are heard as that
+reconstruction would sound them.
+
+```sh
+gout instrument add bonepipe bone
+gout ins bone blow 1 soft = = =     # one breath over four steps
+gout ins bone hole2 3-4 o           # the far hole opens half way through it
+gout ins bone far closed            # a hand over the far end: the same fingerings, other notes
+gout ins bone                       # the grid, with the notes the geometry gives
+```
 
 The pattern lives in the project's database and in `gout.json`. `gout undo` takes a change back
 and the wav is written again; `gout rebuild` and `gout import` bring an instrument track back from
@@ -574,6 +593,47 @@ Chrome, Brave or Edge as an app window when one is installed, otherwise in the d
 Waveforms are worked out once per file (about 1.7 s for five minutes) and kept in `.gout/peaks/`;
 closer in than 5 ms a pixel the page asks for the samples of what is in view. The server stops with
 the ui.
+
+### The grid
+
+`ctrl-y` (or `instrument TRACK` at the prompt) replaces the screen with an instrument track's
+pattern as a sheet of cells. The first row is the instrument as a whole: title, description, steps,
+loop, step and its own cells. Under it every feature is a row and every step a column, with the
+row's value for every step in the column before the steps. Rows the instrument works out itself,
+like the bone pipe's `hz` and `cents`, stand under the others and cannot be typed into.
+
+```
+ bone  bonepipe  8 steps of 1/4 at 120 bpm = 4.000 s              ctrl-y next instrument  esc back
+ title bone   description   steps 8   loop 1   step 1/4   object divje-babe-1   blown proximal   far open   +
+
+       all        1     2     3     4        5     6     7     8 +
+ blow      │   soft     =  soft     = │   soft     =  soft     =
+ hole3   x │      ·     ·     ·     · │      ·     ·     o     o
+ hole1   x │      ·     ·     ·     · │      o     o     o     o
+ hole2   x │      ·     ·     o     o │      o     o     o     o
+ hole5   x │      ·     ·     ·     · │      ·     ·     ·     ·
+ level  80 │      ·     ·     ·     · │      ·     ·     ·     ·
+ hz        │   1232  1232  1406  1406 │   1947  1947  2546  2546
+ cents     │               +228       │   +564        +464
+```
+
+It is worked with the arrows and tab. The arrows go from cell to cell; `tab` goes to the next cell
+and `shift-tab` to the one before, row after row; `home` and `end` to the row's first and last.
+Typing puts a new value in the cell, and `enter` opens the value it already has, to change it.
+`enter`, `tab` or an arrow takes what was typed; `esc` lets it go. `del` empties a cell, so that it
+takes the row's value again. `+` and `-` move a value a little (a semitone, the next choice, a
+hundredth of a range), `pgup` and `pgdn` a lot (an octave, ten times as much). In a row of single
+letters, like a hole's `x` and `o`, the letter alone fills the cell and moves on.
+
+A `+` stands at the end of the first row and after the last step. On the first, `enter` lists the
+cells the instrument has more of and adds the one you choose; on the second it adds a step, and a
+number and `enter` adds that many.
+
+A value the instrument cannot take stays in its cell with the reason on the bottom line, which
+otherwise says what the cell is for and what it may hold. Every edit is the `instrument` command
+it stands for, so `ctrl-u` undoes it and the log shows it. `space` plays and stops, the change is
+heard as soon as it is made, and the step that sounds is marked. `ctrl-y` goes to the next
+instrument track, `esc` back to the prompt.
 
 ### The parameter sheet
 
@@ -728,7 +788,7 @@ A screen is a subclass of `gout.screens.Screen` with a `frame(ctx, width, height
 rows of text and colour classes, registered with `gout.add_screen(...)`. `ctx.band("low")` gives
 how loud a band is now (`low`, `mid`, `high`, `level`, `onset`, 0 to 1) and `ctx.travel("low")`
 how much of it has gone by, for motion that pushes with the music. A screen takes one of the keys
-nothing else uses: `ctrl-space`, `ctrl-b`, `ctrl-q`, `ctrl-v`, `ctrl-y`.
+nothing else uses: `ctrl-space`, `ctrl-b`, `ctrl-q`, `ctrl-v`.
 
 An instrument is a subclass of `gout.inst.Instrument` that names its rows and cells and has a
 `render(ctx, pattern, settings)` returning the samples of one pass of the pattern, registered with
@@ -897,7 +957,7 @@ python3 -m bonepipe spread divje-babe-1      # the same over everything that is 
 ```
 
 [bonepipe/README.md](bonepipe/README.md) says what it does, where every number comes from and how
-the acoustics was checked. gout's instruments will get one that plays what it computes.
+the acoustics was checked. The `bonepipe` instrument (see Instruments) plays what it computes.
 
 ## Tests
 

@@ -322,6 +322,12 @@ def instruments_help() -> str:
         "                                             pattern four times), step 1/8 (1/4 1/8 1/8t 1/16 1/16t 1/32),",
         "                                             title, description and the instrument's own; - gives a cell",
         "                                             back the value it started with",
+        "  In the ui, instrument TRACK (or ctrl-y) opens the pattern as a grid: a sheet of cells. The arrows go",
+        "  from cell to cell, tab to the next and shift-tab to the one before. Typing puts a new value in the",
+        "  cell and enter opens the one it has; enter, tab or an arrow takes it, esc lets it go. Delete empties",
+        "  a cell, + and - move its value a little, page up and down a lot. A + ends the first row (enter adds",
+        "  one of the instrument's other cells) and the steps (enter adds a step, a number and enter that many).",
+        "  Every edit is the command above, so ctrl-u undoes it; space plays, and the step that sounds is marked.",
         "",
     ]
     for item in instruments().values():

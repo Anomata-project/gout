@@ -32,7 +32,7 @@ from pathlib import Path
 
 KEY_CODES = {  # keys a screen may take: nothing else in the ui uses them
     "ctrl-space": "\x00", "ctrl-b": "\x02", "ctrl-q": "\x11",
-    "ctrl-v": "\x16", "ctrl-y": "\x19",  # ctrl-r records, ctrl-o opens the window
+    "ctrl-v": "\x16",  # ctrl-r records, ctrl-o opens the window, ctrl-y the grid
 }
 UI_WORDS = {"quit", "q", "exit", "clear", "cl", "split", "sp", "sheet", "sh", "view", "timeline", "help",
             "cheat", "play", "stop", "saveas", "ui", "tui"}

@@ -6,7 +6,7 @@ Divje babe I in Slovenia, 50 to 60 thousand years old, which may be a Neandertha
 chewed by a carnivore.
 
 bonepipe lives in gout's repository in a folder of its own and uses nothing of gout: the Python
-standard library is all it needs. gout will get an instrument that plays what bonepipe computes.
+standard library is all it needs. gout has an instrument, `bonepipe`, that plays what it computes.
 
 ## Rules it keeps
 
@@ -32,6 +32,7 @@ python3 -m bonepipe unknowns divje-babe-1    # everything a reconstruction has t
 python3 -m bonepipe notes divje-babe-1       # one reconstruction: its fingerings, their notes, the intervals
 python3 -m bonepipe notes divje-babe-1 blown=distal far=closed hole5=yes mouth_open=0.02
 python3 -m bonepipe spread divje-babe-1 -n 200   # the same over the whole range of what is not known
+python3 -m bonepipe wav divje-babe-1 pipe.wav    # hear one reconstruction: its plain fingerings, a breath each
 python3 -m bonepipe check                    # that the data holds together
 ```
 
@@ -114,12 +115,39 @@ other outside the tube, which the model leaves out; and the sounded pitch lies s
 from the resonance, depending on the lips and the breath. A printed tube of known size, recorded,
 would settle the first two.
 
+## Hearing it
+
+`sound.py` makes a note from what the acoustics computes for a fingering, and from nothing else:
+the note is the resonance, each overtone is as strong as the pipe lets it through (the impedance
+the jet meets at that overtone, against the impedance at the note), and the breath is noise
+through the same resonances. No recording is used and the jet at the lips is not simulated. For
+this pipe the overtones come out weak, because its resonances are far from being multiples of
+each other: it sounds plain, close to a whistle. That much follows from the geometry; what a
+player's lips and breath add does not, and is not in it.
+
+```sh
+python3 -m bonepipe wav divje-babe-1 pipe.wav
+python3 -m bonepipe wav divje-babe-1 bottle.wav far=closed mouth_open=0.02
+```
+
+In gout the same sound is an instrument. A step says how it is blown and which holes are open,
+the first row's cells are the reconstruction, and the grid shows the notes that follow. In gout's
+ui, `ctrl-y` opens that grid as a sheet to move about in and fill:
+
+```sh
+gout instrument add bonepipe bone
+gout ins bone blow 1 soft = = =
+gout ins bone hole2 3-4 o
+gout ins bone far closed
+gout ins bone
+```
+
 ## What comes next
 
-Sound computed from the same resonances and an instrument for gout; player models (a Neanderthal
-and a sapiens hand and breath) from fossil data; null models (holes where fingers fall, holes where
-teeth bite) and the statistics against them; the same pipeline on Hohle Fels, Geißenklösterle and
-Jiahu, and on bitten bones as controls; a mesh to print.
+Player models (a Neanderthal and a sapiens hand and breath) from fossil data; null models (holes
+where fingers fall, holes where teeth bite) and the statistics against them; the same pipeline on
+Hohle Fels, Geißenklösterle and Jiahu, and on bitten bones as controls; a jet at the lips, so that
+blowing harder changes the note as it does on a real pipe; a mesh to print.
 
 ## Sources read
 

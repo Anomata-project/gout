@@ -72,6 +72,7 @@ class Instrument:
     version = 1                                 # raise it when the same pattern sounds different: tracks are written again
     features: tuple[Feature, ...] = (NOTE, DECAY, RELEASE)   # the rows of the grid, top to bottom
     settings: tuple[Feature, ...] = ()          # its own cells in the first row, after title, description, steps, loop, step
+    shown: tuple[str, ...] | None = None        # which of them the grid always shows (None: all); the rest appear once set
     source = "built-in"                         # or the addon file it came from
 
     def render(self, ctx: InstContext, pattern: Pattern, settings: dict) -> list[array]:

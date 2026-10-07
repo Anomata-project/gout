@@ -46,7 +46,10 @@ def play(project, t: dict, item: Instrument) -> tuple[list[array], int]:
     try:
         pattern = Pattern.from_json(data["pattern"], item.features)
         ctx = context(project, item, settings)
-        item.check(ctx, pattern, settings)
+        try:
+            item.check(ctx, pattern, settings)
+        except ValueError as exc:   # the instrument's own no: a cell out of its range, a pattern it cannot play
+            die(f"{t['name']}: {exc}")
         chans = [c if isinstance(c, array) and c.typecode == "f" else array("f", c)
                  for c in item.render(ctx, pattern, settings)]
     except GoutError:

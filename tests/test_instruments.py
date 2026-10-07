@@ -1,9 +1,18 @@
+import curses
 import math
 import os
+import select
+import struct
+import time
 import unittest
 from array import array
 
-from helpers import GoutTest, RATE, duration, gout_attr, samples
+try:
+    import pty  # Unix only: Windows skips the test that needs a real terminal
+except ImportError:
+    pty = None
+
+from helpers import GoutTest, RATE, duration, gout_attr, gout_cmd, samples, wait_for_exit
 from test_ui import FakeScreen
 
 
@@ -348,6 +357,44 @@ class InstrumentTest(GoutTest):
         self.assertAlmostEqual(pitch(samples(root / "master.wav")[0], 0.01, 0.12), 440.0, delta=2.0)
         self.assertEqual(self.dump()["tracks"][0]["instrument"]["settings"], {"octave": 1})
 
+    def test_the_bone_pipe_plays_the_notes_its_geometry_gives(self):
+        from bonepipe import geometry, objects, scale
+        root = self.project("song")
+        self.assertIn("rows: blow hole3 hole1 hole2 hole5 level", self.gout("instrument", "kinds").stdout)
+        self.gout("instrument", "add", "bonepipe", "bone")
+        for words in (("blow", "1", "soft", "=", "=", "="), ("hole2", "3-4", "o"), ("blow", "9", "hard", "=")):
+            self.gout("ins", "bone", *words)
+        x = samples(root / "master" / "bone.wav")[0]
+        # what bonepipe computes for the same reconstruction: nothing here is typed as a note
+        setup = geometry.build(geometry.Reconstruction(objects.load("divje-babe-1")))
+        closed = {name: False for name in setup.names}
+        low, above = setup.resonances(closed)[:2]
+        opened = setup.resonances({**closed, "hole2": True})[0]
+        self.assertAlmostEqual(pitch(x, 0.05, 0.22), low.hz, delta=low.hz * 0.005)
+        self.assertAlmostEqual(pitch(x, 0.30, 0.48), opened.hz, delta=opened.hz * 0.005)   # the hole opens within the breath
+        self.assertGreater(peak(x, 0.24, 0.26), 0.2)                                      # and the breath does not stop for it
+        self.assertLess(peak(x, 0.58, 0.99), 1e-4)
+        self.assertAlmostEqual(pitch(x, 1.05, 1.22), above.hz, delta=above.hz * 0.005)    # blown hard: the resonance above
+        grid = self.gout("ins", "bone").stdout
+        self.assertIn("title bone   object divje-babe-1   blown proximal   far open   (+12 more cells", grid)
+        self.assertRegex(grid, rf"hz +│ +{low.hz:.0f} +{low.hz:.0f} +{opened.hz:.0f} +{opened.hz:.0f} │")
+        self.assertRegex(grid, rf"cents +│ +\{scale.cents(opened.hz, low.hz):+.0f} +│")
+        # a cell of the first row is a piece of the reconstruction: the same fingerings, other notes
+        self.gout("ins", "bone", "far", "closed")
+        self.gout("ins", "bone", "mouth_open", "0.02")
+        x = samples(root / "master" / "bone.wav")[0]
+        self.assertLess(pitch(x, 0.06, 0.22), 400.0)                                      # a bottle now
+        self.assertEqual(self.dump()["tracks"][0]["instrument"]["settings"], {"far": "closed", "mouth_open": 0.02})
+        self.gout("ins", "bone", "prox_extra_mm", "90")
+        before = self.dump()
+        self.assertIn("96.4 mm further at most", self.gout("ins", "bone", "dist_extra_mm", "90", ok=False).stderr)
+        self.assertIn("edge_mm goes from 0.4 to 1 mm", self.gout("ins", "bone", "edge_mm", "2", ok=False).stderr)
+        self.assertIn("blow is one of soft, hard, =, rest", self.gout("ins", "bone", "blow", "1", "loud", ok=False).stderr)
+        self.assertEqual(self.dump(), before)
+        for _ in range(3):
+            self.gout("undo")
+        self.assertAlmostEqual(pitch(samples(root / "master" / "bone.wav")[0], 0.05, 0.22), low.hz, delta=low.hz * 0.005)
+
     def test_tab_completes_instrument_words_in_the_ui(self):
         root = self.project("song", "tone.wav")
         self.gout("ins", "add", "synth", "lead")
@@ -365,6 +412,200 @@ class InstrumentTest(GoutTest):
         self.assertTrue(any("note 1: A3" in line for line in ui.log), ui.log[-3:])
         ui.handle("\x15")                                                     # ctrl-u
         self.assertEqual(self.dump()["tracks"][1]["instrument"]["pattern"]["rows"], {})
+
+
+class GridTest(GoutTest):
+    """The grid in the ui: an instrument track's pattern as a sheet, a cell at a time."""
+
+    def open(self, kind: str = "synth"):
+        self.root = self.project("song")
+        self.gout("ins", "add", kind, "lead")
+        os.environ["GOUT_ADDONS"] = str(self.addons)
+        self.screen = FakeScreen(30, 130)
+        self.ui = gout_attr("tui", "Tui")(gout_attr("project", "Project")(self.root), self.screen)
+        self.keys(*"ins lead", "\n")
+        return self.ui.grid
+
+    def keys(self, *keys) -> None:
+        for key in keys:
+            self.ui.handle(key)
+
+    def rows(self) -> list[str]:
+        self.ui.draw()
+        return [self.screen.row(y) for y in range(self.screen.h)]
+
+    def played(self) -> dict:
+        return self.dump()["tracks"][0]["instrument"]
+
+    def test_arrows_and_tab_go_from_cell_to_cell_and_typing_fills_them(self):
+        grid = self.open()
+        self.assertEqual(self.ui.mode, "grid")
+        rows = self.rows()
+        self.assertIn(" lead  synth  16 steps of 1/16 at 120 bpm = 2.000 s", rows[0])
+        self.assertIn("esc back", rows[0])
+        self.assertTrue(rows[1].startswith(" title lead   description   steps 16   loop 1   step 1/16   wave saw   +"), rows[1])
+        self.assertRegex(rows[4], r"^ note +│ +· +· +· +· +│")
+        self.assertEqual((grid.row, grid.col), (1, 1))                       # the first step of the first row
+        self.keys(*"C2", "\t")                                               # tab takes the value and goes to the next cell
+        self.assertEqual((grid.row, grid.col), (1, 2))
+        self.keys(*"d2", curses.KEY_RIGHT)                                    # so does an arrow
+        self.keys(*"e2", "\n")                                               # enter takes it and stays
+        self.assertEqual((grid.row, grid.col), (1, 3))
+        self.assertEqual(self.played()["pattern"]["rows"]["note"]["cells"], {"1": 36, "2": 38, "3": 40})
+        self.assertRegex(self.rows()[4], r"^ note +│ +C2 +D2 +E2 +· +│")
+        self.keys("\n")                                                      # enter on a cell opens the value it has
+        self.assertEqual(grid.edit, "E2")
+        self.keys(curses.KEY_BACKSPACE, "3", "\n")
+        self.keys(curses.KEY_BTAB, curses.KEY_DC)                             # shift-tab: the cell before; delete empties it
+        self.assertEqual(self.played()["pattern"]["rows"]["note"]["cells"], {"1": 36, "3": 52})
+        self.keys(curses.KEY_LEFT, "+", "+", curses.KEY_NPAGE)                # a semitone up twice, an octave down
+        self.assertEqual(self.played()["pattern"]["rows"]["note"]["cells"]["1"], 26)
+        self.keys(curses.KEY_DOWN, curses.KEY_HOME, *"200", "\n")             # the decay row's value for every step
+        self.assertEqual(self.played()["pattern"]["rows"]["decay"], {"all": 200.0, "cells": {}})
+        self.keys(curses.KEY_END, "\t", "\t")                                # past the last step and the +, on to the next row
+        self.assertEqual((grid.row, grid.col), (3, 0))
+        self.keys(curses.KEY_BTAB)
+        self.assertEqual((grid.row, grid.col), (2, 17))
+        self.keys("\x1b")
+        self.assertEqual(self.ui.mode, "prompt")
+        self.assertIn("> instrument 1 note 1 C2  (grid)", self.ui.log)        # every edit was an ordinary command
+
+    def test_the_first_row_takes_text_numbers_and_new_cells(self):
+        grid = self.open("bonepipe")
+        self.keys(curses.KEY_UP)
+        self.assertEqual((grid.row, grid.col), (0, 0))
+        self.keys(*"my pipe", "\t")                                          # a space is a character while a title is typed
+        self.keys(*"from divje babe", "\t")
+        self.keys("8", "\n")                                                 # steps
+        played = self.played()
+        self.assertEqual(played["settings"], {"description": "from divje babe", "title": "my pipe"})
+        self.assertEqual(played["pattern"]["steps"], 8)
+        self.assertTrue(self.rows()[1].startswith(" title my pipe   description from divje babe   steps 8   loop 1   step 1/16"))
+        self.keys(curses.KEY_END, curses.KEY_RIGHT)                           # the + at the end of the row
+        self.assertEqual(grid.here()[0], "more-cells")
+        self.keys("\n")
+        self.assertEqual([f.name for f in grid.choosing][:3], ["half3", "half5", "edge_mm"])
+        self.assertIn("edge_mm        how much wider than the bone the printed CT silhouettes are, on each surface", "\n".join(self.rows()))
+        self.keys(curses.KEY_DOWN, curses.KEY_DOWN, "\n")                    # the third in the list
+        self.assertEqual(grid.edit, "0.7")                                    # the value it has, ready to change
+        self.keys(curses.KEY_BACKSPACE, "9", "\n")
+        self.assertEqual(self.played()["settings"]["edge_mm"], 0.9)
+        self.assertIn("edge_mm 0.9   +", self.rows()[1] + self.rows()[2])
+        self.keys(curses.KEY_DOWN, curses.KEY_END, curses.KEY_RIGHT)          # the + after the last step
+        self.assertEqual(grid.here()[0], "more-steps")
+        self.keys("\n")
+        self.assertEqual(self.played()["pattern"]["steps"], 9)
+        self.keys("3", "\n")
+        self.assertEqual(self.played()["pattern"]["steps"], 12)
+        self.keys(curses.KEY_UP, curses.KEY_HOME, curses.KEY_DC)              # delete on the title: its own value again
+        self.assertNotIn("title", self.played()["settings"])
+
+    def test_a_wrong_value_stays_in_its_cell_with_the_reason(self):
+        grid = self.open()
+        before = self.played()
+        self.keys(*"H9", "\t")
+        self.assertEqual((grid.row, grid.col, grid.edit), (1, 1, "H9"))       # not taken, not moved on
+        self.assertIn("is not a note", self.rows()[-1])
+        self.keys(curses.KEY_DOWN)                                            # nor does an arrow leave it
+        self.assertEqual((grid.row, grid.edit), (1, "H9"))
+        self.keys("\x1b")                                                    # esc lets it go, and the grid stays open
+        self.assertEqual((self.ui.mode, grid.edit), ("grid", None))
+        self.assertEqual(self.played(), before)
+        self.keys(curses.KEY_UP, "\t", "\t", *"0", "\n")                     # steps 0
+        self.assertIn("whole number from 1 to 256", self.rows()[-1])
+        self.keys("\x1b", "+")                                               # + on a note cell with no note
+        self.keys(curses.KEY_DOWN, "+")
+        self.assertIn("no note here to move", self.rows()[-1])
+
+    def test_holes_open_with_one_key_and_the_notes_follow(self):
+        grid = self.open("bonepipe")
+        self.keys(*"soft", "\t", "=", "\t", "=", "\t", "=", "\n")           # one breath over four steps; s would do for soft
+        self.keys(curses.KEY_DOWN, curses.KEY_DOWN, curses.KEY_DOWN, curses.KEY_LEFT)   # hole2, step 3
+        self.assertEqual((grid.rows[grid.row - 1].name, grid.col), ("hole2", 3))
+        self.keys("o", "o")                                                   # a row of single letters: the letter is the edit
+        self.assertEqual(grid.col, 5)
+        played = self.played()["pattern"]["rows"]
+        self.assertEqual(played["blow"]["cells"], {"1": "soft", "2": "=", "3": "=", "4": "="})
+        self.assertEqual(played["hole2"]["cells"], {"3": "o", "4": "o"})
+        rows = "\n".join(self.rows())
+        self.assertRegex(rows, r"hz +│ +1232 +1232 +1406 +1406 +│")            # what the fingerings sound like, nobody typed it
+        self.assertRegex(rows, r"cents +│ +\+228 +│")
+        self.keys(curses.KEY_LEFT, "-")                                       # - moves a cell's value back: o to x
+        self.assertEqual(self.played()["pattern"]["rows"]["hole2"]["cells"], {"3": "o", "4": "x"})
+        self.keys(curses.KEY_UP, curses.KEY_UP, curses.KEY_UP, curses.KEY_HOME, "h", "\n")   # blow, every step: h for hard
+        self.assertEqual(self.played()["pattern"]["rows"]["blow"]["all"], "hard")
+
+    def test_ctrl_y_opens_it_ctrl_u_undoes_in_it_and_the_playing_step_is_marked(self):
+        grid = self.open()
+        self.gout("ins", "add", "synth", "bass")
+        self.keys(*"A3", "\n", "\x1b")
+        self.assertEqual(self.ui.mode, "prompt")
+        self.keys("\x19")                                                    # ctrl-y: the grid it showed last
+        self.assertEqual((self.ui.mode, self.ui.grid.t["name"]), ("grid", "lead"))
+        self.keys("\x19")                                                    # again: the next instrument track
+        self.assertEqual(self.ui.grid.t["name"], "bass")
+        self.keys("\x19")
+        grid = self.ui.grid
+        self.assertEqual(grid.t["name"], "lead")
+        self.assertEqual(self.played()["pattern"]["rows"]["note"]["cells"], {"1": 57})
+        self.keys("\x15")                                                    # ctrl-u
+        self.assertEqual(self.played()["pattern"]["rows"], {})
+        self.assertIsNone(self.ui.grid_step())                                # nothing plays
+        rows, _ = grid.lines(130, 30, playing=3)
+        marked = [(text.strip(), role) for row in rows for _, text, role in row if role == "play"]
+        self.assertEqual(marked[0], ("3", "play"))                            # the step's number, and its cells under it
+        self.assertEqual(len(marked), 1 + len(grid.rows))
+        self.keys("\x1b", *"ins tone", "\n")                                 # not an instrument: the prompt says so
+        self.assertEqual(self.ui.mode, "prompt")
+        self.keys(*"ins nothing", "\n")
+        self.assertTrue(any("no track named 'nothing'" in line for line in self.ui.log))
+        screens = gout_attr("screens", "KEY_CODES")
+        self.assertNotIn("ctrl-y", screens)                                   # the grid's key is no longer a screen's to take
+
+    @unittest.skipIf(pty is None, "needs a pseudo-terminal")
+    def test_the_grid_in_a_real_terminal(self):
+        root = self.project("song")
+        self.gout("ins", "add", "bonepipe", "lead")
+        pid, fd = pty.fork()
+        if pid == 0:
+            os.chdir(root)
+            env = self.env()
+            env["TERM"] = "xterm-256color"
+            command = gout_cmd()
+            os.execve(command[0], command, env)
+        import fcntl
+        import termios
+        fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 120, 0, 0))
+        output = bytearray()
+
+        def drain(seconds):
+            end = time.time() + seconds
+            while time.time() < end:
+                ready, _, _ = select.select([fd], [], [], 0.05)
+                if ready:
+                    try:
+                        chunk = os.read(fd, 65536)
+                    except OSError:
+                        return
+                    if not chunk:
+                        return
+                    output.extend(chunk)
+
+        drain(1.5)
+        # the grid by its key; soft, tab, hold; down three rows and back one cell; o; up to the first row; esc; quit
+        for keys in (b"\x19", b"soft\t", b"=\n", b"\x1b[B", b"\x1b[B", b"\x1b[B", b"\x1b[Z", b"o", b"\x1b[A", b"\x1b", b"quit\n"):
+            os.write(fd, keys)
+            drain(1.0)
+        code = wait_for_exit(pid, fd, output)
+        text = output.decode("utf-8", "replace")
+        self.assertIsNotNone(code, f"gout never left the terminal:\n{text[-2000:]}")
+        self.assertEqual(code, 0, text[-2000:])
+        self.assertNotIn("Traceback", text)
+        self.assertIn("bonepipe", text)
+        self.assertIn("hz", text)
+        rows = self.dump()["tracks"][0]["instrument"]["pattern"]["rows"]
+        self.assertEqual(rows["blow"]["cells"], {"1": "soft", "2": "="})
+        self.assertEqual(rows["hole2"]["cells"], {"1": "o"})
 
 
 if __name__ == "__main__":

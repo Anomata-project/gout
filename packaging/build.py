@@ -73,13 +73,14 @@ def download(url: str, name: str) -> Path:
 
 
 def copy_source_tree(dst: Path) -> None:
-    """gout as it runs from a checkout: bin/gout, the package, the examples, the guide, the licence."""
+    """gout as it runs from a checkout: bin/gout, the packages, the examples, the guide, the licence."""
     def skip(folder, names):
         return [n for n in names if n in NOT_SHIPPED or n.endswith(".pyc")]
 
     (dst / "bin").mkdir(parents=True)
     shutil.copy2(ROOT / "bin" / "gout", dst / "bin" / "gout")
     shutil.copytree(ROOT / "gout", dst / "gout", ignore=skip)
+    shutil.copytree(ROOT / "bonepipe", dst / "bonepipe", ignore=skip)  # what the bonepipe instrument plays from
     shutil.copytree(ROOT / "examples" / "addons", dst / "examples" / "addons", ignore=skip)
     (dst / "docs").mkdir()
     shutil.copy2(ROOT / "docs" / "addons.md", dst / "docs" / "addons.md")

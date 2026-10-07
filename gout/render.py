@@ -550,6 +550,7 @@ KEY_SECTIONS = [
         ("ctrl-k", "cheat sheet on and off"),
         ("ctrl-g", "effect pictures on and off; the name line stays (eq N, comp N pick the track)"),
         ("ctrl-e", "the parameter sheet"),
+        ("ctrl-y", "the grid of an instrument track (or instrument TRACK at the prompt)"),
         ("ctrl-o", "the timeline in a browser window: real waveforms, zoom to single samples, select, drag parts"),
         ("tab shift-tab", "on an empty line: flip the cheat sheet"),
         ("ctrl-n ctrl-p", "the cheat sheet a line at a time"),
@@ -566,6 +567,19 @@ KEY_SECTIONS = [
         ("ctrl-w", "clear the cell"),
         ("ctrl-p", "the row as a command on the prompt (the line at the bottom shows it to copy)"),
         ("ctrl-shift-s", "save as (or saveas NAME at the prompt)"),
+    ]),
+    ("GRID", "", [
+        ("← → ↑ ↓", "from cell to cell; home and end, the row's first and last"),
+        ("tab shift-tab", "the next cell and the one before, row after row"),
+        ("typing", "a new value for the cell; enter, tab or an arrow takes it, esc lets it go"),
+        ("enter", "open the value the cell has, to change it; on a + add a step or a cell"),
+        ("del", "empty the cell: it takes the row's value again"),
+        ("+ -", "the value a little up or down; pgup pgdn a lot"),
+        ("x o", "in a row of single letters, the letter alone fills the cell and moves on"),
+        ("space", "play and stop"),
+        ("ctrl-u", "undo"),
+        ("ctrl-y", "the next instrument track"),
+        ("esc", "back to the prompt"),
     ]),
 ]
 

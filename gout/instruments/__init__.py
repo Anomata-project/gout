@@ -3,4 +3,10 @@
 
 def builtin() -> list:
     from .synth import Synth
-    return [Synth()]
+    found = [Synth()]
+    try:
+        from .bonepipe import BonePipe
+        found.append(BonePipe())
+    except ImportError:  # gout without the bonepipe package beside it: one instrument fewer
+        pass
+    return found

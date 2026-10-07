@@ -5,7 +5,7 @@ import random
 import sys
 import textwrap
 
-from . import geometry, objects, scale
+from . import geometry, objects, scale, sound
 
 USAGE = """bonepipe: what a pipe sounds like, computed from its geometry
 
@@ -16,6 +16,8 @@ USAGE = """bonepipe: what a pipe sounds like, computed from its geometry
   python3 -m bonepipe notes OBJECT [NAME=VALUE ...]   one reconstruction: its fingerings, their notes, the intervals
   python3 -m bonepipe spread OBJECT [-n 200] [-s 1] [NAME=VALUE ...]
                                                       the same over the whole range of what is not known
+  python3 -m bonepipe wav OBJECT FILE.wav [NAME=VALUE ...]
+                                                      hear one reconstruction: its plain fingerings, a breath each
   python3 -m bonepipe check                           that every number in the data has its source
 
 NAME=VALUE fixes one unknown: blown=distal far=closed hole5=yes dist_extra_mm=30 mouth_open=0.05"""
@@ -171,6 +173,30 @@ def cmd_notes(thing, words: list[str]) -> None:
         print(f"  {note.text:<10} {'  '.join(f'{hz:.0f} ({scale.pitch_name(hz)})' for hz in note.above) or '-'}")
 
 
+def cmd_wav(thing, words: list[str]) -> None:
+    if not words or "=" in words[0]:
+        die(f"wav needs a file to write\n{USAGE}")
+    try:
+        recon = geometry.Reconstruction(thing, **given(thing, words[1:]))
+    except ValueError as exc:
+        die(str(exc))
+    setup = geometry.build(recon)
+    rate = 48000
+    out = sound.array("f")
+    print(f"{thing.id}  {recon.describe()}")
+    for fingering in scale.ladder(setup.names):
+        voice = sound.timbre(setup, fingering, rate=rate)
+        text = scale.label(setup.names, fingering)
+        if voice is None:
+            print(f"  {text:<10} no resonance in reach")
+            continue
+        print(f"  {text:<10} {voice.hz:>8.1f} Hz  {scale.pitch_name(voice.hz)}")
+        out.extend(sound.render([(0.7, voice)], rate))
+        out.extend(sound.array("f", bytes(4 * rate // 4)))
+    sound.write_wav(words[0], out, rate)
+    print(f"  {words[0]}  {len(out) / rate:.2f} s: the sound is made from the resonances (bonepipe/sound.py), not recorded")
+
+
 def quantile(values: list[float], share: float) -> float:
     ordered = sorted(values)
     at = share * (len(ordered) - 1)
@@ -240,12 +266,13 @@ def main(argv: list[str]) -> int:
             wrong = [line for name in objects.object_ids() for line in objects.problems(objects.load(name))]
             print("\n".join(wrong) if wrong else f"check  {len(objects.object_ids())} object(s): every measurement has its source, page, method and confidence")
             return 1 if wrong else 0
-        elif head in ("show", "bore", "unknowns", "notes", "spread"):
+        elif head in ("show", "bore", "unknowns", "notes", "spread", "wav"):
             if not rest:
                 die(f"{head} which object? python3 -m bonepipe objects lists them")
             thing = objects.load(rest[0])
             {"show": lambda: cmd_show(thing), "bore": lambda: cmd_bore(thing, rest[1:]), "unknowns": lambda: cmd_unknowns(thing),
-             "notes": lambda: cmd_notes(thing, rest[1:]), "spread": lambda: cmd_spread(thing, rest[1:])}[head]()
+             "notes": lambda: cmd_notes(thing, rest[1:]), "spread": lambda: cmd_spread(thing, rest[1:]),
+             "wav": lambda: cmd_wav(thing, rest[1:])}[head]()
         else:
             die(f"no command {head!r}\n{USAGE}")
     except objects.DataError as exc:

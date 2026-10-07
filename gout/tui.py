@@ -30,6 +30,7 @@ from . import core
 from .player import Player
 from .screens import screen_for_key, screen_named, ScreenContext, screens
 from .inst import BASE_SETTINGS, instrument, instruments
+from .grid import Grid
 from .window import TerminalWindow
 from .theme import load_theme, Palette
 from .commands import Args, head_seconds, loop_range, player_for, start_take, Take
@@ -84,7 +85,10 @@ class Tui:
         self.line = LineEditor(self.complete_words)
         self.line.history = self.load_history()
         self.log += [f"error: color.json: {problem}" for problem in theme_problems]
-        self.mode = "prompt"  # or "sheet": the parameter table, or "screen": an addon's full-screen view
+        self.mode = "prompt"  # or "sheet": the parameter table, "grid": an instrument's pattern, "screen": an addon's view
+        self.grid: Grid | None = None        # the open grid
+        self.grid_file: str | None = None    # the instrument track it showed last
+        self.grid_changed = False            # whether a command ran in it (with autorender on, leaving it mixes)
         self.screen = None     # the open Screen
         self.screen_ctx: ScreenContext | None = None
         self.status_until = 0.0  # the screen's status line shows until then (monotonic)
@@ -233,6 +237,9 @@ class Tui:
         scr.erase()
         if self.mode == "sheet":
             self.draw_sheet()
+            return
+        if self.mode == "grid":
+            self.draw_grid()
             return
         if self.mode == "screen":
             self.draw_screen()
@@ -404,6 +411,8 @@ class Tui:
                 waiting = self.render_proc is not None or self.project.render_mode == "idle"
                 if self.mode == "screen":  # frames at the screen's rate while the song plays
                     self.scr.timeout(max(5, round(1000 / max(1, self.screen.fps) - spent_ms)) if self.player else 250)
+                elif self.mode == "grid" and self.player:  # the step that sounds moves along
+                    self.scr.timeout(40)
                 else:
                     self.scr.timeout(50 if self.viewer else 100 if self.player or self.take else (250 if waiting else -1))
                 try:
@@ -692,6 +701,9 @@ class Tui:
         if self.mode == "sheet":
             self.handle_sheet(key)
             return
+        if self.mode == "grid":
+            self.handle_grid(key)
+            return
         if self.mode == "screen":
             self.handle_screen(key)
             return
@@ -713,6 +725,8 @@ class Tui:
                 self.log.append("the sheet waits until the take ends: ctrl-r or space stops it")
             else:
                 self.sheet_open()
+        elif key == "\x19":  # ctrl-y: the grid of an instrument track
+            self.open_grid()
         elif key == "\x07":  # ctrl-g: the effect panel
             self.toggle_panel()
         elif key == "\x14":  # ctrl-t
@@ -1275,6 +1289,143 @@ class Tui:
                 self.log.append(f"error: {screen.name} screen: {type(exc).__name__}: {exc}")
                 self.close_screen()
 
+    # ---- the grid: an instrument track's pattern as a sheet of cells (grid.py)
+
+    GRID_KEYS = {"KEY_LEFT": "left", "KEY_RIGHT": "right", "KEY_UP": "up", "KEY_DOWN": "down", "KEY_HOME": "home",
+                 "KEY_END": "end", "KEY_BTAB": "btab", "KEY_ENTER": "enter", "KEY_BACKSPACE": "backspace", "KEY_DC": "delete",
+                 "KEY_PPAGE": "pgup", "KEY_NPAGE": "pgdn"}
+    GRID_ROLES = {"head": "header", "hint": "suggestion", "label": "ruler_labels", "empty": "suggestion", "read": "effect_curve",
+                  "beat": "gap_line", "play": "playhead", "error": "error", "edit": "sheet_edit"}
+
+    def open_grid(self, spec: str | None = None) -> None:
+        """The grid of an instrument track: the one named, else the one it showed last, else the first."""
+        if self.take is not None:
+            self.log.append("the grid waits until the take ends: ctrl-r or space stops it")
+            return
+        if spec is None:
+            played = [t for t in self.project.tracks() if t.get("instrument")]
+            t = next((t for t in played if t["file"] == self.grid_file), played[0] if played else None)
+            if t is None:
+                self.log.append(f"grid  no instrument tracks yet — instrument add KIND  ({', '.join(instruments())})")
+                return
+            spec = str(t["n"])
+        try:
+            self.grid = Grid(self.project, spec)
+        except GoutError as exc:
+            self.log.append(f"error: {exc}")
+            return
+        self.grid_file, self.grid_changed, self.mode = self.grid.t["file"], False, "grid"
+
+    def close_grid(self) -> None:
+        self.mode, self.grid = "prompt", None
+        self.scroll = 0
+        if self.grid_changed and self.project.autorender:
+            self.run_logged(["mix"])
+
+    def grid_step(self) -> int | None:
+        """The step of the grid's pattern that sounds now, or None."""
+        grid = self.grid
+        if self.player is None:
+            return None
+        step_ms = grid.ctx.step_s * 1000
+        length = grid.pattern.steps * step_ms
+        at = self.play_position_ms() - grid.t["offset_ms"]
+        if not 0 <= at < length * grid.item.value(grid.settings, "loop"):
+            return None
+        return int(at % length / step_ms) + 1
+
+    def draw_grid(self) -> None:
+        import curses
+        h, w = self.scr.getmaxyx()
+        rows, cursor = self.grid.lines(w, h, self.grid_step())
+        for y, row in enumerate(rows[:h]):
+            for x, text, role in row:
+                if role in ("cursor", "picked"):
+                    attr = curses.A_REVERSE
+                elif role == "edit":
+                    attr = self.palette.attr("sheet_edit") | curses.A_REVERSE
+                elif role in ("note", "cell"):
+                    attr = curses.A_BOLD if role == "note" else 0
+                else:
+                    attr = self.palette.attr(self.GRID_ROLES[role]) if role in self.GRID_ROLES else 0
+                self.put(y, x, text, attr)
+        try:
+            self.scr.move(min(h - 1, cursor[0]), min(w - 1, cursor[1]))
+        except curses.error:
+            pass
+        self.scr.refresh()
+
+    def grid_run(self, argv: list[str]) -> str:
+        """Run a command the grid made, as if typed, and let the grid read its track again.
+        Returns what went wrong, or nothing."""
+        self.log.append("> " + " ".join(argv) + "  (grid)")
+        playing = self.playing_state()
+        buf, error = io.StringIO(), ""
+        try:
+            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+                run([*argv, "-N"], self.project)
+            self.grid_changed = True
+        except GoutError as exc:
+            error = str(exc).splitlines()[0]
+            buf.write(f"error: {exc}\n")
+        except Exception as exc:  # keep the ui alive whatever happens
+            error = f"{type(exc).__name__}: {exc}"
+            buf.write(f"error: {error}\n")
+        self.log.extend(buf.getvalue().rstrip("\n").splitlines())
+        del self.log[:-2000]
+        self.hear_changes(playing)
+        try:
+            self.grid.load()
+        except GoutError as exc:  # an undo took the track away
+            self.log.append(f"grid  {exc}")
+            self.close_grid()
+            return ""
+        return error
+
+    def handle_grid(self, key) -> None:
+        import curses
+        grid = self.grid
+        if key == "\x1b":
+            seq = self.read_escape()
+            if seq in ESCAPE_KEYS:
+                self.handle_grid(getattr(curses, ESCAPE_KEYS[seq]))
+                return
+            if seq:
+                return
+            name = "esc"
+        elif isinstance(key, int):
+            name = next((n for code, n in self.GRID_KEYS.items() if getattr(curses, code, None) == key), None)
+        else:
+            name = {"\n": "enter", "\r": "enter", "\t": "tab", "\x7f": "backspace", "\x08": "backspace"}.get(key, key)
+        if name is None:
+            return
+        if name == "\x03":  # ctrl-c
+            self.running = False
+        elif name == "\x15":  # ctrl-u: undo, whatever is being typed
+            grid.edit = None
+            self.grid_run(["undo"])
+        elif name == "\x19":  # ctrl-y again: the next instrument track
+            played = [t["file"] for t in self.project.tracks() if t.get("instrument")]
+            after = played[(played.index(grid.t["file"]) + 1) % len(played)]
+            self.open_grid(str(next(t["n"] for t in self.project.tracks() if t["file"] == after)))
+        elif name == " " and not grid.wants_space():  # play and stop, as everywhere
+            if self.player:
+                self.stop_playing()
+            else:
+                self.start_playing()
+        elif len(name) > 1 or name.isprintable():
+            before = (grid.row, grid.col, grid.edit)
+            result = grid.key(name)
+            if result is None:
+                return
+            if result[0] == "close":
+                self.close_grid()
+                return
+            error = self.grid_run(result[1])
+            if error and self.grid is not None:  # back to the cell, with what was typed, to put it right
+                grid.row, grid.col, grid.edit = before
+                grid.message = error
+
     def chain_kinds(self) -> dict[int, list[str]]:
         """The effect kinds on every track and the master, by track number (master: MASTER_N)."""
         chains = {t["n"]: [i["kind"] for i in t["fx"]] for t in self.project.tracks()}
@@ -1371,6 +1522,9 @@ class Tui:
             return
         if head == "record" and argv[1:2] != ["calibrate"]:
             self.start_take(argv[1:])
+            return
+        if head == "instrument" and len(argv) == 2 and argv[1].lower() != "kinds":  # a track alone: its pattern as the grid
+            self.open_grid(argv[1])
             return
         if head == "part" and "here" in argv[2:]:  # the playhead, where the song is now
             argv = [f"{self.play_position_ms()}ms" if word == "here" else word for word in argv]

@@ -1,6 +1,8 @@
 """The instrument command, and an instrument track's pattern as text."""
 from __future__ import annotations
 
+import textwrap
+
 from .commands import Args
 from .core import die, fmt_ms, parse_ms, TRACK_DIR
 from .inst import BASE_SETTINGS, Instrument, instruments, resolve_instrument
@@ -25,8 +27,10 @@ def print_kinds() -> None:
     for item in instruments().values():
         origin = "" if item.source == "built-in" else f"   [addon {item.source}]"
         print(f"{item.name:<10} {', '.join(item.aliases):<6} {item.summary}{origin}")
-        print(f"{'':<17} rows: {' '.join(f.name for f in item.features)}"
-              + (f"   cells: {' '.join(f.name for f in item.settings)}" if item.settings else ""))
+        listed = (f"rows: {' '.join(f.name for f in item.features)}"
+                  + (f"   cells: {' '.join(f.name for f in item.settings)}" if item.settings else ""))
+        for line in textwrap.wrap(listed, 96, subsequent_indent="      "):
+            print(f"{'':<17} {line}")
 
 
 def instrument_track(project, spec: str) -> dict:
@@ -67,8 +71,10 @@ def grid_lines(project, t: dict, item: Instrument) -> list[str]:
     first = [f"title {settings.get('title') or t['name']}"]
     if settings.get("description"):
         first.append(f"description {settings['description']}")
-    first += [f"{f.name} {f.format(item.value(settings, f.name))}" for f in item.settings]
-    lines = ["      " + "   ".join(first)]
+    first += [f"{f.name} {f.format(item.value(settings, f.name))}" for f in item.settings
+              if f.name in settings or item.shown is None or f.name in item.shown]
+    more = len(item.settings) + 2 - len(first) - (0 if settings.get("description") else 1)
+    lines = ["      " + "   ".join(first) + (f"   (+{more} more cells: gout instrument kinds)" if more > 0 else "")]
     reads = item.reads(context(project, item, settings), pattern, settings)
     texts = {f.name: [cell_text(f, pattern.cell(f, s)) for s in range(1, pattern.steps + 1)] for f in item.features}
     texts.update({name: list(row) + [""] * (pattern.steps - len(row)) for name, row in reads})

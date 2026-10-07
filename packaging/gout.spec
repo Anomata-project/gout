@@ -27,8 +27,10 @@ analysis = Analysis(
     pathex=[str(ROOT)],
     datas=[(str(ROOT / "examples" / "addons"), "examples/addons"), (str(ROOT / "docs" / "addons.md"), "docs"),
            (str(ROOT / "gout" / "viewerpage"), "gout/viewerpage"),  # the window's page
+           (str(ROOT / "bonepipe" / "data"), "bonepipe/data"),      # what the bone pipe instrument plays from
            (str(ROOT / "LICENSE"), ".")],
-    hiddenimports=sorted(set(stdlib)) + collect_submodules("gout", filter=lambda mod: not mod.startswith("gout.web")),
+    hiddenimports=(sorted(set(stdlib)) + collect_submodules("gout", filter=lambda mod: not mod.startswith("gout.web"))
+                   + collect_submodules("bonepipe")),
     excludes=sorted(LEAVE_OUT) + ["gout.web"],
     noarchive=False,
 )

@@ -8,14 +8,17 @@ import math
 import random
 import subprocess
 import sys
+import tempfile
 import unittest
+import wave
+from pathlib import Path
 
 from helpers import REPO
 
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from bonepipe import geometry, objects, scale  # noqa: E402
+from bonepipe import geometry, objects, scale, sound  # noqa: E402
 from bonepipe.acoustics import Air, cents, Mouth, Pipe  # noqa: E402
 from bonepipe.tools import ct_slices  # noqa: E402
 
@@ -286,6 +289,62 @@ class ReconstructionTest(unittest.TestCase):
         self.assertAlmostEqual(scale.nearest_ratio(386.3)[2], 0.0, delta=0.1)      # 5/4
         self.assertEqual(scale.pitch_name(440.0), "A4+0")
         self.assertEqual(scale.pitch_name(446.4), "A4+25")
+
+
+class SoundTest(unittest.TestCase):
+    def setUp(self):
+        self.setup = geometry.build(geometry.Reconstruction(objects.load("divje-babe-1")))
+        self.closed = {name: False for name in self.setup.names}
+
+    @staticmethod
+    def pitch(samples, lo: float, hi: float, rate: int = 48000) -> float:
+        seg = samples[round(lo * rate):round(hi * rate)]
+        up = [i + seg[i] / (seg[i] - seg[i + 1]) for i in range(len(seg) - 1) if seg[i] <= 0 < seg[i + 1]]
+        return (len(up) - 1) * rate / (up[-1] - up[0])
+
+    def test_a_note_is_the_resonance_and_its_overtones_are_what_the_pipe_lets_through(self):
+        voice = sound.timbre(self.setup, self.closed)
+        lowest, above = self.setup.resonances(self.closed)[:2]
+        self.assertEqual(voice.hz, lowest.hz)
+        self.assertEqual(voice.weights[0], 1.0)
+        self.assertTrue(all(0 <= w < 0.5 for w in voice.weights[1:]), voice.weights[:6])   # its resonances are not in tune with its overtones
+        self.assertAlmostEqual(max(abs(v) for v in voice.table), 1.0, places=5)
+        hard = sound.timbre(self.setup, self.closed, register=1)
+        self.assertEqual(hard.hz, above.hz)                                # blown harder: the resonance above
+        self.assertIsNone(sound.timbre(self.setup, self.closed, register=9))
+        brighter = sound.timbre(self.setup, self.closed, hard=1.0)
+        self.assertGreater(brighter.weights[1], voice.weights[1])
+        # a pipe whose second resonance is an octave above the first lets the second overtone through
+        tube = geometry.Setup(Pipe([(0.0, 0.004), (0.4, 0.004)], celsius=20.0), None, "open", [], None, (0, 400))
+        self.assertGreater(sound.timbre(tube, {}).weights[1], 5 * voice.weights[1])
+
+    def test_a_breath_sounds_at_the_note_and_glides_to_the_next_fingering(self):
+        one = sound.timbre(self.setup, self.closed)
+        two = sound.timbre(self.setup, {**self.closed, self.setup.names[-1]: True})
+        out = sound.render([(0.3, one), (0.3, two)], breath=0.0)
+        self.assertEqual(len(out), round(0.6 * 48000) + round(sound.RELEASE_S * 48000))
+        self.assertAlmostEqual(self.pitch(out, 0.08, 0.28), one.hz, delta=one.hz * 0.002)
+        self.assertAlmostEqual(self.pitch(out, 0.36, 0.58), two.hz, delta=two.hz * 0.002)
+        self.assertAlmostEqual(max(abs(v) for v in out[4800:12000]), 0.5, delta=0.01)
+        self.assertLess(abs(out[0]), 1e-3)                                  # it starts and ends in silence
+        self.assertLess(abs(out[-1]), 1e-3)
+        biggest = max(abs(b - a) for a, b in zip(out[14000:14900], out[14001:14901]))   # across the change of fingering
+        self.assertLess(biggest, 0.5 * 2 * math.pi * two.hz / 48000 * 1.3)   # no faster than the higher note itself moves
+        airy = sound.render([(0.3, one)], breath=0.3)
+        self.assertEqual(list(airy), list(sound.render([(0.3, one)], breath=0.3)))   # the same breath every time
+        self.assertNotEqual(list(airy[:9000]), list(sound.render([(0.3, one)], breath=0.0)[:9000]))
+
+    def test_a_reconstruction_is_written_as_a_wav_to_hear(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "pipe.wav"
+            out = bonepipe("wav", "divje-babe-1", str(path), "far=closed", "mouth_open=0.02").stdout
+            self.assertIn("the other end closed", out)
+            self.assertRegex(out, r"xxx +2\d\d\.\d Hz  D4")                 # a bottle's low note
+            self.assertIn("not recorded", out)
+            with wave.open(str(path)) as f:
+                self.assertEqual((f.getnchannels(), f.getframerate(), f.getsampwidth()), (1, 48000, 2))
+                self.assertAlmostEqual(f.getnframes() / 48000, 4 * (0.7 + sound.RELEASE_S + 0.25), delta=0.01)
+        self.assertIn("wav needs a file", bonepipe("wav", "divje-babe-1", ok=False).stderr)
 
 
 class ReportTest(unittest.TestCase):
