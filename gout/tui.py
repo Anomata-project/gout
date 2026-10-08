@@ -1669,6 +1669,8 @@ def run_tui(project: Project) -> None:
             fd = sys.stdin.fileno()
             attrs = termios.tcgetattr(fd)
             attrs[0] &= ~termios.IXON
+            if hasattr(termios, "VDSUSP"):  # macOS: ctrl-y means "suspend when read" there, and the grid's key never arrived
+                attrs[6][termios.VDSUSP] = bytes([os.fpathconf(fd, "PC_VDISABLE")])
             termios.tcsetattr(fd, termios.TCSANOW, attrs)
         except Exception:
             pass

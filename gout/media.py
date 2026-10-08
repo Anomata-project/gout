@@ -422,6 +422,30 @@ def mp3_frame_cut(src: Path, dst: Path, a_ms: int, b_ms: int, verbose: bool) -> 
 FLOAT_WAV_HEADER = 44  # bytes; the RIFF size sits at 4 and the data size at 40
 
 
+_FFMPEG_MAJOR: int | None = None
+
+
+def ffmpeg_major() -> int:
+    """The first number of ffmpeg's version (6 for 6.1.1); 99 for a build from its main branch
+    (N-...), 0 when it cannot be read. Asked once."""
+    global _FFMPEG_MAJOR
+    if _FFMPEG_MAJOR is None:
+        try:
+            first = subprocess.run(["ffmpeg", "-version"], capture_output=True, text=True, encoding="utf-8",
+                                   errors="replace").stdout.splitlines()[0]
+        except (OSError, IndexError):
+            first = ""
+        m = re.match(r"ffmpeg version n?(\d+)\.", first)
+        _FFMPEG_MAJOR = int(m.group(1)) if m else (99 if re.match(r"ffmpeg version N-", first) else 0)
+    return _FFMPEG_MAJOR
+
+
+def graph_from_file(path: Path) -> list[str]:
+    """The ffmpeg arguments that read a filtergraph from a file. ffmpeg 7 brought -/filter_complex FILE
+    and ffmpeg 9 dropped -filter_complex_script ("Option not found": the macOS installer's ffmpeg)."""
+    return ["-/filter_complex", str(path)] if ffmpeg_major() >= 7 else ["-filter_complex_script", str(path)]
+
+
 def float_wav_header(channels: int, rate: int, data_bytes: int) -> bytes:
     return (b"RIFF" + (36 + data_bytes).to_bytes(4, "little") + b"WAVE"
             + b"fmt " + (16).to_bytes(4, "little") + (3).to_bytes(2, "little") + channels.to_bytes(2, "little")

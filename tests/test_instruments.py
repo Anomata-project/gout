@@ -595,7 +595,7 @@ class GridTest(GoutTest):
         # the grid by its key; soft, tab, hold; down three rows and back one cell; o; up to the first row; esc; quit
         for keys in (b"\x19", b"soft\t", b"=\n", b"\x1b[B", b"\x1b[B", b"\x1b[B", b"\x1b[Z", b"o", b"\x1b[A", b"\x1b", b"quit\n"):
             os.write(fd, keys)
-            drain(1.0)
+            drain(0.9 if keys in (b"\x19", b"soft\t", b"=\n", b"o") else 0.3)   # the ones that run a command take longer
         code = wait_for_exit(pid, fd, output)
         text = output.decode("utf-8", "replace")
         self.assertIsNotNone(code, f"gout never left the terminal:\n{text[-2000:]}")

@@ -962,7 +962,8 @@ the acoustics was checked. The `bonepipe` instrument (see Instruments) plays wha
 ## Tests
 
 ```sh
-python3 -m unittest discover -s tests       # about a minute and a half
+python3 -m unittest discover -s tests       # everything: a quarter of an hour of work
+python3 tests/run.py --changed              # only what the changes at hand can break
 ```
 
 The suite runs the real command in temporary directories and measures the audio it writes with

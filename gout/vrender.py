@@ -34,6 +34,7 @@ import zlib
 from pathlib import Path
 
 from .core import die
+from .media import graph_from_file
 from .model import audible, video_points
 from .motion import CACHE_DIR
 from .settings import setting
@@ -319,7 +320,7 @@ def render(project, videos: list[dict], audio: Path, target: Path, *, seconds: f
     if title_layer is not None:
         command += title_layer.args()
     audio_at = len(layers) + (title_layer is not None)
-    command += ["-i", str(audio), "-filter_complex_script", str(script), "-map", "[out]", "-map", f"{audio_at}:a",
+    command += ["-i", str(audio), *graph_from_file(script), "-map", "[out]", "-map", f"{audio_at}:a",
                 "-c:v", OUT, "-preset", "veryfast" if preview else "medium", "-crf", "28" if preview else "20",
                 "-pix_fmt", "yuv420p", "-r", f"{fps:.6f}", "-c:a", "aac", "-b:a", "320k", "-ar", "48000",
                 "-t", f"{seconds:.6f}", "-movflags", "+faststart", str(part)]
